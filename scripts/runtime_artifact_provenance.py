@@ -5,14 +5,19 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import queue
 import re
 import stat
+import struct
 import subprocess
 import threading
 import time
+import tempfile
+from zipfile import BadZipFile, ZipFile
 from pathlib import Path
 from typing import Any
 
@@ -29,8 +34,29 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 MAX_BUNDLE_BYTES = 16 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
+MAX_ARTIFACT_BYTES = 1024 * 1024 * 1024
 MAX_VERIFIER_OUTPUT_BYTES = 4 * 1024 * 1024
 SUPPORTED_GH_VERSION = "2.89.0"
+RELEASE_REPOSITORY = "tonykslee/ClashCookies"
+RELEASE_REPOSITORY_ID = 668452496
+RELEASE_REPOSITORY_OWNER_ID = 18295450
+RELEASE_SOURCE_REF = "refs/heads/main"
+RELEASE_EVENT = "push"
+RELEASE_SIGNER_WORKFLOW = ".github/workflows/runtime-artifact.yml"
+RELEASE_PLATFORM = "linux/amd64"
+RELEASE_IMAGE = "node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5"
+PRODUCTION_CANDIDATE_ARTIFACT_CLASS = "production-candidate-runtime-evidence-v1"
+ARTIFACT_NAME_TEMPLATE = "runtime-artifact-{run_id}-{run_attempt}"
+MAX_ARTIFACT_ENTRIES = 64
+MAX_INNER_ARCHIVE_BYTES = MAX_ARCHIVE_BYTES
+MAX_ARTIFACT_JSON_BYTES = 4 * 1024 * 1024
+MAX_ZIP_CENTRAL_DIRECTORY_BYTES = 1024 * 1024
+MAX_ZIP_ENTRY_NAME_BYTES = 4096
+MAX_ZIP_EXTRA_BYTES = 4096
+MAX_ZIP_COMMENT_BYTES = 4096
+MAX_ZIP_EXPANDED_BYTES = MAX_ARTIFACT_BYTES
+ZIP_EOCD_BYTES = 22
+ZIP_EOCD_SEARCH_BYTES = 65557
 
 
 class ProvenanceError(RuntimeError):
@@ -47,6 +73,22 @@ class VerificationReceipt:
     certificate_verified: bool
     certificate_identity: str
     run_invocation_uri: str
+
+
+@dataclass(frozen=True)
+class AuthorizationVerificationReceipt:
+    """Evidence from a future independent authorization-record verifier.
+
+    This type is deliberately not emitted by the current workflow. A caller
+    cannot turn a serialized record or a boolean into production authority.
+    The production policy remains unavailable until an approved verifier and
+    durable replay store are integrated.
+    """
+
+    verifier: str
+    record_sha256: str
+    verified_at: str
+    key_reference: str
 
 
 @dataclass(frozen=True)
@@ -91,29 +133,127 @@ class AuthenticatedProvenance:
 
 @dataclass(frozen=True)
 class TrustedReleaseIdentity:
-    """Non-serializable expected identity supplied by a future release authority."""
+    """Complete immutable identity supplied by an independent release authority."""
 
     repository: str
-    repository_id: str
+    repository_id: int
+    repository_owner_id: int
+    source_ref: str
+    source_sha: str
+    event: str
     signer_workflow: str
     signer_revision: str
     run_id: int
     run_attempt: int
-    approved_release_sha: str
+    artifact_id: int
+    artifact_name: str
+    artifact_class: str
+    artifact_service_zip_sha256: str
+    artifact_service_zip_bytes: int
+    archive_name: str
     archive_sha256: str
     archive_bytes: int
     platform: str
+    image: str
     image_digest: str
     authorization_context: str
 
 
 @dataclass(frozen=True)
 class IndependentReleaseAuthorization:
-    """Independent, non-artifact authorization input reserved for a future producer."""
+    """Externally verified authorization record reserved for a future producer.
 
+    The record binds the complete release identity and has explicit expiry,
+    scope, retry, and recovery fields. It is not itself proof: the current
+    repository has no approved signed-record verifier or durable replay store.
+    """
+
+    authorization_id: str
     context: str
-    approved_release_sha: str
-    source: str = "independent-release-authority"
+    scope: str
+    repository: str
+    repository_id: int
+    repository_owner_id: int
+    source_ref: str
+    source_sha: str
+    event: str
+    signer_workflow: str
+    signer_revision: str
+    run_id: int
+    run_attempt: int
+    artifact_id: int
+    artifact_name: str
+    artifact_class: str
+    artifact_service_zip_sha256: str
+    artifact_service_zip_bytes: int
+    archive_name: str
+    archive_sha256: str
+    archive_bytes: int
+    platform: str
+    image: str
+    image_digest: str
+    issued_at: str
+    expires_at: str
+    retry_key: str
+    recovery_context: str | None
+    verification: AuthorizationVerificationReceipt
+
+
+@dataclass(frozen=True)
+class ExactArtifactSelection:
+    """The two distinct identities selected from GitHub's artifact service."""
+
+    artifact_id: int
+    artifact_name: str
+    artifact_service_zip_sha256: str
+    artifact_service_zip_bytes: int
+    archive_name: str
+    archive_sha256: str | None
+    archive_bytes: int | None
+    byte_verified: bool
+
+
+@dataclass(frozen=True)
+class ArtifactSelectionRequest:
+    """Non-authoritative request used to drive exact API selection in CI."""
+
+    repository: str
+    repository_id: int
+    repository_owner_id: int
+    source_ref: str
+    source_sha: str
+    event: str
+    signer_workflow: str
+    signer_revision: str
+    run_id: int
+    run_attempt: int
+    artifact_name: str
+    artifact_class: str
+    archive_name: str
+    platform: str
+    image: str
+    image_digest: str
+    authorization_context: str
+    run_head_repository: str
+    run_head_repository_id: int
+    run_head_repository_owner_id: int
+    run_head_ref: str
+    run_head_sha: str
+    pull_request_number: int | None
+    pull_request_head_sha: str | None
+    pull_request_head_ref: str | None
+    pull_request_base_sha: str | None
+    pull_request_base_ref: str | None
+
+
+@dataclass
+class ZipSnapshot:
+    """Private descriptor-backed ZIP snapshot used by both hash and parser."""
+
+    fd: int
+    path: Path
+    size: int
+    sha256: str
 
 
 @dataclass(frozen=True)
@@ -167,6 +307,258 @@ def require_digest(value: Any, path: str) -> str:
         value = value[7:]
     require(bool(SHA256_RE.fullmatch(value)), f"provenance field {path} must be a SHA-256 digest")
     return value
+
+
+def _parse_timestamp(value: Any, path: str) -> datetime:
+    """Parse an API timestamp as an aware UTC instant."""
+    text = require_string(value, path)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as error:
+        fail(f"provenance field {path} must be an RFC3339 timestamp: {error}")
+    require(parsed.tzinfo is not None, f"provenance field {path} must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def expected_artifact_name(run_id: int, run_attempt: int) -> str:
+    """Return the versioned exact artifact name; never choose latest-by-name."""
+    require_int(run_id, "run_id", 1)
+    require_int(run_attempt, "run_attempt", 1)
+    return ARTIFACT_NAME_TEMPLATE.format(run_id=run_id, run_attempt=run_attempt)
+
+
+def validate_trusted_release_identity(identity: TrustedReleaseIdentity) -> None:
+    """Validate every immutable field of a future production release identity."""
+    require(isinstance(identity, TrustedReleaseIdentity), "trusted release identity has an unsupported type")
+    require(identity.repository == RELEASE_REPOSITORY, "release repository is not the approved repository")
+    require(identity.repository_id == RELEASE_REPOSITORY_ID, "release repository ID is not the approved stable ID")
+    require(identity.repository_owner_id == RELEASE_REPOSITORY_OWNER_ID, "release owner ID is not the approved stable ID")
+    require(identity.source_ref == RELEASE_SOURCE_REF, "release source ref must be refs/heads/main")
+    require_sha(identity.source_sha, "release.source_sha")
+    require(identity.event == RELEASE_EVENT, "release event must be a main push")
+    require(identity.signer_workflow == RELEASE_SIGNER_WORKFLOW, "release signer workflow is not approved")
+    require_sha(identity.signer_revision, "release.signer_revision")
+    require_int(identity.run_id, "release.run_id", 1)
+    require_int(identity.run_attempt, "release.run_attempt", 1)
+    require_int(identity.artifact_id, "release.artifact_id", 1)
+    require(identity.artifact_name == expected_artifact_name(identity.run_id, identity.run_attempt), "release artifact name is not attempt-qualified")
+    require(identity.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS, "release artifact class is not the versioned production-candidate contract")
+    require_digest(identity.artifact_service_zip_sha256, "release.artifact_service_zip_sha256")
+    _require_bounded_int(identity.artifact_service_zip_bytes, "release.artifact_service_zip_bytes", 1, MAX_ARTIFACT_BYTES)
+    _require_canonical_archive_name(identity.archive_name, identity.source_sha, "release.archive_name")
+    require_digest(identity.archive_sha256, "release.archive_sha256")
+    _require_bounded_int(identity.archive_bytes, "release.archive_bytes", 1, MAX_ARCHIVE_BYTES)
+    require(identity.platform == RELEASE_PLATFORM, "release platform is unsupported")
+    require(identity.image == RELEASE_IMAGE, "release runtime image is not the approved pinned image")
+    require_digest(identity.image_digest, "release.image_digest")
+    require(identity.image_digest == RELEASE_IMAGE.split("@", 1)[1], "release image digest is inconsistent with image")
+    require_string(identity.authorization_context, "release.authorization_context")
+
+
+def verify_artifact_selection_against_identity(selection: ExactArtifactSelection, identity: TrustedReleaseIdentity) -> None:
+    """Verify discovered, non-authoritative selection against independent identity evidence."""
+    validate_trusted_release_identity(identity)
+    require(isinstance(selection, ExactArtifactSelection), "artifact selection has an unsupported type")
+    require(selection.byte_verified, "artifact selection has not consumed verified ZIP bytes")
+    for field in ("artifact_id", "artifact_name", "artifact_service_zip_sha256", "artifact_service_zip_bytes", "archive_name", "archive_sha256", "archive_bytes"):
+        require(getattr(selection, field) == getattr(identity, field), f"artifact selection {field} does not match independent release identity")
+
+
+def _require_bounded_int(value: Any, path: str, minimum: int, maximum: int) -> int:
+    """Require an exact integer inside a security-relevant bound."""
+    result = require_int(value, path, minimum)
+    require(result <= maximum, f"provenance field {path} exceeds the limit")
+    return result
+
+
+def _require_canonical_ref(value: Any, path: str, prefix: str) -> str:
+    """Require a canonical Git ref without path ambiguity."""
+    ref = require_string(value, path)
+    require(ref.startswith(prefix) and ref == ref.replace("\\", "/") and ".." not in ref.split("/"), f"provenance field {path} is not a canonical ref")
+    return ref
+
+
+def _require_canonical_archive_name(value: Any, source_sha: str, path: str = "archive_name") -> str:
+    """Require the producer's only supported archive naming contract."""
+    name = require_string(value, path)
+    require(name == f"clashcookies-runtime-{source_sha}.tar.gz", f"provenance field {path} is not canonical")
+    require("/" not in name and "\\" not in name and len(name.encode("utf-8")) <= MAX_ZIP_ENTRY_NAME_BYTES, f"provenance field {path} is unsafe or oversized")
+    return name
+
+
+def validate_selection_request(request: ArtifactSelectionRequest) -> None:
+    """Validate the non-authoritative inputs used by the exact selector."""
+    require(isinstance(request, ArtifactSelectionRequest), "artifact selection request has an unsupported type")
+    require(request.repository == RELEASE_REPOSITORY, "selection repository is not the approved repository")
+    require(request.repository_id == RELEASE_REPOSITORY_ID, "selection repository ID is not the approved stable ID")
+    require(request.repository_owner_id == RELEASE_REPOSITORY_OWNER_ID, "selection owner ID is not the approved stable ID")
+    require(request.event in {"pull_request", "push"}, "selection event is unsupported")
+    source_ref = _require_canonical_ref(request.source_ref, "selection.source_ref", "refs/")
+    source_sha = require_sha(request.source_sha, "selection.source_sha")
+    require(request.signer_workflow == RELEASE_SIGNER_WORKFLOW, "selection signer workflow is not approved")
+    require_sha(request.signer_revision, "selection.signer_revision")
+    require_int(request.run_id, "selection.run_id", 1)
+    require_int(request.run_attempt, "selection.run_attempt", 1)
+    require(request.artifact_name == expected_artifact_name(request.run_id, request.run_attempt), "selection artifact name is not attempt-qualified")
+    require(request.artifact_class in {DEVELOPMENT_ARTIFACT_CLASS, PRODUCTION_CANDIDATE_ARTIFACT_CLASS}, "selection artifact class is unsupported")
+    _require_canonical_archive_name(request.archive_name, source_sha)
+    require(request.platform == RELEASE_PLATFORM and request.image == RELEASE_IMAGE, "selection runtime contract is unsupported")
+    require_digest(request.image_digest, "selection.image_digest")
+    require(request.image_digest == RELEASE_IMAGE.split("@", 1)[1], "selection image digest is inconsistent with image")
+    require_string(request.authorization_context, "selection.authorization_context")
+    require(request.run_head_repository == request.repository, "selection head repository must be the approved repository")
+    require(request.run_head_repository_id == request.repository_id, "selection head repository ID mismatch")
+    require(request.run_head_repository_owner_id == request.repository_owner_id, "selection head repository owner ID mismatch")
+    _require_canonical_ref(request.run_head_ref, "selection.run_head_ref", "refs/heads/")
+    require_sha(request.run_head_sha, "selection.run_head_sha")
+    if request.event == "push":
+        require(source_ref == request.run_head_ref and source_sha == request.run_head_sha, "main/development push source and head identity mismatch")
+        for value in (request.pull_request_number, request.pull_request_head_sha, request.pull_request_head_ref, request.pull_request_base_sha, request.pull_request_base_ref):
+            require(value is None, "push selection must not carry PR correlation")
+    else:
+        require(type(request.pull_request_number) is int and request.pull_request_number >= 1, "PR selection number is invalid")
+        require(request.source_ref == f"refs/pull/{request.pull_request_number}/merge", "PR selection source ref is not canonical")
+        require(request.pull_request_head_sha == request.run_head_sha, "PR head SHA does not match run head SHA")
+        require(request.pull_request_head_ref == request.run_head_ref, "PR head ref does not match run head ref")
+        require_sha(request.pull_request_head_sha, "selection.pull_request_head_sha")
+        _require_canonical_ref(request.pull_request_head_ref, "selection.pull_request_head_ref", "refs/heads/")
+        require_sha(request.pull_request_base_sha, "selection.pull_request_base_sha")
+        _require_canonical_ref(request.pull_request_base_ref, "selection.pull_request_base_ref", "refs/heads/")
+
+
+def _read_bounded_json(path: Path, label: str) -> Any:
+    """Read a bounded non-symlink JSON input without trusting its path twice."""
+    descriptor, expected_size = _open_nofollow_regular(path, MAX_ARTIFACT_JSON_BYTES, label)
+    try:
+        chunks: list[bytes] = []
+        remaining = MAX_ARTIFACT_JSON_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        final_size = os.fstat(descriptor).st_size
+    except OSError as error:
+        fail(f"{label} is unavailable: {error}")
+    finally:
+        os.close(descriptor)
+    require(final_size == expected_size, f"{label} changed during read")
+    require(len(data) <= MAX_ARTIFACT_JSON_BYTES, f"{label} exceeds the size limit")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"{label} is malformed: {error}")
+
+
+def validate_artifact_api_response(response: Any) -> list[dict[str, Any]]:
+    """Validate the complete list-artifacts response shared by API and CLI paths."""
+    require(isinstance(response, dict), "artifact API response must be an object")
+    total_count = response.get("total_count")
+    require(type(total_count) is int and 0 <= total_count <= 100, "artifact API total_count is invalid or unbounded")
+    artifacts = response.get("artifacts")
+    require(isinstance(artifacts, list) and len(artifacts) == total_count and len(artifacts) <= 100, "artifact API pagination is incomplete or malformed")
+    require(all(isinstance(artifact, dict) for artifact in artifacts), "artifact API contains a malformed entry")
+    artifact_ids: set[int] = set()
+    for artifact in artifacts:
+        require(type(artifact.get("id")) is int and artifact["id"] >= 1, "artifact API contains a malformed artifact ID")
+        require(artifact["id"] not in artifact_ids, "artifact API contains a duplicate artifact ID")
+        artifact_ids.add(artifact["id"])
+    return artifacts
+
+
+def validate_exact_run_attempt_request_metadata(metadata: dict[str, Any], request: ArtifactSelectionRequest, *, now: datetime | None = None) -> None:
+    """Correlate the exact attempt response with source, branch, owner, and PR identity."""
+    validate_selection_request(request)
+    require(isinstance(metadata, dict), "exact run-attempt metadata must be an object")
+    require(type(metadata.get("id")) is int and metadata["id"] == request.run_id, "exact run-attempt ID mismatch")
+    require(type(metadata.get("run_attempt")) is int and metadata["run_attempt"] == request.run_attempt, "exact run-attempt number mismatch")
+    require(metadata.get("event") == request.event, "exact run-attempt event mismatch")
+    require(metadata.get("path") == request.signer_workflow, "exact run-attempt workflow path mismatch")
+    repository = metadata.get("repository")
+    require(isinstance(repository, dict), "exact run-attempt repository evidence is missing")
+    require(repository.get("full_name") == request.repository and repository.get("id") == request.repository_id, "exact run-attempt repository mismatch")
+    owner = repository.get("owner")
+    require(isinstance(owner, dict) and owner.get("id") == request.repository_owner_id, "exact run-attempt owner mismatch")
+    head_repository = metadata.get("head_repository")
+    require(isinstance(head_repository, dict), "exact run-attempt head repository evidence is missing")
+    head_owner = head_repository.get("owner")
+    require(head_repository.get("full_name") == request.run_head_repository and head_repository.get("id") == request.run_head_repository_id and isinstance(head_owner, dict) and head_owner.get("id") == request.run_head_repository_owner_id, "exact run-attempt head repository mismatch")
+    head_sha = metadata.get("head_sha")
+    head_branch = metadata.get("head_branch")
+    require(isinstance(head_sha, str) and GIT_SHA_RE.fullmatch(head_sha), "exact run-attempt head SHA is malformed")
+    require(isinstance(head_branch, str) and head_branch == request.run_head_ref.removeprefix("refs/heads/"), "exact run-attempt head branch mismatch")
+    created = _parse_timestamp(metadata.get("created_at"), "run.created_at")
+    started = _parse_timestamp(metadata.get("run_started_at"), "run.run_started_at")
+    updated = _parse_timestamp(metadata.get("updated_at"), "run.updated_at")
+    current = (now or _now_utc()).astimezone(timezone.utc)
+    require(created <= started <= updated <= current, "run-attempt chronology is contradictory or future-dated")
+    if request.event == "push":
+        require(head_sha == request.source_sha, "main/development push source SHA mismatch")
+        require(request.source_ref == f"refs/heads/{head_branch}", "main/development push source ref mismatch")
+        require(metadata.get("pull_requests") in (None, []), "push attempt unexpectedly carries PR correlation")
+        return
+    pull_requests = metadata.get("pull_requests")
+    require(isinstance(pull_requests, list) and len(pull_requests) == 1, "exact PR association is missing or ambiguous")
+    pull_request = pull_requests[0]
+    require(isinstance(pull_request, dict) and pull_request.get("number") == request.pull_request_number, "exact PR number mismatch")
+    pr_head = pull_request.get("head")
+    pr_base = pull_request.get("base")
+    require(isinstance(pr_head, dict) and isinstance(pr_base, dict), "exact PR head/base evidence is incomplete")
+    require(pr_head.get("sha") == request.pull_request_head_sha and pr_head.get("ref") == request.pull_request_head_ref.removeprefix("refs/heads/") and pr_head.get("repo", {}).get("id") == request.run_head_repository_id, "exact PR head correlation mismatch")
+    require(pr_base.get("sha") == request.pull_request_base_sha and pr_base.get("ref") == request.pull_request_base_ref.removeprefix("refs/heads/") and pr_base.get("repo", {}).get("id") == request.repository_id, "exact PR base correlation mismatch")
+    require(head_sha == request.pull_request_head_sha and head_branch == request.pull_request_head_ref.removeprefix("refs/heads/"), "exact PR run head mismatch")
+    require(request.source_sha != request.pull_request_head_sha, "PR test-merge SHA was confused with PR head SHA")
+
+
+def validate_independent_authorization(authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, *, now: datetime | None = None) -> None:
+    """Check binding and lifecycle semantics for a future verified authorization record."""
+    validate_trusted_release_identity(identity)
+    require(isinstance(authorization, IndependentReleaseAuthorization), "independent authorization has an unsupported type")
+    require_string(authorization.authorization_id, "authorization.authorization_id")
+    require(authorization.context == identity.authorization_context, "authorization context does not match release identity")
+    require(authorization.scope in {"forward-release", "recovery-release"}, "authorization scope is unsupported")
+    require(authorization.scope == "forward-release", "recovery authorization cannot authorize a forward release")
+    require(authorization.recovery_context is None, "forward authorization must not carry recovery context")
+    require(authorization.retry_key == authorization.authorization_id, "authorization retry key must be stable and identity-bound")
+    require(authorization.repository == identity.repository, "authorization repository mismatch")
+    require(authorization.repository_id == identity.repository_id, "authorization repository ID mismatch")
+    require(authorization.repository_owner_id == identity.repository_owner_id, "authorization owner ID mismatch")
+    for field in ("source_ref", "source_sha", "event", "signer_workflow", "signer_revision", "run_id", "run_attempt", "artifact_id", "artifact_name", "artifact_class", "artifact_service_zip_sha256", "artifact_service_zip_bytes", "archive_name", "archive_sha256", "archive_bytes", "platform", "image", "image_digest"):
+        require(getattr(authorization, field) == getattr(identity, field), f"authorization {field} does not match release identity")
+    issued = _parse_timestamp(authorization.issued_at, "authorization.issued_at")
+    expires = _parse_timestamp(authorization.expires_at, "authorization.expires_at")
+    require(expires > issued, "authorization expiry must be after issuance")
+    current = (now or _now_utc()).astimezone(timezone.utc)
+    require(issued <= current < expires, "authorization is stale or not yet valid")
+    verification = authorization.verification
+    require(isinstance(verification, AuthorizationVerificationReceipt), "authorization verification evidence is missing")
+    require_string(verification.verifier, "authorization.verification.verifier")
+    require_digest(verification.record_sha256, "authorization.verification.record_sha256")
+    _parse_timestamp(verification.verified_at, "authorization.verification.verified_at")
+    require_string(verification.key_reference, "authorization.verification.key_reference")
+
+
+def validate_authenticated_provenance_binding(provenance: AuthenticatedProvenance, identity: TrustedReleaseIdentity) -> None:
+    """Require authenticated inner-archive evidence to equal the approved identity."""
+    validate_trusted_release_identity(identity)
+    fields = ("repository", "source_ref", "source_sha", "event", "signer_workflow", "signer_revision", "run_id", "run_attempt", "archive_name", "archive_sha256", "archive_bytes", "platform", "image", "image_digest")
+    for field in fields:
+        expected_value = getattr(identity, field)
+        actual_value = getattr(provenance, field)
+        if field == "repository":
+            require(actual_value == expected_value, "authenticated provenance repository mismatch")
+        else:
+            require(actual_value == expected_value, f"authenticated provenance {field} mismatch")
+    require(str(provenance.repository_id) == str(identity.repository_id), "authenticated provenance repository ID mismatch")
+    require(provenance.artifact_class == identity.artifact_class, "authenticated provenance artifact class mismatch")
+    require(provenance.receipt.subject_digest == identity.archive_sha256, "authenticated provenance receipt digest mismatch")
+    require(provenance.receipt.run_invocation_uri.endswith(f"/actions/runs/{identity.run_id}/attempts/{identity.run_attempt}"), "authenticated provenance receipt run mismatch")
 
 
 def _gh_executable() -> str:
@@ -349,10 +741,25 @@ def run_gh_attestation_verify(
     return document[0]
 
 
-def fetch_run_metadata(repository: str, run_id: int, timeout_seconds: int = 30) -> dict[str, Any]:
+def _run_gh_api_json(endpoint: str, *, label: str, timeout_seconds: int = 30) -> Any:
+    """Run one bounded authenticated GitHub API request and parse JSON."""
+    try:
+        result = run_bounded([_gh_executable(), "api", endpoint], timeout_seconds=timeout_seconds, max_output_bytes=MAX_ARTIFACT_JSON_BYTES, label=label)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        fail(f"{label} unavailable or timed out: {error}")
+    require(len(result.stdout) <= MAX_ARTIFACT_JSON_BYTES and len(result.stderr) <= MAX_ARTIFACT_JSON_BYTES, f"{label} output exceeds the limit")
+    require(result.returncode == 0, f"{label} request failed")
+    try:
+        return json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError) as error:
+        fail(f"{label} returned malformed JSON: {error}")
+
+
+def fetch_run_metadata(repository: str, run_id: int, run_attempt: int | None = None, timeout_seconds: int = 30) -> dict[str, Any]:
     """Read authenticated GitHub Actions run metadata for independent correlation."""
     try:
-        result = run_bounded([_gh_executable(), "api", f"repos/{repository}/actions/runs/{run_id}"], timeout_seconds=timeout_seconds, max_output_bytes=MAX_VERIFIER_OUTPUT_BYTES, label="authenticated GitHub Actions run metadata")
+        endpoint = f"repos/{repository}/actions/runs/{run_id}" if run_attempt is None else f"repos/{repository}/actions/runs/{run_id}/attempts/{run_attempt}"
+        result = run_bounded([_gh_executable(), "api", endpoint], timeout_seconds=timeout_seconds, max_output_bytes=MAX_VERIFIER_OUTPUT_BYTES, label="authenticated GitHub Actions run metadata")
     except (OSError, subprocess.TimeoutExpired) as error:
         fail(f"authenticated GitHub Actions run metadata unavailable or timed out: {error}")
     require(len(result.stdout) <= MAX_VERIFIER_OUTPUT_BYTES and len(result.stderr) <= MAX_VERIFIER_OUTPUT_BYTES, "authenticated GitHub Actions run metadata output exceeds the limit")
@@ -365,6 +772,416 @@ def fetch_run_metadata(repository: str, run_id: int, timeout_seconds: int = 30) 
         fail(f"authenticated GitHub Actions run metadata is malformed: {error}")
     require(isinstance(metadata, dict), "authenticated GitHub Actions run metadata must be an object")
     return metadata
+
+
+def fetch_run_artifacts(repository: str, run_id: int, timeout_seconds: int = 30) -> dict[str, Any]:
+    """Read and validate one complete bounded artifact page for one run."""
+    require_string(repository, "repository")
+    require_int(run_id, "run_id", 1)
+    try:
+        result = run_bounded([_gh_executable(), "api", f"repos/{repository}/actions/runs/{run_id}/artifacts?per_page=100"], timeout_seconds=timeout_seconds, max_output_bytes=MAX_VERIFIER_OUTPUT_BYTES, label="authenticated GitHub Actions artifact metadata")
+    except (OSError, subprocess.TimeoutExpired) as error:
+        fail(f"authenticated GitHub Actions artifact metadata unavailable or timed out: {error}")
+    require(len(result.stdout) <= MAX_ARTIFACT_JSON_BYTES and len(result.stderr) <= MAX_ARTIFACT_JSON_BYTES, "authenticated GitHub Actions artifact metadata output exceeds the limit")
+    require(result.returncode == 0, "authenticated GitHub Actions artifact metadata request failed")
+    try:
+        response = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError) as error:
+        fail(f"authenticated GitHub Actions artifact metadata is malformed: {error}")
+    validate_artifact_api_response(response)
+    return response
+
+
+def _sha256_file(path: Path, maximum: int, label: str) -> tuple[str, int]:
+    """Hash a bounded regular file without following a symlink."""
+    require_regular_bounded(path, maximum, label)
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as stream:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            require(size <= maximum, f"{label} exceeds the size limit")
+            digest.update(chunk)
+    return digest.hexdigest(), size
+
+
+def _open_nofollow_regular(path: Path, maximum: int, label: str) -> tuple[int, int]:
+    """Open a bounded regular file without following symlinks where supported."""
+    try:
+        path_metadata = os.lstat(path)
+    except OSError as error:
+        fail(f"{label} is unavailable: {error}")
+    require(not stat.S_ISLNK(path_metadata.st_mode) and stat.S_ISREG(path_metadata.st_mode), f"{label} must be a regular non-symlink file")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags)
+        metadata = os.fstat(descriptor)
+    except OSError as error:
+        if descriptor is not None:
+            os.close(descriptor)
+        fail(f"{label} is unavailable: {error}")
+    try:
+        require(metadata.st_dev == path_metadata.st_dev and metadata.st_ino == path_metadata.st_ino, f"{label} changed during open")
+        require(stat.S_ISREG(metadata.st_mode), f"{label} must be a regular file")
+        require(metadata.st_size > 0 and metadata.st_size <= maximum, f"{label} is empty or oversized")
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor, metadata.st_size
+
+
+def open_zip_snapshot(path: Path) -> ZipSnapshot:
+    """Copy a ZIP into a private file, then retain one descriptor for all reads."""
+    source_fd, source_size = _open_nofollow_regular(path, MAX_ARTIFACT_BYTES, "artifact service ZIP")
+    snapshot_path: Path | None = None
+    snapshot_fd: int | None = None
+    try:
+        snapshot_fd, snapshot_name = tempfile.mkstemp(prefix=".runtime-artifact-zip-snapshot-")
+        snapshot_path = Path(snapshot_name)
+        digest = hashlib.sha256()
+        remaining = source_size
+        while remaining:
+            chunk = os.read(source_fd, min(1024 * 1024, remaining))
+            require(chunk, "artifact service ZIP changed while snapshotting")
+            written = 0
+            while written < len(chunk):
+                written += os.write(snapshot_fd, chunk[written:])
+            digest.update(chunk)
+            remaining -= len(chunk)
+        os.fsync(snapshot_fd)
+        os.fchmod(snapshot_fd, 0o600) if hasattr(os, "fchmod") else None
+        snapshot_metadata = os.fstat(snapshot_fd)
+        require(stat.S_ISREG(snapshot_metadata.st_mode) and snapshot_metadata.st_size == source_size, "artifact service ZIP snapshot identity mismatch")
+        os.lseek(snapshot_fd, 0, os.SEEK_SET)
+        return ZipSnapshot(snapshot_fd, snapshot_path, source_size, digest.hexdigest())
+    except Exception:
+        if snapshot_fd is not None:
+            try:
+                os.close(snapshot_fd)
+            except OSError:
+                pass
+        if snapshot_path is not None:
+            try:
+                snapshot_path.unlink()
+            except OSError:
+                pass
+        raise
+    finally:
+        os.close(source_fd)
+
+
+def close_zip_snapshot(snapshot: ZipSnapshot) -> None:
+    """Close and remove a private ZIP snapshot exactly once."""
+    try:
+        os.close(snapshot.fd)
+    finally:
+        try:
+            snapshot.path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            fail(f"artifact service ZIP snapshot cleanup failed: {error}")
+
+
+def _preflight_zip_snapshot(snapshot: ZipSnapshot) -> None:
+    """Bound the ZIP central directory before constructing ZipFile."""
+    read_size = min(snapshot.size, ZIP_EOCD_SEARCH_BYTES)
+    tail = os.pread(snapshot.fd, read_size, snapshot.size - read_size) if hasattr(os, "pread") else _read_snapshot_bytes(snapshot, snapshot.size - read_size, read_size)
+    offset = tail.rfind(b"PK\x05\x06")
+    require(offset >= 0 and len(tail) - offset >= ZIP_EOCD_BYTES, "artifact service ZIP end record is missing")
+    require(b"PK\x06\x06" not in tail and b"PK\x06\x07" not in tail, "ZIP64 records are unsupported")
+    fields = struct.unpack_from("<4s4H2LH", tail, offset)
+    _, disk, central_disk, entries_disk, entries_total, central_size, central_offset, comment_size = fields
+    eocd_offset = snapshot.size - len(tail) + offset
+    require(eocd_offset + ZIP_EOCD_BYTES + comment_size == snapshot.size, "artifact service ZIP EOCD placement or comment length is invalid")
+    require(disk == 0 and central_disk == 0 and entries_disk == entries_total, "multi-disk or contradictory ZIP metadata is unsupported")
+    require(entries_total <= MAX_ARTIFACT_ENTRIES, "artifact service ZIP entry count exceeds the limit")
+    require(central_size <= MAX_ZIP_CENTRAL_DIRECTORY_BYTES, "artifact service ZIP central directory exceeds the limit")
+    require(comment_size <= MAX_ZIP_COMMENT_BYTES, "artifact service ZIP comment exceeds the limit")
+    require(entries_total != 0xFFFF and central_size != 0xFFFFFFFF and central_offset != 0xFFFFFFFF, "ZIP64 metadata is unsupported")
+    require(central_offset + central_size == eocd_offset, "artifact service ZIP central directory placement is unsupported")
+    central = _read_snapshot_bytes(snapshot, central_offset, central_size)
+    position = 0
+    for _ in range(entries_total):
+        require(position + 46 <= len(central), "artifact service ZIP central directory is truncated")
+        require(central[position:position + 4] == b"PK\x01\x02", "artifact service ZIP central directory header is invalid")
+        name_size = int.from_bytes(central[position + 28:position + 30], "little")
+        extra_size = int.from_bytes(central[position + 30:position + 32], "little")
+        entry_comment_size = int.from_bytes(central[position + 32:position + 34], "little")
+        require(name_size <= MAX_ZIP_ENTRY_NAME_BYTES, "artifact service ZIP entry name exceeds the limit")
+        require(extra_size <= MAX_ZIP_EXTRA_BYTES and entry_comment_size <= MAX_ZIP_COMMENT_BYTES, "artifact service ZIP metadata exceeds the limit")
+        record_size = 46 + name_size + extra_size + entry_comment_size
+        require(position + record_size <= len(central), "artifact service ZIP central directory entry is truncated")
+        position += record_size
+    require(position == len(central), "artifact service ZIP central directory header count is contradictory")
+
+
+def _read_snapshot_bytes(snapshot: ZipSnapshot, offset: int, size: int) -> bytes:
+    """Read an exact range from the retained snapshot descriptor."""
+    os.lseek(snapshot.fd, offset, os.SEEK_SET)
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = os.read(snapshot.fd, min(1024 * 1024, remaining))
+        require(chunk, "artifact service ZIP snapshot ended unexpectedly")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _validate_artifact_metadata(artifact: dict[str, Any], request: ArtifactSelectionRequest, run_metadata: dict[str, Any], *, now: datetime) -> None:
+    """Validate strict artifact fields and correlate them to the exact attempt."""
+    require(type(artifact.get("id")) is int and artifact["id"] >= 1, "artifact ID is malformed")
+    require(isinstance(artifact.get("name"), str), "artifact name is malformed")
+    require(artifact.get("name") == request.artifact_name, "artifact name mismatch")
+    require(require_digest(artifact.get("digest"), "artifact.digest"), "artifact digest is malformed")
+    _require_bounded_int(artifact.get("size_in_bytes"), "artifact.size_in_bytes", 1, MAX_ARTIFACT_BYTES)
+    require(artifact.get("expired") is False, "artifact is expired")
+    created = _parse_timestamp(artifact.get("created_at"), "artifact.created_at")
+    expires = _parse_timestamp(artifact.get("expires_at"), "artifact.expires_at")
+    require(created <= expires and created <= now < expires, "artifact retention is stale, future-dated, or contradictory")
+    run = artifact.get("workflow_run")
+    require(isinstance(run, dict), "artifact workflow run metadata is missing")
+    require(type(run.get("id")) is int and run["id"] == request.run_id, "artifact workflow run ID mismatch")
+    require(type(run.get("repository_id")) is int and run["repository_id"] == request.repository_id, "artifact workflow repository ID mismatch")
+    require(type(run.get("head_repository_id")) is int and run["head_repository_id"] == request.run_head_repository_id, "artifact head repository ID mismatch")
+    require(run.get("head_branch") == request.run_head_ref.removeprefix("refs/heads/"), "artifact head branch mismatch")
+    require(run.get("head_sha") == request.run_head_sha, "artifact head SHA mismatch")
+    require(type(run_metadata.get("id")) is int and run_metadata["id"] == request.run_id, "artifact attempt correlation ID mismatch")
+    run_started = _parse_timestamp(run_metadata.get("run_started_at"), "run.run_started_at")
+    run_updated = _parse_timestamp(run_metadata.get("updated_at"), "run.updated_at")
+    require(run_started <= created <= run_updated, "artifact creation time is outside the exact attempt window")
+
+
+def _select_artifact_metadata(response: Any, request: ArtifactSelectionRequest, run_metadata: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+    """Select by exact identity only after complete response validation."""
+    artifacts = validate_artifact_api_response(response)
+    matches = [artifact for artifact in artifacts if artifact.get("name") == request.artifact_name]
+    require(len(matches) == 1, "exact attempt-qualified artifact name is missing or ambiguous")
+    artifact = matches[0]
+    _validate_artifact_metadata(artifact, request, run_metadata, now=now)
+    return artifact
+
+
+def _download_artifact_service_zip(repository: str, artifact_id: int, destination: Path, *, timeout_seconds: int = 90) -> None:
+    """Retrieve one exact artifact ZIP through gh with bounded bytes and deadline."""
+    require_int(artifact_id, "artifact_id", 1)
+    require(not destination.exists(), "artifact service ZIP destination already exists")
+    try:
+        parent_metadata = os.lstat(destination.parent)
+    except OSError as error:
+        fail(f"artifact service ZIP destination parent is unavailable: {error}")
+    require(stat.S_ISDIR(parent_metadata.st_mode) and not stat.S_ISLNK(parent_metadata.st_mode), "artifact service ZIP destination parent is unsafe")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    descriptor = os.open(destination, flags, 0o600)
+    try:
+        process = subprocess.Popen([_gh_executable(), "api", f"repos/{repository}/actions/artifacts/{artifact_id}/zip"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError:
+        os.close(descriptor)
+        destination.unlink(missing_ok=True)
+        raise
+    assert process.stdout is not None and process.stderr is not None
+    streams = (process.stdout, process.stderr)
+    queues = (queue.Queue(maxsize=1), queue.Queue(maxsize=1))
+    cancelled = threading.Event()
+    readers: list[threading.Thread] = []
+
+    def drain(stream: Any, output_queue: queue.Queue[bytes | None]) -> None:
+        try:
+            while not cancelled.is_set():
+                chunk = stream.read(65536)
+                if not chunk:
+                    break
+                while not cancelled.is_set():
+                    try:
+                        output_queue.put(chunk, timeout=0.05)
+                        break
+                    except queue.Full:
+                        continue
+        finally:
+            while not cancelled.is_set():
+                try:
+                    output_queue.put(None, timeout=0.05)
+                    break
+                except queue.Full:
+                    continue
+
+    for index, stream in enumerate(streams):
+        reader = threading.Thread(name=f"runtime-artifact-zip-reader-{index}", target=drain, args=(stream, queues[index]), daemon=True)
+        reader.start()
+        readers.append(reader)
+    deadline = time.monotonic() + timeout_seconds
+    total = 0
+    overflow = False
+    stderr = bytearray()
+    finished = [False, False]
+    try:
+        while True:
+            if time.monotonic() > deadline:
+                process.kill()
+                raise subprocess.TimeoutExpired(process.args, timeout_seconds)
+            progress = False
+            for index, output_queue in enumerate(queues):
+                while True:
+                    try:
+                        item = output_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    progress = True
+                    if item is None:
+                        finished[index] = True
+                        break
+                    if index == 0:
+                        total += len(item)
+                        if total > MAX_ARTIFACT_BYTES:
+                            overflow = True
+                            process.kill()
+                            break
+                        written = 0
+                        while written < len(item):
+                            written += os.write(descriptor, item[written:])
+                    else:
+                        stderr.extend(item)
+                        if len(stderr) > MAX_VERIFIER_OUTPUT_BYTES:
+                            process.kill()
+                            fail("exact artifact ZIP retrieval stderr exceeds the limit")
+                if overflow:
+                    break
+            if overflow:
+                break
+            if all(finished):
+                break
+            if not progress:
+                time.sleep(0.005)
+        return_code = process.wait(timeout=2)
+        require(not overflow and total > 0, "artifact service ZIP output exceeded the limit or was empty")
+        require(return_code == 0, f"exact artifact ZIP retrieval failed: {bytes(stderr).decode('utf-8', 'replace')[-400:]}")
+        os.fsync(descriptor)
+    except Exception:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=2)
+        os.close(descriptor)
+        descriptor = -1
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        cancelled.set()
+        if descriptor >= 0:
+            os.close(descriptor)
+        for stream in streams:
+            stream.close()
+        for reader in readers:
+            reader.join(timeout=2)
+
+
+def inspect_artifact_service_zip_snapshot(snapshot: ZipSnapshot, archive_name: str, expected_digest: str | None = None, expected_bytes: int | None = None) -> tuple[str, int]:
+    """Hash and parse one retained ZIP snapshot, never reopening its pathname."""
+    _preflight_zip_snapshot(snapshot)
+    try:
+        with os.fdopen(os.dup(snapshot.fd), "rb", closefd=True) as stream:
+            with ZipFile(stream) as archive:
+                infos = archive.infolist()
+                require(0 < len(infos) <= MAX_ARTIFACT_ENTRIES, "artifact service ZIP entry count is invalid")
+                names: set[str] = set()
+                expanded = 0
+                inner = []
+                for info in infos:
+                    name = info.filename.replace("\\", "/")
+                    require(name == info.filename and name not in names and not name.startswith("/") and ".." not in name.split("/"), "artifact service ZIP has an unsafe or duplicate path")
+                    require(len(name.encode("utf-8")) <= MAX_ZIP_ENTRY_NAME_BYTES, "artifact service ZIP entry name exceeds the limit")
+                    require(len(info.extra) <= MAX_ZIP_EXTRA_BYTES and len(info.comment) <= MAX_ZIP_COMMENT_BYTES, "artifact service ZIP metadata exceeds the limit")
+                    require(info.file_size <= MAX_INNER_ARCHIVE_BYTES and info.compress_size <= MAX_ARTIFACT_BYTES, "artifact service ZIP entry exceeds the size limit")
+                    expanded += info.file_size
+                    require(expanded <= MAX_ZIP_EXPANDED_BYTES, "artifact service ZIP expanded size exceeds the limit")
+                    names.add(name)
+                    if name == archive_name:
+                        inner.append(info)
+                require(len(inner) == 1, "artifact service ZIP inner runtime archive is missing or ambiguous")
+                info = inner[0]
+                require(not info.is_dir(), "inner runtime archive is a directory")
+                digest = hashlib.sha256()
+                size = 0
+                with archive.open(info, "r") as inner_stream:
+                    while True:
+                        chunk = inner_stream.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        size += len(chunk)
+                        require(size <= MAX_INNER_ARCHIVE_BYTES, "inner runtime archive exceeds the limit")
+                        digest.update(chunk)
+                result = digest.hexdigest()
+                require(expected_digest is None or result == expected_digest, "inner runtime archive digest mismatch")
+                require(expected_bytes is None or size == expected_bytes, "inner runtime archive byte count mismatch")
+                return result, size
+    except BadZipFile as error:
+        fail(f"artifact service ZIP is malformed: {error}")
+
+
+def verify_artifact_service_zip_snapshot(snapshot: ZipSnapshot, expected_digest: str, expected_bytes: int) -> None:
+    """Verify outer service-ZIP bytes against independently supplied identity evidence."""
+    require(snapshot.sha256 == require_digest(expected_digest, "expected artifact service ZIP digest"), "downloaded artifact service ZIP digest mismatch")
+    require(snapshot.size == _require_bounded_int(expected_bytes, "expected artifact service ZIP bytes", 1, MAX_ARTIFACT_BYTES), "downloaded artifact service ZIP byte count mismatch")
+
+
+def select_artifact_request(request: ArtifactSelectionRequest, *, service_zip_output: Path | None = None, service_zip: Path | None = None, now: datetime | None = None) -> ExactArtifactSelection:
+    """Fetch, correlate, and optionally byte-verify one exact artifact."""
+    validate_selection_request(request)
+    run_metadata = fetch_run_metadata(request.repository, request.run_id, request.run_attempt)
+    response = fetch_run_artifacts(request.repository, request.run_id)
+    current = (now or _now_utc()).astimezone(timezone.utc)
+    validate_exact_run_attempt_request_metadata(run_metadata, request, now=current)
+    artifact = _select_artifact_metadata(response, request, run_metadata, now=current)
+    require(service_zip_output is None or service_zip is None, "artifact service ZIP input and output are mutually exclusive")
+    selected_path = service_zip
+    downloaded = False
+    if service_zip_output is not None:
+        _download_artifact_service_zip(request.repository, artifact["id"], service_zip_output)
+        selected_path = service_zip_output
+        downloaded = True
+    if selected_path is None:
+        return ExactArtifactSelection(artifact["id"], artifact["name"], require_digest(artifact["digest"], "artifact.digest"), artifact["size_in_bytes"], request.archive_name, None, None, False)
+    try:
+        snapshot = open_zip_snapshot(selected_path)
+    except Exception:
+        if downloaded:
+            selected_path.unlink(missing_ok=True)
+        raise
+    verified = False
+    try:
+        service_digest = snapshot.sha256
+        service_bytes = snapshot.size
+        verify_artifact_service_zip_snapshot(snapshot, artifact["digest"], artifact["size_in_bytes"])
+        inner_digest, inner_bytes = inspect_artifact_service_zip_snapshot(snapshot, request.archive_name)
+        verified = True
+        return ExactArtifactSelection(artifact["id"], artifact["name"], service_digest, service_bytes, request.archive_name, inner_digest, inner_bytes, True)
+    finally:
+        close_zip_snapshot(snapshot)
+        if downloaded and not verified:
+            selected_path.unlink(missing_ok=True)
+
+
+def inspect_artifact_service_zip(service_zip: Path, identity: TrustedReleaseIdentity) -> tuple[str, int]:
+    """Read exactly one inner runtime archive from GitHub's artifact-service ZIP."""
+    snapshot = open_zip_snapshot(service_zip)
+    try:
+        validate_trusted_release_identity(identity)
+        verify_artifact_service_zip_snapshot(snapshot, identity.artifact_service_zip_sha256, identity.artifact_service_zip_bytes)
+        return inspect_artifact_service_zip_snapshot(snapshot, identity.archive_name, identity.archive_sha256, identity.archive_bytes)
+    finally:
+        close_zip_snapshot(snapshot)
 
 
 def validate_run_metadata(metadata: dict[str, Any], expected: dict[str, Any]) -> dict[str, Any] | None:
@@ -380,6 +1197,16 @@ def validate_run_metadata(metadata: dict[str, Any], expected: dict[str, Any]) ->
     owner_data = repository_data.get("owner")
     if expected.get("repository_owner_id") is not None:
         require(isinstance(owner_data, dict) and str(owner_data.get("id")) == str(expected["repository_owner_id"]), "GitHub run metadata repository owner ID mismatch")
+    head_repository = metadata.get("head_repository")
+    require(isinstance(head_repository, dict), "GitHub run metadata head repository evidence is missing")
+    head_owner = head_repository.get("owner")
+    require(
+        str(head_repository.get("id")) == str(expected["repository_id"])
+        and head_repository.get("full_name") == expected["repository"]
+        and isinstance(head_owner, dict)
+        and str(head_owner.get("id")) == str(expected["repository_owner_id"]),
+        "GitHub run metadata head repository identity mismatch",
+    )
     if expected["event"] == "pull_request":
         require(metadata.get("head_sha") == expected["pr_head_sha"], "GitHub run metadata PR head SHA mismatch")
         require(metadata.get("head_branch") == expected["pr_head_ref"], "GitHub run metadata PR head ref mismatch")
@@ -390,8 +1217,22 @@ def validate_run_metadata(metadata: dict[str, Any], expected: dict[str, Any]) ->
         head = pull_request.get("head")
         base = pull_request.get("base")
         require(isinstance(head, dict) and isinstance(base, dict), "GitHub run metadata PR head/base evidence is incomplete")
-        require(head.get("sha") == expected["pr_head_sha"] and head.get("ref") == expected["pr_head_ref"], "GitHub run metadata PR head association mismatch")
-        require(base.get("sha") == expected["pr_base_sha"] and base.get("ref") == expected["pr_base_ref"], "GitHub run metadata PR base association mismatch")
+        head_repo = head.get("repo")
+        base_repo = base.get("repo")
+        require(
+            head.get("sha") == expected["pr_head_sha"]
+            and head.get("ref") == expected["pr_head_ref"]
+            and isinstance(head_repo, dict)
+            and str(head_repo.get("id")) == str(expected["repository_id"]),
+            "GitHub run metadata PR head association mismatch",
+        )
+        require(
+            base.get("sha") == expected["pr_base_sha"]
+            and base.get("ref") == expected["pr_base_ref"]
+            and isinstance(base_repo, dict)
+            and str(base_repo.get("id")) == str(expected["repository_id"]),
+            "GitHub run metadata PR base association mismatch",
+        )
         return {"number": expected["pr_number"], "headSha": expected["pr_head_sha"], "headRef": expected["pr_head_ref"], "baseSha": expected["pr_base_sha"], "baseRef": expected["pr_base_ref"]}
     require(metadata.get("head_sha") == expected["source_sha"], "GitHub run metadata dev-push SHA mismatch")
     expected_branch = expected["source_ref"].removeprefix("refs/heads/")
@@ -532,16 +1373,35 @@ def evaluate_production_eligibility(
     provenance: object,
     expected: object,
     authorization: object | None,
+    *,
+    now: datetime | None = None,
 ) -> EligibilityResult:
     """Evaluate future production eligibility from typed, independently supplied inputs only."""
     if not isinstance(provenance, AuthenticatedProvenance):
         return EligibilityResult(False, "unverifiable-provenance", False, "serialized or unverified provenance cannot authorize production")
-    if provenance.artifact_class != PRODUCTION_ARTIFACT_CLASS:
+    if provenance.artifact_class not in {PRODUCTION_ARTIFACT_CLASS, PRODUCTION_CANDIDATE_ARTIFACT_CLASS}:
         return EligibilityResult(False, "development-artifact-class", False, "development artifact is not production eligible")
     if not isinstance(expected, TrustedReleaseIdentity):
         return EligibilityResult(False, "missing-trusted-release-identity", False, "trusted expected release identity is not available")
     if not isinstance(authorization, IndependentReleaseAuthorization):
         return EligibilityResult(False, "missing-independent-authorization", False, "independent release authorization is required")
+    try:
+        validate_trusted_release_identity(expected)
+    except ProvenanceError as error:
+        return EligibilityResult(False, "invalid-release-identity", False, str(error))
+    try:
+        validate_independent_authorization(authorization, expected, now=now)
+    except ProvenanceError as error:
+        detail = str(error)
+        if "recovery authorization" in detail:
+            return EligibilityResult(False, "recovery-authorization-required", False, detail)
+        if "stale" in detail or "not yet valid" in detail:
+            return EligibilityResult(False, "stale-independent-authorization", False, detail)
+        return EligibilityResult(False, "invalid-independent-authorization", False, detail)
+    try:
+        validate_authenticated_provenance_binding(provenance, expected)
+    except ProvenanceError as error:
+        return EligibilityResult(False, "provenance-identity-mismatch", False, str(error))
     return EligibilityResult(False, "production-producer-unavailable", False, "no authorized production provenance producer exists in this slice")
 
 
@@ -552,17 +1412,45 @@ def evaluate_synthetic_production_policy_fixture(fixture: dict[str, Any]) -> Eli
     return EligibilityResult(True, "synthetic-policy-fixture", False, "synthetic policy result is non-authoritative and cannot authorize production")
 
 
+def selection_request_from_json(value: Any) -> ArtifactSelectionRequest:
+    """Parse a bounded, non-authoritative exact-selection request."""
+    require(isinstance(value, dict), "artifact selection request must be an object")
+    fields = (
+        "repository", "repository_id", "repository_owner_id", "source_ref", "source_sha", "event",
+        "signer_workflow", "signer_revision", "run_id", "run_attempt", "artifact_name", "artifact_class",
+        "archive_name", "platform", "image", "image_digest", "authorization_context", "run_head_repository",
+        "run_head_repository_id", "run_head_repository_owner_id", "run_head_ref", "run_head_sha",
+        "pull_request_number", "pull_request_head_sha", "pull_request_head_ref", "pull_request_base_sha", "pull_request_base_ref",
+    )
+    require(set(value) == set(fields), "artifact selection request has missing or unexpected fields")
+    try:
+        request = ArtifactSelectionRequest(**{field: value[field] for field in fields})
+    except TypeError as error:
+        fail(f"artifact selection request is malformed: {error}")
+    validate_selection_request(request)
+    return request
+
+
 def parse_args() -> argparse.Namespace:
     """Parse the synthetic policy-fixture command-line interface."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--evaluate-synthetic-policy", action="store_true")
     parser.add_argument("--fixture")
+    parser.add_argument("--selection-request")
+    parser.add_argument("--selection-service-zip")
+    parser.add_argument("--selection-download-service-zip")
     return parser.parse_args()
 
 
 def main() -> int:
     """Evaluate only an explicitly synthetic policy fixture for diagnostics."""
     args = parse_args()
+    if args.selection_request:
+        request = selection_request_from_json(_read_bounded_json(Path(args.selection_request), "artifact selection request"))
+        require(args.selection_service_zip is None or args.selection_download_service_zip is None, "selection ZIP input and download are mutually exclusive")
+        selected = select_artifact_request(request, service_zip=Path(args.selection_service_zip) if args.selection_service_zip else None, service_zip_output=Path(args.selection_download_service_zip) if args.selection_download_service_zip else None)
+        print(json.dumps({"authoritative": False, "byteVerified": selected.byte_verified, "selection": {"artifactId": selected.artifact_id, "artifactName": selected.artifact_name, "artifactServiceZipSha256": selected.artifact_service_zip_sha256, "artifactServiceZipBytes": selected.artifact_service_zip_bytes, "archiveName": selected.archive_name, "archiveSha256": selected.archive_sha256, "archiveBytes": selected.archive_bytes}}, indent=2))
+        return 0
     if not args.evaluate_synthetic_policy or not args.fixture:
         raise SystemExit("--evaluate-synthetic-policy and --fixture are required")
     fixture = json.loads(Path(args.fixture).read_text(encoding="utf-8"))

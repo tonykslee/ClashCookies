@@ -149,6 +149,128 @@ jobs:
           actual="$("$GH_ATTESTATION_CLI" version | awk 'NR == 1 { print $3 }')"
           test "$actual" = "$GH_ATTESTATION_CLI_VERSION"
 
+      - name: Select exact artifact-service ZIP and inner archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNTIME_ARTIFACT_REPOSITORY_ID: ${{ github.repository_id }}
+          RUNTIME_ARTIFACT_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          RUNTIME_ARTIFACT_SIGNER_REVISION: ${{ github.workflow_sha }}
+          RUNTIME_ARTIFACT_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          RUNTIME_ARTIFACT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+          RUNTIME_ARTIFACT_PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+          RUNTIME_ARTIFACT_PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          RUNTIME_ARTIFACT_PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          RUNTIME_ARTIFACT_RUN_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          RUNTIME_ARTIFACT_RUN_HEAD_REPOSITORY_ID: ${{ github.event.pull_request.head.repo.id || github.repository_id }}
+          RUNTIME_ARTIFACT_RUN_HEAD_OWNER_ID: ${{ github.event.pull_request.head.repo.owner.id || github.repository_owner_id }}
+          RUNTIME_ARTIFACT_RUN_HEAD_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          RUNTIME_ARTIFACT_RUN_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          archive="$(find "$RUNNER_TEMP/retrieved-runtime-artifact" -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+          test -n "$archive"
+          archive_name="$(basename "$archive")"
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --argjson repository_id "$RUNTIME_ARTIFACT_REPOSITORY_ID" \
+            --argjson repository_owner_id "$RUNTIME_ARTIFACT_REPOSITORY_OWNER_ID" \
+            --arg source_ref "$GITHUB_REF" \
+            --arg source_sha "$GITHUB_SHA" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg signer_workflow "$RUNTIME_ARTIFACT_SIGNER_WORKFLOW" \
+            --arg signer_revision "$RUNTIME_ARTIFACT_SIGNER_REVISION" \
+            --argjson run_id "$GITHUB_RUN_ID" \
+            --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg artifact_name "runtime-artifact-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --arg artifact_class "development-runtime-evidence" \
+            --arg archive_name "$archive_name" \
+            --arg platform "$RUNTIME_ARTIFACT_PLATFORM" \
+            --arg image "$RUNTIME_ARTIFACT_IMAGE" \
+            --arg image_digest "${RUNTIME_ARTIFACT_IMAGE##*@}" \
+            --arg authorization_context "ci-selection-only" \
+            --arg run_head_repository "$RUNTIME_ARTIFACT_RUN_HEAD_REPOSITORY" \
+            --argjson run_head_repository_id "$RUNTIME_ARTIFACT_RUN_HEAD_REPOSITORY_ID" \
+            --argjson run_head_repository_owner_id "$RUNTIME_ARTIFACT_RUN_HEAD_OWNER_ID" \
+            --arg run_head_ref "$RUNTIME_ARTIFACT_RUN_HEAD_REF" \
+            --arg run_head_sha "$RUNTIME_ARTIFACT_RUN_HEAD_SHA" \
+            --arg pr_number "$RUNTIME_ARTIFACT_PR_NUMBER" \
+            --arg pr_head_sha "$RUNTIME_ARTIFACT_PR_HEAD_SHA" \
+            --arg pr_head_ref "$RUNTIME_ARTIFACT_PR_HEAD_REF" \
+            --arg pr_base_sha "$RUNTIME_ARTIFACT_PR_BASE_SHA" \
+            --arg pr_base_ref "$RUNTIME_ARTIFACT_PR_BASE_REF" \
+            '{repository:$repository,repository_id:$repository_id,repository_owner_id:$repository_owner_id,source_ref:$source_ref,source_sha:$source_sha,event:$event,signer_workflow:$signer_workflow,signer_revision:$signer_revision,run_id:$run_id,run_attempt:$run_attempt,artifact_name:$artifact_name,artifact_class:$artifact_class,archive_name:$archive_name,platform:$platform,image:$image,image_digest:$image_digest,authorization_context:$authorization_context,run_head_repository:$run_head_repository,run_head_repository_id:$run_head_repository_id,run_head_repository_owner_id:$run_head_repository_owner_id,run_head_ref:(if $event == "push" then $source_ref else ("refs/heads/" + $run_head_ref) end),run_head_sha:$run_head_sha,pull_request_number:(if $pr_number == "" then null else ($pr_number|tonumber) end),pull_request_head_sha:(if $pr_head_sha == "" then null else $pr_head_sha end),pull_request_head_ref:(if $pr_head_ref == "" then null else ("refs/heads/" + $pr_head_ref) end),pull_request_base_sha:(if $pr_base_sha == "" then null else $pr_base_sha end),pull_request_base_ref:(if $pr_base_ref == "" then null else ("refs/heads/" + $pr_base_ref) end)}' \
+            > "$RUNNER_TEMP/exact-selection-request.json"
+          python scripts/runtime_artifact_provenance.py \
+            --selection-request "$RUNNER_TEMP/exact-selection-request.json" \
+            --selection-download-service-zip "$RUNNER_TEMP/artifact-service.zip" \
+            | tee "$RUNNER_TEMP/exact-selection.json"
+          jq -e '.authoritative == false and .byteVerified == true and .selection.archiveName == $name and .selection.archiveSha256 == $digest' \
+            --arg name "$archive_name" \
+            --arg digest "$(sha256sum "$archive" | awk '{ print $1 }')" \
+            "$RUNNER_TEMP/exact-selection.json" >/dev/null
+
+      - name: Exercise real API and ZIP negative mutations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" > "$RUNNER_TEMP/exact-run-attempt.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" > "$RUNNER_TEMP/run-artifacts.json"
+          python - "$RUNNER_TEMP/exact-selection-request.json" "$RUNNER_TEMP/exact-run-attempt.json" "$RUNNER_TEMP/run-artifacts.json" "$RUNNER_TEMP/artifact-service.zip" "$RUNNER_TEMP/exact-selection.json" <<'PY'
+          import copy
+          import json
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          import runtime_artifact_provenance as provenance
+
+          request = provenance.selection_request_from_json(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")))
+          run_metadata = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          artifact_response = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+          selected = json.loads(Path(sys.argv[5]).read_text(encoding="utf-8"))["selection"]
+          captured_now = datetime.now(timezone.utc)
+
+          def expect_rejection(label, reason, operation):
+              try:
+                  operation()
+              except provenance.ProvenanceError as error:
+                  assert reason in str(error), f"{label} rejected for unexpected reason: {error}"
+                  return
+              raise AssertionError(f"{label} was accepted")
+
+          exact_artifact = provenance._select_artifact_metadata(artifact_response, request, run_metadata, now=captured_now)
+          provenance.validate_exact_run_attempt_request_metadata(run_metadata, request, now=captured_now)
+          assert exact_artifact["id"] == selected["artifactId"], "unmodified real API evidence did not select the downloaded artifact"
+
+          wrong_run = copy.deepcopy(run_metadata)
+          wrong_run["head_sha"] = "0" * 40
+          expected_source_reason = "exact PR run head mismatch" if request.event == "pull_request" else "main/development push source SHA mismatch"
+          expect_rejection("wrong real run head SHA", expected_source_reason, lambda: provenance.validate_exact_run_attempt_request_metadata(wrong_run, request, now=captured_now))
+
+          exact_artifacts = [item for item in artifact_response["artifacts"] if item.get("name") == request.artifact_name]
+          assert len(exact_artifacts) == 1, "real exact artifact is missing or ambiguous"
+          wrong_artifact = copy.deepcopy(exact_artifacts[0])
+          wrong_artifact["workflow_run"]["head_repository_id"] = request.repository_id + 1
+          wrong_response = {"total_count": 1, "artifacts": [wrong_artifact]}
+          expect_rejection("wrong real artifact head repository", "artifact head repository ID mismatch", lambda: provenance._select_artifact_metadata(wrong_response, request, run_metadata, now=captured_now))
+
+          duplicate = copy.deepcopy(exact_artifacts[0])
+          duplicate["name"] = "different-artifact-name"
+          duplicate_response = {"total_count": 2, "artifacts": [exact_artifacts[0], duplicate]}
+          expect_rejection("duplicate real artifact ID across names", "duplicate artifact ID", lambda: provenance.validate_artifact_api_response(duplicate_response))
+          expect_rejection("truncated real artifact page", "pagination is incomplete", lambda: provenance.validate_artifact_api_response({"total_count": 2, "artifacts": [exact_artifacts[0]]}))
+
+          source = Path(sys.argv[4])
+          snapshot = provenance.open_zip_snapshot(source)
+          try:
+              expect_rejection("wrong real outer ZIP digest", "downloaded artifact service ZIP digest mismatch", lambda: provenance.verify_artifact_service_zip_snapshot(snapshot, "0" * 64, selected["artifactServiceZipBytes"]))
+              expect_rejection("wrong real inner archive digest", "inner runtime archive digest mismatch", lambda: provenance.inspect_artifact_service_zip_snapshot(snapshot, selected["archiveName"], "0" * 64, selected["archiveBytes"]))
+          finally:
+              provenance.close_zip_snapshot(snapshot)
+          print("unmodified real API evidence passed; real API, outer ZIP, and inner archive negative mutations rejected")
+          PY
+
       - name: Validate retrieved bytes and safely extract
         env:
           GH_TOKEN: ${{ github.token }}

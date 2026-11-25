@@ -182,7 +182,7 @@ const args = process.argv.slice(2);
 const pick = (name) => args[args.indexOf(name) + 1];
 if (args[0] === "version") { console.log("gh version 2.89.0 (fixture)"); process.exit(0); }
 if (args[0] === "api") {
-  console.log(JSON.stringify({ id: 1, head_sha: "${"d".repeat(40)}", event: "pull_request", run_attempt: 1, path: ".github/workflows/runtime-artifact.yml", head_branch: "feature/test", repository: { full_name: "test/test", id: "123456789", owner: { id: "987654321" } }, pull_requests: [{ number: 1, head: { sha: "${"d".repeat(40)}", ref: "feature/test" }, base: { sha: "${"e".repeat(40)}", ref: "dev" } }] }));
+  console.log(JSON.stringify({ id: 1, head_sha: "${"d".repeat(40)}", event: "pull_request", run_attempt: 1, path: ".github/workflows/runtime-artifact.yml", head_branch: "feature/test", repository: { full_name: "test/test", id: "123456789", owner: { id: "987654321" } }, head_repository: { full_name: "test/test", id: "123456789", owner: { id: "987654321" } }, pull_requests: [{ number: 1, head: { sha: "${"d".repeat(40)}", ref: "feature/test", repo: { id: "123456789" } }, base: { sha: "${"e".repeat(40)}", ref: "dev", repo: { id: "123456789" } } }] }));
   process.exit(0);
 }
 if (args[0] !== "attestation" || args[1] !== "verify") process.exit(64);
