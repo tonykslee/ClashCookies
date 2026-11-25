@@ -53,6 +53,10 @@ const cocQueueMock = vi.hoisted(() => {
   };
 });
 
+const homeAnalyticsMock = vi.hoisted(() => ({
+  getAnalyticsForPlayers: vi.fn(),
+}));
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
@@ -61,12 +65,17 @@ vi.mock("../src/services/CoCQueueContext", () => ({
   runWithCoCQueueContext: cocQueueMock.runWithCoCQueueContext,
 }));
 
+vi.mock("../src/services/HomeMembershipAnalyticsService", () => ({
+  homeMembershipAnalyticsService: homeAnalyticsMock,
+}));
+
 import { Accounts } from "../src/commands/Accounts";
 
 function makeInteraction(input?: {
   visibility?: string | null;
   tag?: string | null;
   discordUserId?: string | null;
+  guildMember?: { joinedAt?: Date | null; joinedTimestamp?: number | null } | null;
 }) {
   const collectorHandlers: Record<string, any> = {};
   const collector = {
@@ -75,8 +84,13 @@ function makeInteraction(input?: {
       return collector;
     }),
   };
+  const guildMemberFetch = vi.fn().mockResolvedValue(input?.guildMember ?? null);
   return {
     guildId: "123456789012345678",
+    guild: {
+      id: "123456789012345678",
+      members: { fetch: guildMemberFetch },
+    },
     id: "777777777777777777",
     user: { id: "111111111111111111" },
     options: {
@@ -98,6 +112,7 @@ function makeInteraction(input?: {
     }),
     __collector: collector,
     __collectorHandlers: collectorHandlers,
+    __guildMemberFetch: guildMemberFetch,
   };
 }
 
@@ -255,6 +270,7 @@ describe("/accounts command", () => {
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    homeAnalyticsMock.getAnalyticsForPlayers.mockResolvedValue([]);
   });
 
   it("registers discord-id as a native User option without autocomplete", () => {
@@ -1046,6 +1062,7 @@ describe("/accounts command", () => {
       "**[New Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=GRJ0289)**",
     );
     expect(prismaMock.trackedClanRep.findMany).toHaveBeenCalledTimes(2);
+    expect(homeAnalyticsMock.getAnalyticsForPlayers).toHaveBeenCalledTimes(2);
     expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { playerTag: "#PYLQ0289" },
@@ -1193,6 +1210,109 @@ describe("/accounts command", () => {
         updatedAt: true,
       },
     });
+  });
+
+  it("renders per-account tenure and the displayed user's current server membership timestamp", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        discordUserId: "111111111111111111",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        currentClanTag: "#PQL0289",
+        currentClanName: "Current Clan",
+      }),
+    ]);
+    homeAnalyticsMock.getAnalyticsForPlayers.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        homeMembershipPeriodId: "period-1",
+        homeClanTag: "#PQL0289",
+        clanTenureSyncs: 63,
+        clanTenureIsLowerBound: false,
+        clanStreakSyncs: 31,
+        clanStreakIsLowerBound: false,
+        allianceStreakSyncs: 118,
+        allianceStreakIsLowerBound: false,
+      },
+    ]);
+    const interaction = makeInteraction({
+      guildMember: { joinedTimestamp: 1_750_000_000_000 },
+    });
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    const description = getEmbedDescription(interaction);
+    expect(description).toContain(
+      "Alliance tenure: unavailable · Server member since: <t:1750000000:R>",
+    );
+    expect(description).toContain(
+      "C = Clan Tenure • S = Clan Streak • A = Alliance Streak",
+    );
+    expect(description).toContain("· C63/S31/A118");
+    expect(interaction.__guildMemberFetch).toHaveBeenCalledWith("111111111111111111");
+    expect(homeAnalyticsMock.getAnalyticsForPlayers).toHaveBeenCalledTimes(1);
+    expect(homeAnalyticsMock.getAnalyticsForPlayers).toHaveBeenCalledWith({
+      guildId: "123456789012345678",
+      playerTags: ["#PYLQ0289"],
+    });
+  });
+
+  it("uses the selected Discord user's guild membership instead of the invoker's", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({ currentClanTag: "#PQL0289", currentClanName: "Current Clan" }),
+    ]);
+    const interaction = makeInteraction({
+      discordUserId: "222222222222222222",
+      guildMember: { joinedAt: new Date("2026-04-20T00:00:00.000Z") },
+    });
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    expect(interaction.__guildMemberFetch).toHaveBeenCalledWith("222222222222222222");
+    expect(interaction.__guildMemberFetch).not.toHaveBeenCalledWith("111111111111111111");
+    expect(getEmbedDescription(interaction)).toContain(
+      "Server member since: <t:1776643200:R>",
+    );
+  });
+
+  it("keeps accounts usable with unavailable member and tenure evidence", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        discordUserId: "111111111111111111",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({ currentClanTag: "#PQL0289", currentClanName: "Current Clan" }),
+    ]);
+    homeAnalyticsMock.getAnalyticsForPlayers.mockRejectedValue(new Error("analytics unavailable"));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const interaction = makeInteraction({ guildMember: null });
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    const description = getEmbedDescription(interaction);
+    expect(description).toContain("Alliance tenure: unavailable · Server member since: unavailable");
+    expect(description).toContain("C—/S—/A—");
+    expect(description).toContain("Current Alpha");
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("stage=tenure_lookup_failed"));
+    warnSpy.mockRestore();
   });
 
   it("renders improved PlayerCurrent data when tag lookup resolves a linked Discord user", async () => {

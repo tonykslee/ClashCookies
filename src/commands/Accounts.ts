@@ -28,6 +28,15 @@ import {
   type AccountDisplayRow,
 } from "../services/AccountDisplayService";
 import { toFailureTelemetry } from "../services/telemetry/ingest";
+import {
+  formatMembershipTenureLabel,
+  MEMBERSHIP_TENURE_LEGEND,
+  type MembershipTenureDisplayInput,
+} from "../helper/membershipTenure";
+import {
+  homeMembershipAnalyticsService,
+  type HomeMembershipAnalyticsResult,
+} from "../services/HomeMembershipAnalyticsService";
 
 type ClanGroup = {
   key: string;
@@ -55,6 +64,12 @@ const ACCOUNTS_DESCRIPTION_RESERVE = 100;
 const ACCOUNTS_USABLE_DESCRIPTION_LIMIT = ACCOUNTS_DESCRIPTION_LIMIT - ACCOUNTS_DESCRIPTION_RESERVE;
 const ACCOUNTS_TRUNCATION_LINE = "\u2026and more accounts not shown.";
 const ACCOUNTS_REFRESH_QUEUE_SOURCE = "accounts:list:refresh";
+const ACCOUNTS_TENURE_LEGEND = MEMBERSHIP_TENURE_LEGEND;
+
+type AccountsGuildMember = {
+  joinedAt?: Date | null;
+  joinedTimestamp?: number | null;
+};
 
 function normalizeTag(input: string): string {
   return normalizeClashTagInput(input);
@@ -114,19 +129,31 @@ function buildAccountGroupBlockLines(
   return lines;
 }
 
-function renderAccountPageText(lines: string[], linkedDiscordLine: string | null): string {
+function renderAccountPageText(
+  lines: string[],
+  linkedDiscordLine: string | null,
+  headerLines: string[],
+): string {
   const body = lines.join("\n").trim();
-  if (!body) return linkedDiscordLine ? linkedDiscordLine : "";
-  return linkedDiscordLine ? `${linkedDiscordLine}\n\n${body}` : body;
+  const prefixLines = [
+    ...(linkedDiscordLine ? [linkedDiscordLine] : []),
+    ...headerLines,
+  ];
+  const prefix = linkedDiscordLine
+    ? `${linkedDiscordLine}\n\n${headerLines.join("\n")}`
+    : prefixLines.join("\n");
+  if (!body) return prefix;
+  return prefix ? `${prefix}\n\n${body}` : body;
 }
 
 function appendBlockIfFits(
   currentLines: string[],
   blockLines: string[],
   linkedDiscordLine: string | null,
+  headerLines: string[],
 ): string[] | null {
   const nextLines = currentLines.length > 0 ? [...currentLines, "", ...blockLines] : [...blockLines];
-  return renderAccountPageText(nextLines, linkedDiscordLine).length <= ACCOUNTS_USABLE_DESCRIPTION_LIMIT
+  return renderAccountPageText(nextLines, linkedDiscordLine, headerLines).length <= ACCOUNTS_USABLE_DESCRIPTION_LIMIT
     ? nextLines
     : null;
 }
@@ -134,11 +161,12 @@ function appendBlockIfFits(
 function truncateGroupBlockToFit(
   blockLines: string[],
   linkedDiscordLine: string | null,
+  headerLines: string[],
 ): string[] {
   const truncated: string[] = [];
   for (const line of blockLines) {
     const nextLines = [...truncated, line];
-    if (renderAccountPageText(nextLines, linkedDiscordLine).length > ACCOUNTS_USABLE_DESCRIPTION_LIMIT) {
+    if (renderAccountPageText(nextLines, linkedDiscordLine, headerLines).length > ACCOUNTS_USABLE_DESCRIPTION_LIMIT) {
       break;
     }
     truncated.push(line);
@@ -147,13 +175,13 @@ function truncateGroupBlockToFit(
   if (truncated.length < blockLines.length) {
     while (
       truncated.length > 0 &&
-      renderAccountPageText([...truncated, ACCOUNTS_TRUNCATION_LINE], linkedDiscordLine).length >
+      renderAccountPageText([...truncated, ACCOUNTS_TRUNCATION_LINE], linkedDiscordLine, headerLines).length >
         ACCOUNTS_USABLE_DESCRIPTION_LIMIT
     ) {
       truncated.pop();
     }
     if (
-      renderAccountPageText([...truncated, ACCOUNTS_TRUNCATION_LINE], linkedDiscordLine).length <=
+      renderAccountPageText([...truncated, ACCOUNTS_TRUNCATION_LINE], linkedDiscordLine, headerLines).length <=
       ACCOUNTS_USABLE_DESCRIPTION_LIMIT
     ) {
       truncated.push(ACCOUNTS_TRUNCATION_LINE);
@@ -319,43 +347,44 @@ function buildPages(input: {
   groups: ClanGroup[];
   townHallEmojiByLevel: AccountDisplayEmojiMap;
   linkedDiscordLine: string | null;
+  headerLines: string[];
 }): string[] {
-  const { groups, townHallEmojiByLevel, linkedDiscordLine } = input;
+  const { groups, townHallEmojiByLevel, linkedDiscordLine, headerLines } = input;
   const pages: string[] = [];
   let lines: string[] = [];
 
   for (const group of groups) {
     const groupLines = buildAccountGroupBlockLines(group, townHallEmojiByLevel);
-    const appended = appendBlockIfFits(lines, groupLines, linkedDiscordLine);
+    const appended = appendBlockIfFits(lines, groupLines, linkedDiscordLine, headerLines);
     if (appended !== null) {
       lines = appended;
       continue;
     }
 
     if (lines.length > 0) {
-      pages.push(renderAccountPageText(lines, linkedDiscordLine));
+      pages.push(renderAccountPageText(lines, linkedDiscordLine, headerLines));
       lines = [];
     }
 
-    if (renderAccountPageText(groupLines, linkedDiscordLine).length <= ACCOUNTS_USABLE_DESCRIPTION_LIMIT) {
+    if (renderAccountPageText(groupLines, linkedDiscordLine, headerLines).length <= ACCOUNTS_USABLE_DESCRIPTION_LIMIT) {
       lines = groupLines;
       continue;
     }
 
-    const truncatedLines = truncateGroupBlockToFit(groupLines, linkedDiscordLine);
+    const truncatedLines = truncateGroupBlockToFit(groupLines, linkedDiscordLine, headerLines);
     if (truncatedLines.length > 0) {
       lines = truncatedLines;
     }
   }
 
   if (lines.length > 0) {
-    pages.push(renderAccountPageText(lines, linkedDiscordLine));
+    pages.push(renderAccountPageText(lines, linkedDiscordLine, headerLines));
   }
 
   if (pages.length > 0) return pages;
   return linkedDiscordLine
-    ? [renderAccountPageText(["No accounts found."], linkedDiscordLine)]
-    : ["No accounts found."];
+    ? [renderAccountPageText(["No accounts found."], linkedDiscordLine, headerLines)]
+    : [renderAccountPageText(["No accounts found."], null, headerLines)];
 }
 
 function buildAccountsControlsRow(
@@ -393,18 +422,89 @@ function buildEmbeds(
   rows: AccountDisplayRow[],
   townHallEmojiByLevel: AccountDisplayEmojiMap,
   linkedDiscordUserId?: string | null,
+  serverMemberSince = "unavailable",
 ): EmbedBuilder[] {
   const groups = buildGroups(rows);
   const linkedDiscordLine = linkedDiscordUserId
     ? `Linked Discord: <@${linkedDiscordUserId}>`
     : null;
-  const pages = buildPages({ groups, townHallEmojiByLevel, linkedDiscordLine });
+  const headerLines = [
+    `Alliance tenure: unavailable · Server member since: ${serverMemberSince}`,
+    ACCOUNTS_TENURE_LEGEND,
+  ];
+  const pages = buildPages({ groups, townHallEmojiByLevel, linkedDiscordLine, headerLines });
   return pages.map((description, index) =>
     new EmbedBuilder()
       .setTitle(`My Accounts by Clan (${rows.length})`)
       .setDescription(description)
       .setFooter({ text: `Page ${index + 1}/${pages.length}` }),
   );
+}
+
+/** Purpose: resolve the displayed target user's current guild membership without substituting the invoker. */
+async function resolveTargetGuildMember(
+  interaction: ChatInputCommandInteraction,
+  targetDiscordUserId: string,
+): Promise<AccountsGuildMember | null> {
+  const guild = interaction.guild;
+  if (!guild?.members?.fetch) return null;
+  try {
+    return await guild.members.fetch(targetDiscordUserId);
+  } catch (err) {
+    console.warn(
+      `[accounts] command=/accounts stage=target_member_fetch_failed guild=${guild.id} user=${targetDiscordUserId} error=${formatError(err)}`,
+    );
+    return null;
+  }
+}
+
+/** Purpose: render the native Discord relative timestamp for the target user's current guild membership. */
+function formatServerMemberSince(member: AccountsGuildMember | null): string {
+  const joinedAtMs = member?.joinedTimestamp ?? member?.joinedAt?.getTime() ?? null;
+  if (joinedAtMs === null || !Number.isFinite(joinedAtMs) || joinedAtMs < 0) return "unavailable";
+  return `<t:${Math.floor(joinedAtMs / 1000)}:R>`;
+}
+
+/** Purpose: keep account rows usable when persisted C/S/A analytics are unavailable or fail closed. */
+const UNAVAILABLE_TENURE: MembershipTenureDisplayInput = {
+  clanTenureSyncs: null,
+  clanTenureIsLowerBound: false,
+  clanStreakSyncs: null,
+  clanStreakIsLowerBound: false,
+  allianceStreakSyncs: null,
+  allianceStreakIsLowerBound: false,
+};
+
+/** Purpose: bulk-load persisted C/S/A analytics once and preserve the account list on lookup failure. */
+async function loadAccountTenureAnalytics(input: {
+  guildId: string;
+  playerTags: string[];
+}): Promise<HomeMembershipAnalyticsResult[]> {
+  try {
+    return await homeMembershipAnalyticsService.getAnalyticsForPlayers(input);
+  } catch (err) {
+    console.warn(
+      `[accounts] command=/accounts stage=tenure_lookup_failed guild=${input.guildId} tags=${input.playerTags.length} error=${formatError(err)}`,
+    );
+    return [];
+  }
+}
+
+/** Purpose: attach shared C/S/A formatting to existing account rows without changing row grouping or ordering. */
+async function buildAccountDisplayRowsWithTenure(input: {
+  guildId: string;
+  linkedNameByTag: Map<string, string>;
+  tags: string[];
+}): Promise<AccountDisplayRow[]> {
+  const [rows, analytics] = await Promise.all([
+    buildAccountDisplayRows(input),
+    loadAccountTenureAnalytics({ guildId: input.guildId, playerTags: input.tags }),
+  ]);
+  const analyticsByTag = new Map(analytics.map((result) => [normalizeTag(result.playerTag), result]));
+  return rows.map((row) => ({
+    ...row,
+    tenureLabel: formatMembershipTenureLabel(analyticsByTag.get(row.tag) ?? UNAVAILABLE_TENURE),
+  }));
 }
 
 async function refreshAccountsPlayerCurrentData(input: {
@@ -550,12 +650,20 @@ export const Accounts: Command = {
         .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
     );
     const townHallEmojiByLevel = await resolveTownHallEmojiMap(client);
-    const rows = await buildAccountDisplayRows({
-      guildId,
-      linkedNameByTag,
-      tags: uniqueTags,
-    });
-    const embeds = buildEmbeds(rows, townHallEmojiByLevel, linkedDiscordHeaderId);
+    const [rows, targetGuildMember] = await Promise.all([
+      buildAccountDisplayRowsWithTenure({
+        guildId,
+        linkedNameByTag,
+        tags: uniqueTags,
+      }),
+      resolveTargetGuildMember(interaction, targetDiscordUserId),
+    ]);
+    const embeds = buildEmbeds(
+      rows,
+      townHallEmojiByLevel,
+      linkedDiscordHeaderId,
+      formatServerMemberSince(targetGuildMember),
+    );
     for (const embed of embeds) {
       embed.setTitle(`Accounts by Clan (${rows.length})`);
     }
@@ -603,15 +711,19 @@ export const Accounts: Command = {
                   userId: interaction.user.id,
                 }),
             );
-            const refreshedRows = await buildAccountDisplayRows({
-              guildId,
-              linkedNameByTag,
-              tags: uniqueTags,
-            });
+            const [refreshedRows, refreshedTargetGuildMember] = await Promise.all([
+              buildAccountDisplayRowsWithTenure({
+                guildId,
+                linkedNameByTag,
+                tags: uniqueTags,
+              }),
+              resolveTargetGuildMember(interaction, targetDiscordUserId),
+            ]);
             const refreshedEmbeds = buildEmbeds(
               refreshedRows,
               townHallEmojiByLevel,
               linkedDiscordHeaderId,
+              formatServerMemberSince(refreshedTargetGuildMember),
             );
             for (const embed of refreshedEmbeds) {
               embed.setTitle(`Accounts by Clan (${refreshedRows.length})`);

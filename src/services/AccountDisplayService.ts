@@ -11,6 +11,7 @@ export type AccountDisplayEmojiMap = TownHallEmojiMap;
 
 export type AccountDisplayRow = AccountRow & {
   repBadgeTokens: string[];
+  tenureLabel?: string;
 };
 
 export async function resolveTownHallEmojiMap(
@@ -73,7 +74,8 @@ export function buildAccountDisplayRowText(
   const playerLink = buildPlayerProfileMarkdownLink(entry.name, entry.tag);
   const badgePrefix =
     entry.repBadgeTokens.length > 0 ? `${entry.repBadgeTokens.join(" ")} ` : "";
-  return `${badgePrefix}${renderTownHallIcon(entry.townHall, townHallEmojiByLevel)} ${playerLink}${crown} \`${entry.tag}\` - ${formatCompactWeightK(entry.weight)}`;
+  const tenureSuffix = entry.tenureLabel ? ` · ${entry.tenureLabel}` : "";
+  return `${badgePrefix}${renderTownHallIcon(entry.townHall, townHallEmojiByLevel)} ${playerLink}${crown} \`${entry.tag}\` - ${formatCompactWeightK(entry.weight)}${tenureSuffix}`;
 }
 
 /** Purpose: combine canonical persisted account rows with display-only rep badge tokens. */
