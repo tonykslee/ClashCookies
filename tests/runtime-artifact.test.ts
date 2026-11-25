@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 
 type Entry = { name: string; content?: string; type?: "file" | "directory" | "symlink"; link?: string; mode?: number };
-type Extension = { type: "x" | "g" | "L" | "K"; payload?: Buffer; declaredSize?: number };
+type Extension = { type: string; payload?: Buffer; declaredSize?: number };
 const sourceSha = "0123456789abcdef0123456789abcdef01234567";
 
 function tar(entries: Entry[]): Buffer {
@@ -165,6 +165,14 @@ function runValidation(archivePath: string, ...extra: string[]) {
   return execFileSync(command, [...commandArgs, "--archive", archivePath, "--checksum", `${archivePath}.sha256`, "--manifest", `${archivePath}.manifest.json`, "--expected-sha", sourceSha, ...extra], { cwd: process.cwd(), encoding: "utf8", stdio: "pipe" });
 }
 
+function runValidationWithEnv(archivePath: string, envPatch: Record<string, string>, ...extra: string[]) {
+  const command = process.platform === "win32" ? "python" : "bash";
+  const commandArgs = process.platform === "win32"
+    ? [join(process.cwd(), "scripts", "validate-runtime-artifact.py")]
+    : [join(process.cwd(), "scripts", "validate-runtime-artifact.sh")];
+  return execFileSync(command, [...commandArgs, "--archive", archivePath, "--checksum", `${archivePath}.sha256`, "--manifest", `${archivePath}.manifest.json`, "--expected-sha", sourceSha, ...extra], { cwd: process.cwd(), env: { ...process.env, ...envPatch }, encoding: "utf8", stdio: "pipe" });
+}
+
 function expectValidationFailure(archivePath: string, reason: string, ...extra: string[]) {
   let stderr = "";
   try {
@@ -173,6 +181,16 @@ function expectValidationFailure(archivePath: string, reason: string, ...extra: 
     stderr = String((error as { stderr?: unknown }).stderr ?? "");
   }
   if (!stderr) throw new Error(`expected validation subprocess to fail with stderr containing ${JSON.stringify(reason)}`);
+  expect(stderr).toContain(reason);
+}
+
+function expectValidationFailureWithEnv(archivePath: string, envPatch: Record<string, string>, reason: string, ...extra: string[]) {
+  let stderr = "";
+  try {
+    runValidationWithEnv(archivePath, envPatch, ...extra);
+  } catch (error) {
+    stderr = String((error as { stderr?: unknown }).stderr ?? "");
+  }
   expect(stderr).toContain(reason);
 }
 
@@ -349,7 +367,7 @@ describe("runtime artifact validation", () => {
     }
     writeFileSync(value.archivePath, corrupted);
     refreshExternalIntegrity(value.archivePath);
-    const reasons: Record<string, string> = { "truncated gzip": "malformed archive", "trailing bytes": "malformed archive", "invalid tar termination": "invalid tar termination header" };
+    const reasons: Record<string, string> = { "truncated gzip": "malformed archive", "trailing bytes": "malformed archive", "invalid tar termination": "malformed tar header checksum" };
     expectValidationFailure(value.archivePath, reasons[kind]);
     rmSync(value.root, { recursive: true, force: true });
   });
@@ -376,7 +394,7 @@ describe("runtime artifact validation", () => {
     const value = fixture();
     writeFileSync(value.archivePath, withExtensions(readFileSync(value.archivePath), [{ type: "x", payload: paxRecord("size", "99999999999999999999") }]));
     refreshExternalIntegrity(value.archivePath);
-    expectValidationFailure(value.archivePath, "local PAX size exceeds the limit");
+    expectValidationFailure(value.archivePath, "PAX size overrides are unsupported");
     rmSync(value.root, { recursive: true, force: true });
   });
 
@@ -421,6 +439,83 @@ describe("runtime artifact validation", () => {
     writeFileSync(value.archivePath, corrupted);
     refreshExternalIntegrity(value.archivePath);
     expectValidationFailure(value.archivePath, "malformed archive", "--extract", destination);
+    expect(() => lstatSync(destination)).toThrow();
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it("rejects Solaris X and bad physical header framing before downstream parsing", () => {
+    const value = fixture();
+    writeFileSync(value.archivePath, withExtensions(readFileSync(value.archivePath), [{ type: "X", payload: Buffer.from("unsupported\n") }]));
+    refreshExternalIntegrity(value.archivePath);
+    expectValidationFailure(value.archivePath, "unsupported physical tar header type");
+    rmSync(value.root, { recursive: true, force: true });
+
+    const framed = fixture();
+    const archive = withExtensions(readFileSync(framed.archivePath), [{ type: "x", payload: paxRecord("comment", "bounded") }]);
+    const raw = gunzipSync(archive);
+    const headerOffset = raw.indexOf(Buffer.from("PaxHeader"));
+    raw[headerOffset] ^= 0xff;
+    writeFileSync(framed.archivePath, gzipSync(raw));
+    refreshExternalIntegrity(framed.archivePath);
+    expectValidationFailure(framed.archivePath, "invalid tar header checksum");
+    rmSync(framed.root, { recursive: true, force: true });
+  });
+
+  it("rejects hidden extension framing instead of honoring a PAX size override", () => {
+    const value = fixture();
+    const hiddenExtension = withExtensions(readFileSync(value.archivePath), [{ type: "x", payload: paxRecord("size", "1024") }, { type: "X", payload: Buffer.from("hidden") }]);
+    writeFileSync(value.archivePath, hiddenExtension);
+    refreshExternalIntegrity(value.archivePath);
+    expectValidationFailure(value.archivePath, "PAX size overrides are unsupported");
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it("keeps the validated snapshot when the original pathname is replaced", () => {
+    if (process.platform === "win32") return;
+    const value = fixture();
+    const destination = join(value.root, "replaced-source-output");
+    expect(runValidationWithEnv(value.archivePath, { RUNTIME_ARTIFACT_TEST_HOOK: "replace-source" }, "--extract", destination)).toContain(sourceSha);
+    expect(lstatSync(join(destination, "dist", "ClashCookies.js")).isFile()).toBe(true);
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it("keeps the validated snapshot when the original bytes mutate with preserved stat", () => {
+    if (process.platform === "win32") return;
+    const value = fixture();
+    const destination = join(value.root, "mutated-source-output");
+    expect(runValidationWithEnv(value.archivePath, { RUNTIME_ARTIFACT_TEST_HOOK: "mutate-source-preserve-stat" }, "--extract", destination)).toContain(sourceSha);
+    expect(lstatSync(join(destination, "dist", "ClashCookies.js")).isFile()).toBe(true);
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it("rejects a mutated sidecar without publishing", () => {
+    const value = fixture();
+    const destination = join(value.root, "mutated-sidecar-output");
+    expectValidationFailureWithEnv(value.archivePath, { RUNTIME_ARTIFACT_TEST_HOOK: "mutate-checksum" }, "checksum metadata does not match archive bytes", "--extract", destination);
+    expect(() => lstatSync(destination)).toThrow();
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it.each([
+    ["entry contract", { RUNTIME_ARTIFACT_TEST_ENTRY_MISMATCH: "1" }, "archive entry changed between validation and extraction"],
+    ["entry content", { RUNTIME_ARTIFACT_TEST_CONTENT_MISMATCH: "1" }, "archive entry content changed between validation and extraction"],
+    ["extraction stage", { RUNTIME_ARTIFACT_TEST_FAIL_EXTRACTION: "1" }, "injected extraction-stage failure"],
+    ["destination publication", { RUNTIME_ARTIFACT_TEST_DESTINATION_APPEARS: "1" }, "extraction destination appeared during validation"],
+  ] as const)("cleans up after %s failure without publishing", (_label, envPatch, reason) => {
+    if (process.platform === "win32" && _label === "destination publication") return;
+    const value = fixture();
+    const destination = join(value.root, `failed-${_label.replaceAll(" ", "-")}`);
+    expectValidationFailureWithEnv(value.archivePath, envPatch, reason, "--extract", destination);
+    if (_label === "destination publication") expect(lstatSync(destination).isDirectory()).toBe(true);
+    else expect(() => lstatSync(destination)).toThrow();
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it("fails closed when Linux atomic no-replacement publication is disabled", () => {
+    if (process.platform !== "linux") return;
+    const value = fixture();
+    const destination = join(value.root, "unsupported-atomic-output");
+    expectValidationFailureWithEnv(value.archivePath, { RUNTIME_ARTIFACT_TEST_DISABLE_ATOMIC_PUBLISH: "1" }, "atomic no-replacement publication is unavailable", "--extract", destination);
     expect(() => lstatSync(destination)).toThrow();
     rmSync(value.root, { recursive: true, force: true });
   });

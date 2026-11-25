@@ -167,6 +167,14 @@ def binary_flag() -> int:
     return getattr(os, "O_BINARY", 0)
 
 
+def nonblocking_flag() -> int:
+    return getattr(os, "O_NONBLOCK", 0)
+
+
+def directory_flag() -> int:
+    return getattr(os, "O_DIRECTORY", 0)
+
+
 def open_regular_readonly(path: Path, label: str) -> tuple[int, os.stat_result]:
     try:
         metadata = os.lstat(path)
@@ -174,13 +182,20 @@ def open_regular_readonly(path: Path, label: str) -> tuple[int, os.stat_result]:
         fail(f"{label} is missing: {error}")
     require(not stat.S_ISLNK(metadata.st_mode), f"{label} must not be a symlink")
     require(stat.S_ISREG(metadata.st_mode), f"{label} is not a regular file")
+    descriptor: int | None = None
     try:
-        descriptor = os.open(path, os.O_RDONLY | binary_flag() | cloexec_flag() | nofollow_flag())
+        descriptor = os.open(path, os.O_RDONLY | binary_flag() | cloexec_flag() | nofollow_flag() | nonblocking_flag())
         opened = os.fstat(descriptor)
     except OSError as error:
+        if descriptor is not None:
+            os.close(descriptor)
         fail(f"{label} cannot be opened safely: {error}")
-    require(stat.S_ISREG(opened.st_mode) and not stat.S_ISLNK(opened.st_mode), f"{label} is not a regular file")
-    require(opened.st_dev == metadata.st_dev and opened.st_ino == metadata.st_ino, f"{label} changed during open")
+    if not stat.S_ISREG(opened.st_mode) or stat.S_ISLNK(opened.st_mode):
+        os.close(descriptor)
+        fail(f"{label} is not a regular file")
+    if opened.st_dev != metadata.st_dev or opened.st_ino != metadata.st_ino:
+        os.close(descriptor)
+        fail(f"{label} changed during open")
     return descriptor, opened
 
 
@@ -354,6 +369,20 @@ def padded_size(size: int) -> int:
     return ((size + 511) // 512) * 512
 
 
+def validate_tar_header_checksum(header: bytes) -> None:
+    try:
+        encoded = header[148:156].rstrip(b"\0 ")
+        require(encoded and all(byte in b"01234567" for byte in encoded), "malformed tar header checksum")
+        expected = int(encoded, 8)
+    except ValueError:
+        fail("malformed tar header checksum")
+    actual = sum(32 if 148 <= index < 156 else byte for index, byte in enumerate(header))
+    require(actual == expected, "invalid tar header checksum")
+
+
+SUPPORTED_PHYSICAL_TYPES = frozenset((0, ord("0"), ord("2"), ord("5"), ord("x"), ord("g"), ord("L"), ord("K")))
+
+
 def validate_pax_records(payload: bytes, label: str, limits: Limits) -> None:
     offset = 0
     while offset < len(payload):
@@ -373,8 +402,7 @@ def validate_pax_records(payload: bytes, label: str, limits: Limits) -> None:
         require(key and not key.startswith("GNU.sparse."), f"unsupported sparse PAX metadata: {key}")
         require(len(value) <= limits.metadata_bytes, f"{label} PAX value exceeds the limit: {key}")
         if key == "size":
-            require(value.isdigit() and len(value) <= 20, f"malformed {label} PAX size")
-            require(int(value) <= limits.file_bytes, f"{label} PAX size exceeds the limit")
+            fail("PAX size overrides are unsupported")
         elif key == "path":
             require(len(value) <= limits.path_bytes, f"{label} PAX path exceeds the limit")
         elif key == "linkpath":
@@ -428,7 +456,9 @@ def preflight_metadata(snapshot: Snapshot, limits: Limits) -> dict[str, int]:
 
             total_headers += 1
             require(total_headers <= limits.total_headers, "total tar header count exceeds the limit")
+            validate_tar_header_checksum(header)
             typeflag = header[156]
+            require(typeflag in SUPPORTED_PHYSICAL_TYPES, f"unsupported physical tar header type: {chr(typeflag)!r}")
             try:
                 size = tar_number(header[124:136], "size")
             except ArtifactError:
@@ -457,8 +487,9 @@ def preflight_metadata(snapshot: Snapshot, limits: Limits) -> dict[str, int]:
                 continue
 
             consecutive_extensions = 0
-            require(typeflag != ord("S"), "unsupported sparse archive entry")
+            require(typeflag in (0, ord("0"), ord("2"), ord("5")), f"unsupported physical tar header type: {chr(typeflag)!r}")
             require(size <= limits.file_bytes, "archive entry size exceeds the limit")
+            require(typeflag in (0, ord("0")) or size == 0, "non-regular tar entry has a payload")
             if typeflag in (0, ord("0")):
                 require(size <= limits.expanded_bytes, "expanded archive exceeds the size limit")
             skip(padded, "archive entry payload")
@@ -807,26 +838,59 @@ def safe_destination(destination: Path) -> Path:
     return destination
 
 
+def open_destination_parent(destination: Path) -> int:
+    parent = destination.parent
+    metadata = os.lstat(parent)
+    require(stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), "extraction destination parent is unsafe")
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(parent, os.O_RDONLY | binary_flag() | cloexec_flag() | nofollow_flag() | nonblocking_flag() | directory_flag())
+        opened = os.fstat(descriptor)
+    except OSError as error:
+        if descriptor is not None:
+            os.close(descriptor)
+        fail(f"extraction destination parent cannot be opened safely: {error}")
+    if not stat.S_ISDIR(opened.st_mode) or stat.S_ISLNK(opened.st_mode):
+        os.close(descriptor)
+        fail("extraction destination parent is unsafe")
+    if opened.st_dev != metadata.st_dev or opened.st_ino != metadata.st_ino:
+        os.close(descriptor)
+        fail("extraction destination parent changed during open")
+    return descriptor
+
+
 def publish_without_replacement(source: Path, destination: Path) -> None:
-    """Atomically publish only when the destination is still absent."""
-    if os.name != "nt":
-        try:
-            libc = ctypes.CDLL(None, use_errno=True)
-            renameat2 = libc.renameat2
+    """Atomically publish only through a trusted parent and no-replace primitive."""
+    require(source.parent == destination.parent, "temporary extraction is outside the destination parent")
+    parent_fd = open_destination_parent(destination)
+    try:
+        if sys.platform == "linux":
+            if os.environ.get("RUNTIME_ARTIFACT_TEST_DISABLE_ATOMIC_PUBLISH") == "1":
+                fail("atomic no-replacement publication is unavailable")
+            try:
+                libc = ctypes.CDLL(None, use_errno=True)
+                renameat2 = libc.renameat2
+            except AttributeError:
+                fail("atomic no-replacement publication is unavailable")
             renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
             renameat2.restype = ctypes.c_int
-            result = renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1)  # RENAME_NOREPLACE
+            result = renameat2(parent_fd, os.fsencode(source.name), parent_fd, os.fsencode(destination.name), 1)  # RENAME_NOREPLACE
             if result == 0:
                 return
             error_number = ctypes.get_errno()
             if error_number == errno.EEXIST:
                 fail("extraction destination appeared during validation")
-            if error_number not in (errno.ENOSYS, errno.EINVAL):
-                raise OSError(error_number, os.strerror(error_number))
-        except AttributeError:
+            fail("atomic no-replacement publication is unavailable" if error_number in (errno.ENOSYS, errno.EINVAL) else os.strerror(error_number))
+        if os.name == "nt":
+            require(not os.path.lexists(destination), "extraction destination appeared during validation")
+            os.rename(source, destination)
+            return
+        fail("atomic no-replacement publication is unavailable")
+    finally:
+        try:
+            os.close(parent_fd)
+        except OSError:
             pass
-    require(not os.path.lexists(destination), "extraction destination appeared during validation")
-    os.rename(source, destination)
 
 
 def extract_archive(snapshot: Snapshot, entries: list[Entry], file_hashes: dict[str, str], destination: Path, limits: Limits, validated_digest: str) -> None:
@@ -834,6 +898,10 @@ def extract_archive(snapshot: Snapshot, entries: list[Entry], file_hashes: dict[
     temporary = Path(tempfile.mkdtemp(prefix=".runtime-artifact-extract-", dir=destination.parent))
     os.chmod(temporary, 0o700)
     try:
+        if os.environ.get("RUNTIME_ARTIFACT_TEST_ENTRY_MISMATCH") == "1":
+            entries[0] = Entry(entries[0].name, entries[0].kind, entries[0].size + 1, entries[0].mode, entries[0].link)
+        elif os.environ.get("RUNTIME_ARTIFACT_TEST_CONTENT_MISMATCH") == "1":
+            file_hashes["dist/ClashCookies.js"] = "0" * 64
         by_name = {entry.name: entry for entry in entries}
         directory_modes = {entry.name: entry.mode for entry in entries if entry.kind == "directory"}
         symlinks: list[Entry] = []
@@ -864,6 +932,8 @@ def extract_archive(snapshot: Snapshot, entries: list[Entry], file_hashes: dict[
                             output.write(chunk)
                     require(total == entry.size, f"archive entry has unexpected content length: {entry.name}")
                     require(digest.hexdigest() == file_hashes.get(entry.name), f"archive entry content changed between validation and extraction: {entry.name}")
+                    if os.environ.get("RUNTIME_ARTIFACT_TEST_FAIL_EXTRACTION") == "1":
+                        fail("injected extraction-stage failure")
                 except Exception:
                     try:
                         os.close(fd)
@@ -880,6 +950,8 @@ def extract_archive(snapshot: Snapshot, entries: list[Entry], file_hashes: dict[
         require(seen == set(by_name), "archive entry set changed between validation and extraction")
         snapshot.verify(validated_digest)
         require(not os.path.lexists(destination), "extraction destination appeared during validation")
+        if os.environ.get("RUNTIME_ARTIFACT_TEST_DESTINATION_APPEARS") == "1":
+            destination.mkdir()
         publish_without_replacement(temporary, destination)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
@@ -915,6 +987,26 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def apply_test_hook(archive_path: Path, checksum_path: Path) -> None:
+    """Deterministic negative-test seam; hooks fail closed or mutate only the original input."""
+    hook = os.environ.get("RUNTIME_ARTIFACT_TEST_HOOK")
+    if hook == "replace-source":
+        replacement = archive_path.with_name(f"{archive_path.name}.replacement")
+        replacement.write_bytes(b"replacement source")
+        os.replace(replacement, archive_path)
+    elif hook == "mutate-source-preserve-stat":
+        metadata = os.stat(archive_path)
+        with archive_path.open("r+b") as stream:
+            stream.seek(40 if metadata.st_size > 40 else 0)
+            original = stream.read(1)
+            stream.seek(-1, os.SEEK_CUR)
+            stream.write(bytes((original[0] ^ 0xFF,)))
+            stream.flush()
+        os.utime(archive_path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    elif hook == "mutate-checksum":
+        checksum_path.write_text(f"{'0' * 64}  {archive_path.name}\n", encoding="ascii")
+
+
 def peak_memory_bytes() -> int | None:
     try:
         import resource
@@ -948,6 +1040,7 @@ def main() -> int:
     snapshot = snapshot_source(archive_path, limits)
     try:
         digest = snapshot.digest
+        apply_test_hook(archive_path, checksum_path)
         validate_checksum(archive_path, checksum_path, digest)
         preflight = preflight_metadata(snapshot, limits)
         entries, metadata_files, file_hashes = collect_entries(snapshot, limits)
@@ -971,7 +1064,6 @@ def main() -> int:
         require(external["measurements"]["extractedFootprintBytes"] == footprint, "manifest extracted footprint does not match archive")
         if args.extract:
             extract_archive(snapshot, entries, file_hashes, Path(args.extract), limits, digest)
-        snapshot.verify(digest)
         print(json.dumps({
             "archive": str(archive_path),
             "sha256": digest,
