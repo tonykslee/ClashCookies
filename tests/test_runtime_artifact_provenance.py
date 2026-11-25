@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
+import struct
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -240,7 +241,7 @@ def selection_run_metadata(request: object | None = None) -> dict[str, object]:
         "head_branch": request.run_head_ref.removeprefix("refs/heads/"),
         "repository": {"full_name": request.repository, "id": request.repository_id, "owner": {"id": request.repository_owner_id}},
         "head_repository": {"full_name": request.run_head_repository, "id": request.run_head_repository_id, "owner": {"id": request.run_head_repository_owner_id}},
-        "pull_requests": [{"number": request.pull_request_number, "head": {"sha": request.pull_request_head_sha, "ref": request.pull_request_head_ref.removeprefix("refs/heads/"), "repo": {"id": request.run_head_repository_id}}, "base": {"sha": request.pull_request_base_sha, "ref": request.pull_request_base_ref.removeprefix("refs/heads/"), "repo": {"id": request.repository_id}}}],
+        "pull_requests": [] if request.event == "push" else [{"number": request.pull_request_number, "head": {"sha": request.pull_request_head_sha, "ref": request.pull_request_head_ref.removeprefix("refs/heads/"), "repo": {"id": request.run_head_repository_id}}, "base": {"sha": request.pull_request_base_sha, "ref": request.pull_request_base_ref.removeprefix("refs/heads/"), "repo": {"id": request.repository_id}}}],
     }
 
 
@@ -257,6 +258,24 @@ def selection_artifact_metadata(request: object | None = None) -> dict[str, obje
         "expires_at": "2026-11-28T19:46:58Z",
         "workflow_run": {"id": request.run_id, "repository_id": request.repository_id, "head_repository_id": request.run_head_repository_id, "head_branch": request.run_head_ref.removeprefix("refs/heads/"), "head_sha": request.run_head_sha},
     }
+
+
+def main_selection_request() -> object:
+    """Return the canonical main-push request used for independent identity verification."""
+    return replace(
+        selection_request(),
+        source_ref=provenance.RELEASE_SOURCE_REF,
+        event="push",
+        artifact_name=provenance.expected_artifact_name(RUN_ID, RUN_ATTEMPT),
+        archive_name=f"clashcookies-runtime-{MAIN_SOURCE_SHA}.tar.gz",
+        run_head_ref=provenance.RELEASE_SOURCE_REF,
+        run_head_sha=MAIN_SOURCE_SHA,
+        pull_request_number=None,
+        pull_request_head_sha=None,
+        pull_request_head_ref=None,
+        pull_request_base_sha=None,
+        pull_request_base_ref=None,
+    )
 
 
 class RuntimeArtifactProvenanceTests(unittest.TestCase):
@@ -370,51 +389,44 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         with self.assertRaises(provenance.ProvenanceError):
             provenance.validate_authenticated_provenance_binding(validate(), identity)
 
-    def test_exact_artifact_selection_binds_run_attempt_and_zip_and_inner_archive(self) -> None:
+    def test_canonical_selection_binds_run_attempt_and_verifies_independent_identity(self) -> None:
+        request = main_selection_request()
         identity = trusted_identity()
         with TemporaryDirectory() as directory:
             service_zip = Path(directory) / "artifact.zip"
             with ZipFile(service_zip, "w") as archive:
                 archive.writestr(identity.archive_name, b"runtime-bytes")
             archive_bytes = service_zip.read_bytes()
-            identity = replace(identity, artifact_service_zip_sha256=hashlib.sha256(archive_bytes).hexdigest(), artifact_service_zip_bytes=len(archive_bytes), archive_sha256=hashlib.sha256(b"runtime-bytes").hexdigest(), archive_bytes=len(b"runtime-bytes"))
-            metadata = {
-                "id": identity.artifact_id,
-                "name": identity.artifact_name,
-                "digest": "sha256:" + identity.artifact_service_zip_sha256,
-                "size_in_bytes": identity.artifact_service_zip_bytes,
-                "expired": False,
-                "created_at": "2026-11-25T00:00:00Z",
-                "expires_at": "2026-11-26T00:00:00Z",
-                "workflow_run": {"id": identity.run_id, "repository_id": identity.repository_id, "head_sha": identity.source_sha},
-            }
-            selected = provenance.select_exact_artifact([metadata], identity, service_zip=service_zip, now=datetime(2026, 11, 25, tzinfo=timezone.utc))
+            outer_digest = hashlib.sha256(archive_bytes).hexdigest()
+            inner_digest = hashlib.sha256(b"runtime-bytes").hexdigest()
+            request = replace(request, archive_name=identity.archive_name)
+            metadata = selection_artifact_metadata(request)
+            metadata.update({"digest": "sha256:" + outer_digest, "size_in_bytes": len(archive_bytes)})
+            run = selection_run_metadata(request)
+            with patch.object(provenance, "fetch_run_metadata", return_value=run), patch.object(provenance, "fetch_run_artifacts", return_value={"total_count": 1, "artifacts": [metadata]}):
+                selected = provenance.select_artifact_request(request, service_zip=service_zip, now=datetime(2026, 11, 25, 20, tzinfo=timezone.utc))
+            identity = replace(identity, artifact_service_zip_sha256=outer_digest, artifact_service_zip_bytes=len(archive_bytes), archive_sha256=inner_digest, archive_bytes=len(b"runtime-bytes"))
             self.assertEqual(selected.artifact_id, identity.artifact_id)
             self.assertEqual(selected.archive_sha256, identity.archive_sha256)
+            provenance.verify_artifact_selection_against_identity(selected, identity)
 
-    def test_exact_artifact_selection_rejects_expiry_wrong_attempt_and_conflicts(self) -> None:
-        identity = trusted_identity()
-        metadata = {
-            "id": identity.artifact_id,
-            "name": identity.artifact_name,
-            "digest": "sha256:" + identity.artifact_service_zip_sha256,
-            "size_in_bytes": identity.artifact_service_zip_bytes,
-            "expired": False,
-            "created_at": "2026-11-25T00:00:00Z",
-            "expires_at": "2026-11-26T00:00:00Z",
-            "workflow_run": {"id": identity.run_id, "repository_id": identity.repository_id, "head_sha": identity.source_sha},
-        }
+    def test_canonical_selection_rejects_expiry_wrong_attempt_and_duplicate_ids(self) -> None:
+        request = main_selection_request()
+        run = selection_run_metadata(request)
+        metadata = selection_artifact_metadata(request)
         for mutation in (
             {"expired": True},
             {"name": provenance.expected_artifact_name(RUN_ID, RUN_ATTEMPT + 1)},
-            {"size_in_bytes": identity.artifact_service_zip_bytes + 1},
+            {"size_in_bytes": provenance.MAX_ARTIFACT_BYTES + 1},
         ):
-            candidate = dict(metadata)
+            candidate = copy.deepcopy(metadata)
             candidate.update(mutation)
-            with self.subTest(mutation=mutation), self.assertRaises(provenance.ProvenanceError):
-                provenance.select_exact_artifact([candidate], identity, now=datetime(2026, 11, 25, tzinfo=timezone.utc))
-        with self.assertRaises(provenance.ProvenanceError):
-            provenance.select_exact_artifact([metadata, dict(metadata)], identity, now=datetime(2026, 11, 25, tzinfo=timezone.utc))
+            with self.subTest(mutation=mutation), patch.object(provenance, "fetch_run_metadata", return_value=run), patch.object(provenance, "fetch_run_artifacts", return_value={"total_count": 1, "artifacts": [candidate]}), self.assertRaises(provenance.ProvenanceError):
+                provenance.select_artifact_request(request, now=datetime(2026, 11, 25, 20, tzinfo=timezone.utc))
+        duplicate = copy.deepcopy(metadata)
+        duplicate["name"] = "other-artifact-name"
+        with self.assertRaisesRegex(provenance.ProvenanceError, "duplicate artifact ID"):
+            provenance.validate_artifact_api_response({"total_count": 2, "artifacts": [metadata, duplicate]})
 
     def test_shared_cli_selection_validates_complete_pr_attempt_and_metadata_response(self) -> None:
         request = selection_request()
@@ -458,6 +470,10 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         future["created_at"] = "2026-11-25T21:00:00Z"
         with patch.object(provenance, "fetch_run_metadata", return_value=run), patch.object(provenance, "fetch_run_artifacts", return_value={"total_count": 1, "artifacts": [future]}), self.assertRaises(provenance.ProvenanceError):
             provenance.select_artifact_request(request, now=datetime(2026, 11, 25, 20, tzinfo=timezone.utc))
+        previous_attempt = selection_artifact_metadata(request)
+        previous_attempt["created_at"] = "2026-11-25T19:45:13Z"
+        with patch.object(provenance, "fetch_run_metadata", return_value=run), patch.object(provenance, "fetch_run_artifacts", return_value={"total_count": 1, "artifacts": [previous_attempt]}), self.assertRaisesRegex(provenance.ProvenanceError, "outside the exact attempt window"):
+            provenance.select_artifact_request(request, now=datetime(2026, 11, 25, 20, tzinfo=timezone.utc))
 
     def test_zip_hash_and_parser_use_one_snapshot_and_reject_independent_digest_mutations(self) -> None:
         identity = trusted_identity()
@@ -465,16 +481,22 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             source = Path(directory) / "artifact.zip"
             with ZipFile(source, "w") as archive:
                 archive.writestr(identity.archive_name, b"runtime-bytes")
+            valid_bytes = source.read_bytes()
+            valid_outer_digest = hashlib.sha256(valid_bytes).hexdigest()
             snapshot = provenance.open_zip_snapshot(source)
             try:
                 source.write_bytes(b"substituted-after-snapshot")
                 digest, size = provenance.inspect_artifact_service_zip_snapshot(snapshot, identity.archive_name)
                 self.assertEqual(digest, hashlib.sha256(b"runtime-bytes").hexdigest())
                 self.assertEqual(size, len(b"runtime-bytes"))
+                with self.assertRaisesRegex(provenance.ProvenanceError, "inner runtime archive digest mismatch"):
+                    provenance.inspect_artifact_service_zip_snapshot(snapshot, identity.archive_name, "0" * 64, len(b"runtime-bytes"))
             finally:
                 provenance.close_zip_snapshot(snapshot)
-            identity = replace(identity, archive_sha256="0" * 64)
-            with self.assertRaises(provenance.ProvenanceError):
+            source.write_bytes(valid_bytes)
+            identity = replace(identity, artifact_service_zip_sha256="0" * 64, artifact_service_zip_bytes=len(valid_bytes), archive_sha256=hashlib.sha256(b"runtime-bytes").hexdigest(), archive_bytes=len(b"runtime-bytes"))
+            with self.assertRaisesRegex(provenance.ProvenanceError, "artifact service ZIP digest mismatch"):
+                self.assertEqual(valid_outer_digest, hashlib.sha256(source.read_bytes()).hexdigest())
                 provenance.inspect_artifact_service_zip(source, identity)
 
     def test_zip_metadata_limits_and_nonregular_inputs_fail_closed(self) -> None:
@@ -490,6 +512,38 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             directory_path.mkdir()
             with self.assertRaises(provenance.ProvenanceError):
                 provenance.open_zip_snapshot(directory_path)
+
+    def test_zip64_and_contradictory_header_count_reject_before_zipfile_parser(self) -> None:
+        identity = trusted_identity()
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "valid.zip"
+            with ZipFile(source, "w") as archive:
+                archive.writestr(identity.archive_name, b"runtime-bytes")
+            valid = source.read_bytes()
+            eocd = valid[-provenance.ZIP_EOCD_BYTES:]
+            zip64_locator = struct.pack("<4sLQL", b"PK\x06\x07", 0, 0, 1)
+            zip64_path = Path(directory) / "zip64-locator.zip"
+            zip64_path.write_bytes(valid[:-provenance.ZIP_EOCD_BYTES] + zip64_locator + eocd)
+            zip64_snapshot = provenance.open_zip_snapshot(zip64_path)
+            try:
+                with patch.object(provenance, "ZipFile", side_effect=AssertionError("ZipFile parser must not be reached")):
+                    with self.assertRaisesRegex(provenance.ProvenanceError, "ZIP64 records"):
+                        provenance.inspect_artifact_service_zip_snapshot(zip64_snapshot, identity.archive_name)
+            finally:
+                provenance.close_zip_snapshot(zip64_snapshot)
+            contradictory = bytearray(valid)
+            eocd_offset = len(contradictory) - provenance.ZIP_EOCD_BYTES
+            contradictory[eocd_offset + 8:eocd_offset + 10] = (2).to_bytes(2, "little")
+            contradictory[eocd_offset + 10:eocd_offset + 12] = (2).to_bytes(2, "little")
+            contradictory_path = Path(directory) / "contradictory-count.zip"
+            contradictory_path.write_bytes(contradictory)
+            contradictory_snapshot = provenance.open_zip_snapshot(contradictory_path)
+            try:
+                with patch.object(provenance, "ZipFile", side_effect=AssertionError("ZipFile parser must not be reached")):
+                    with self.assertRaisesRegex(provenance.ProvenanceError, "central directory"):
+                        provenance.inspect_artifact_service_zip_snapshot(contradictory_snapshot, identity.archive_name)
+            finally:
+                provenance.close_zip_snapshot(contradictory_snapshot)
 
     def test_authorization_lifecycle_is_deterministic_and_recovery_is_not_forward_authority(self) -> None:
         identity = trusted_identity()

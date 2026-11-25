@@ -220,6 +220,7 @@ jobs:
           import copy
           import json
           import sys
+          from datetime import datetime, timezone
           from pathlib import Path
           sys.path.insert(0, "scripts")
           import runtime_artifact_provenance as provenance
@@ -228,41 +229,45 @@ jobs:
           run_metadata = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
           artifact_response = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
           selected = json.loads(Path(sys.argv[5]).read_text(encoding="utf-8"))["selection"]
+          captured_now = datetime.now(timezone.utc)
 
-          def expect_rejection(label, operation):
+          def expect_rejection(label, reason, operation):
               try:
                   operation()
-              except provenance.ProvenanceError:
+              except provenance.ProvenanceError as error:
+                  assert reason in str(error), f"{label} rejected for unexpected reason: {error}"
                   return
               raise AssertionError(f"{label} was accepted")
 
+          exact_artifact = provenance._select_artifact_metadata(artifact_response, request, run_metadata, now=captured_now)
+          provenance.validate_exact_run_attempt_request_metadata(run_metadata, request, now=captured_now)
+          assert exact_artifact["id"] == selected["artifactId"], "unmodified real API evidence did not select the downloaded artifact"
+
           wrong_run = copy.deepcopy(run_metadata)
           wrong_run["head_sha"] = "0" * 40
-          expect_rejection("wrong real run head SHA", lambda: provenance.validate_exact_run_attempt_request_metadata(wrong_run, request, now=provenance.datetime.fromisoformat("2026-11-25T20:00:00+00:00")))
+          expect_rejection("wrong real run head SHA", "exact PR run head mismatch", lambda: provenance.validate_exact_run_attempt_request_metadata(wrong_run, request, now=captured_now))
 
           exact_artifacts = [item for item in artifact_response["artifacts"] if item.get("name") == request.artifact_name]
           assert len(exact_artifacts) == 1, "real exact artifact is missing or ambiguous"
           wrong_artifact = copy.deepcopy(exact_artifacts[0])
           wrong_artifact["workflow_run"]["head_repository_id"] = request.repository_id + 1
           wrong_response = {"total_count": 1, "artifacts": [wrong_artifact]}
-          expect_rejection("wrong real artifact head repository", lambda: provenance._select_artifact_metadata(wrong_response, request, run_metadata, now=provenance.datetime.fromisoformat("2026-11-25T20:00:00+00:00")))
+          expect_rejection("wrong real artifact head repository", "artifact head repository ID mismatch", lambda: provenance._select_artifact_metadata(wrong_response, request, run_metadata, now=captured_now))
 
-          duplicate_response = {"total_count": 2, "artifacts": [exact_artifacts[0], copy.deepcopy(exact_artifacts[0])]}
-          expect_rejection("duplicate real artifact identity", lambda: provenance._select_artifact_metadata(duplicate_response, request, run_metadata, now=provenance.datetime.fromisoformat("2026-11-25T20:00:00+00:00")))
-          expect_rejection("truncated real artifact page", lambda: provenance.validate_artifact_api_response({"total_count": 2, "artifacts": [exact_artifacts[0]]}))
+          duplicate = copy.deepcopy(exact_artifacts[0])
+          duplicate["name"] = "different-artifact-name"
+          duplicate_response = {"total_count": 2, "artifacts": [exact_artifacts[0], duplicate]}
+          expect_rejection("duplicate real artifact ID across names", "duplicate artifact ID", lambda: provenance.validate_artifact_api_response(duplicate_response))
+          expect_rejection("truncated real artifact page", "pagination is incomplete", lambda: provenance.validate_artifact_api_response({"total_count": 2, "artifacts": [exact_artifacts[0]]}))
 
           source = Path(sys.argv[4])
-          tampered = source.with_name("tampered-real-artifact-service.zip")
-          data = bytearray(source.read_bytes())
-          data[len(data) // 2] ^= 1
-          tampered.write_bytes(data)
-          snapshot = provenance.open_zip_snapshot(tampered)
+          snapshot = provenance.open_zip_snapshot(source)
           try:
-              expect_rejection("tampered real artifact ZIP", lambda: provenance.inspect_artifact_service_zip_snapshot(snapshot, selected["archiveName"], selected["archiveSha256"], selected["archiveBytes"]))
+              expect_rejection("wrong real outer ZIP digest", "downloaded artifact service ZIP digest mismatch", lambda: provenance.verify_artifact_service_zip_snapshot(snapshot, "0" * 64, selected["artifactServiceZipBytes"]))
+              expect_rejection("wrong real inner archive digest", "inner runtime archive digest mismatch", lambda: provenance.inspect_artifact_service_zip_snapshot(snapshot, selected["archiveName"], "0" * 64, selected["archiveBytes"]))
           finally:
               provenance.close_zip_snapshot(snapshot)
-              tampered.unlink(missing_ok=True)
-          print("real API and ZIP negative mutations rejected")
+          print("unmodified real API evidence passed; real API, outer ZIP, and inner archive negative mutations rejected")
           PY
 
       - name: Validate retrieved bytes and safely extract

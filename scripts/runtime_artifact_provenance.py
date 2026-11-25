@@ -359,30 +359,13 @@ def validate_trusted_release_identity(identity: TrustedReleaseIdentity) -> None:
     require_string(identity.authorization_context, "release.authorization_context")
 
 
-def validate_artifact_selection_identity(identity: TrustedReleaseIdentity) -> None:
-    """Validate selection inputs without granting production meaning to them."""
-    require(isinstance(identity, TrustedReleaseIdentity), "artifact selection identity has an unsupported type")
-    require(identity.repository == RELEASE_REPOSITORY, "selection repository is not the approved repository")
-    require(identity.repository_id == RELEASE_REPOSITORY_ID, "selection repository ID is not the approved stable ID")
-    require(identity.repository_owner_id == RELEASE_REPOSITORY_OWNER_ID, "selection owner ID is not the approved stable ID")
-    require(identity.source_ref.startswith("refs/"), "selection source ref is malformed")
-    require_sha(identity.source_sha, "selection.source_sha")
-    require(identity.event in {"pull_request", "push"}, "selection event is unsupported")
-    require(identity.signer_workflow == RELEASE_SIGNER_WORKFLOW, "selection signer workflow is not approved")
-    require_sha(identity.signer_revision, "selection.signer_revision")
-    require_int(identity.run_id, "selection.run_id", 1)
-    require_int(identity.run_attempt, "selection.run_attempt", 1)
-    require_int(identity.artifact_id, "selection.artifact_id", 1)
-    require(identity.artifact_name == expected_artifact_name(identity.run_id, identity.run_attempt), "selection artifact name is not attempt-qualified")
-    require(identity.artifact_class in {DEVELOPMENT_ARTIFACT_CLASS, PRODUCTION_CANDIDATE_ARTIFACT_CLASS}, "selection artifact class is unsupported")
-    require_digest(identity.artifact_service_zip_sha256, "selection.artifact_service_zip_sha256")
-    _require_bounded_int(identity.artifact_service_zip_bytes, "selection.artifact_service_zip_bytes", 1, MAX_ARTIFACT_BYTES)
-    _require_canonical_archive_name(identity.archive_name, identity.source_sha, "selection.archive_name")
-    require_digest(identity.archive_sha256, "selection.archive_sha256")
-    _require_bounded_int(identity.archive_bytes, "selection.archive_bytes", 1, MAX_ARCHIVE_BYTES)
-    require(identity.platform == RELEASE_PLATFORM and identity.image == RELEASE_IMAGE, "selection runtime contract is unsupported")
-    require_digest(identity.image_digest, "selection.image_digest")
-    require(identity.image_digest == RELEASE_IMAGE.split("@", 1)[1], "selection image digest is inconsistent with image")
+def verify_artifact_selection_against_identity(selection: ExactArtifactSelection, identity: TrustedReleaseIdentity) -> None:
+    """Verify discovered, non-authoritative selection against independent identity evidence."""
+    validate_trusted_release_identity(identity)
+    require(isinstance(selection, ExactArtifactSelection), "artifact selection has an unsupported type")
+    require(selection.byte_verified, "artifact selection has not consumed verified ZIP bytes")
+    for field in ("artifact_id", "artifact_name", "artifact_service_zip_sha256", "artifact_service_zip_bytes", "archive_name", "archive_sha256", "archive_bytes"):
+        require(getattr(selection, field) == getattr(identity, field), f"artifact selection {field} does not match independent release identity")
 
 
 def _require_bounded_int(value: Any, path: str, minimum: int, maximum: int) -> int:
@@ -481,21 +464,12 @@ def validate_artifact_api_response(response: Any) -> list[dict[str, Any]]:
     artifacts = response.get("artifacts")
     require(isinstance(artifacts, list) and len(artifacts) == total_count and len(artifacts) <= 100, "artifact API pagination is incomplete or malformed")
     require(all(isinstance(artifact, dict) for artifact in artifacts), "artifact API contains a malformed entry")
+    artifact_ids: set[int] = set()
+    for artifact in artifacts:
+        require(type(artifact.get("id")) is int and artifact["id"] >= 1, "artifact API contains a malformed artifact ID")
+        require(artifact["id"] not in artifact_ids, "artifact API contains a duplicate artifact ID")
+        artifact_ids.add(artifact["id"])
     return artifacts
-
-
-def validate_exact_run_attempt_metadata(metadata: dict[str, Any], identity: TrustedReleaseIdentity) -> None:
-    """Bind a selection to the exact run-attempt response, not a current run tip."""
-    validate_artifact_selection_identity(identity)
-    require(isinstance(metadata, dict), "exact run-attempt metadata must be an object")
-    require(metadata.get("id") == identity.run_id, "exact run-attempt ID mismatch")
-    require(metadata.get("run_attempt") == identity.run_attempt, "exact run-attempt number mismatch")
-    require(metadata.get("event") == identity.event, "exact run-attempt event mismatch")
-    require(metadata.get("path") == identity.signer_workflow, "exact run-attempt workflow path mismatch")
-    repository = metadata.get("repository")
-    require(isinstance(repository, dict), "exact run-attempt repository evidence is missing")
-    require(repository.get("full_name") == identity.repository, "exact run-attempt repository mismatch")
-    require(repository.get("id") == identity.repository_id, "exact run-attempt repository ID mismatch")
 
 
 def validate_exact_run_attempt_request_metadata(metadata: dict[str, Any], request: ArtifactSelectionRequest, *, now: datetime | None = None) -> None:
@@ -844,15 +818,25 @@ def _open_nofollow_regular(path: Path, maximum: int, label: str) -> tuple[int, i
     flags = os.O_RDONLY
     if hasattr(os, "O_BINARY"):
         flags |= os.O_BINARY
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
     try:
         descriptor = os.open(path, flags)
         metadata = os.fstat(descriptor)
     except OSError as error:
+        if descriptor is not None:
+            os.close(descriptor)
         fail(f"{label} is unavailable: {error}")
-    require(stat.S_ISREG(metadata.st_mode), f"{label} must be a regular file")
-    require(metadata.st_size > 0 and metadata.st_size <= maximum, f"{label} is empty or oversized")
+    try:
+        require(metadata.st_dev == path_metadata.st_dev and metadata.st_ino == path_metadata.st_ino, f"{label} changed during open")
+        require(stat.S_ISREG(metadata.st_mode), f"{label} must be a regular file")
+        require(metadata.st_size > 0 and metadata.st_size <= maximum, f"{label} is empty or oversized")
+    except Exception:
+        os.close(descriptor)
+        raise
     return descriptor, metadata.st_size
 
 
@@ -915,14 +899,31 @@ def _preflight_zip_snapshot(snapshot: ZipSnapshot) -> None:
     tail = os.pread(snapshot.fd, read_size, snapshot.size - read_size) if hasattr(os, "pread") else _read_snapshot_bytes(snapshot, snapshot.size - read_size, read_size)
     offset = tail.rfind(b"PK\x05\x06")
     require(offset >= 0 and len(tail) - offset >= ZIP_EOCD_BYTES, "artifact service ZIP end record is missing")
+    require(b"PK\x06\x06" not in tail and b"PK\x06\x07" not in tail, "ZIP64 records are unsupported")
     fields = struct.unpack_from("<4s4H2LH", tail, offset)
     _, disk, central_disk, entries_disk, entries_total, central_size, central_offset, comment_size = fields
+    eocd_offset = snapshot.size - len(tail) + offset
+    require(eocd_offset + ZIP_EOCD_BYTES + comment_size == snapshot.size, "artifact service ZIP EOCD placement or comment length is invalid")
     require(disk == 0 and central_disk == 0 and entries_disk == entries_total, "multi-disk or contradictory ZIP metadata is unsupported")
     require(entries_total <= MAX_ARTIFACT_ENTRIES, "artifact service ZIP entry count exceeds the limit")
     require(central_size <= MAX_ZIP_CENTRAL_DIRECTORY_BYTES, "artifact service ZIP central directory exceeds the limit")
     require(comment_size <= MAX_ZIP_COMMENT_BYTES, "artifact service ZIP comment exceeds the limit")
     require(entries_total != 0xFFFF and central_size != 0xFFFFFFFF and central_offset != 0xFFFFFFFF, "ZIP64 metadata is unsupported")
-    require(central_offset + central_size <= snapshot.size, "artifact service ZIP central directory is outside the snapshot")
+    require(central_offset + central_size <= eocd_offset, "artifact service ZIP central directory is outside the snapshot")
+    central = _read_snapshot_bytes(snapshot, central_offset, central_size)
+    position = 0
+    for _ in range(entries_total):
+        require(position + 46 <= len(central), "artifact service ZIP central directory is truncated")
+        require(central[position:position + 4] == b"PK\x01\x02", "artifact service ZIP central directory header is invalid")
+        name_size = int.from_bytes(central[position + 28:position + 30], "little")
+        extra_size = int.from_bytes(central[position + 30:position + 32], "little")
+        entry_comment_size = int.from_bytes(central[position + 32:position + 34], "little")
+        require(name_size <= MAX_ZIP_ENTRY_NAME_BYTES, "artifact service ZIP entry name exceeds the limit")
+        require(extra_size <= MAX_ZIP_EXTRA_BYTES and entry_comment_size <= MAX_ZIP_COMMENT_BYTES, "artifact service ZIP metadata exceeds the limit")
+        record_size = 46 + name_size + extra_size + entry_comment_size
+        require(position + record_size <= len(central), "artifact service ZIP central directory entry is truncated")
+        position += record_size
+    require(position == len(central), "artifact service ZIP central directory header count is contradictory")
 
 
 def _read_snapshot_bytes(snapshot: ZipSnapshot, offset: int, size: int) -> bytes:
@@ -957,9 +958,9 @@ def _validate_artifact_metadata(artifact: dict[str, Any], request: ArtifactSelec
     require(run.get("head_branch") == request.run_head_ref.removeprefix("refs/heads/"), "artifact head branch mismatch")
     require(run.get("head_sha") == request.run_head_sha, "artifact head SHA mismatch")
     require(type(run_metadata.get("id")) is int and run_metadata["id"] == request.run_id, "artifact attempt correlation ID mismatch")
-    run_created = _parse_timestamp(run_metadata.get("created_at"), "run.created_at")
+    run_started = _parse_timestamp(run_metadata.get("run_started_at"), "run.run_started_at")
     run_updated = _parse_timestamp(run_metadata.get("updated_at"), "run.updated_at")
-    require(run_created <= created <= run_updated, "artifact creation time is outside the exact attempt window")
+    require(run_started <= created <= run_updated, "artifact creation time is outside the exact attempt window")
 
 
 def _select_artifact_metadata(response: Any, request: ArtifactSelectionRequest, run_metadata: dict[str, Any], *, now: datetime) -> dict[str, Any]:
@@ -1129,13 +1130,19 @@ def inspect_artifact_service_zip_snapshot(snapshot: ZipSnapshot, archive_name: s
         fail(f"artifact service ZIP is malformed: {error}")
 
 
+def verify_artifact_service_zip_snapshot(snapshot: ZipSnapshot, expected_digest: str, expected_bytes: int) -> None:
+    """Verify outer service-ZIP bytes against independently supplied identity evidence."""
+    require(snapshot.sha256 == require_digest(expected_digest, "expected artifact service ZIP digest"), "downloaded artifact service ZIP digest mismatch")
+    require(snapshot.size == _require_bounded_int(expected_bytes, "expected artifact service ZIP bytes", 1, MAX_ARTIFACT_BYTES), "downloaded artifact service ZIP byte count mismatch")
+
+
 def select_artifact_request(request: ArtifactSelectionRequest, *, service_zip_output: Path | None = None, service_zip: Path | None = None, now: datetime | None = None) -> ExactArtifactSelection:
     """Fetch, correlate, and optionally byte-verify one exact artifact."""
     validate_selection_request(request)
-    current = (now or _now_utc()).astimezone(timezone.utc)
     run_metadata = fetch_run_metadata(request.repository, request.run_id, request.run_attempt)
-    validate_exact_run_attempt_request_metadata(run_metadata, request, now=current)
     response = fetch_run_artifacts(request.repository, request.run_id)
+    current = (now or _now_utc()).astimezone(timezone.utc)
+    validate_exact_run_attempt_request_metadata(run_metadata, request, now=current)
     artifact = _select_artifact_metadata(response, request, run_metadata, now=current)
     require(service_zip_output is None or service_zip is None, "artifact service ZIP input and output are mutually exclusive")
     selected_path = service_zip
@@ -1156,8 +1163,7 @@ def select_artifact_request(request: ArtifactSelectionRequest, *, service_zip_ou
     try:
         service_digest = snapshot.sha256
         service_bytes = snapshot.size
-        require(service_digest == require_digest(artifact["digest"], "artifact.digest"), "downloaded artifact service ZIP digest mismatch")
-        require(service_bytes == artifact["size_in_bytes"], "downloaded artifact service ZIP byte count mismatch")
+        verify_artifact_service_zip_snapshot(snapshot, artifact["digest"], artifact["size_in_bytes"])
         inner_digest, inner_bytes = inspect_artifact_service_zip_snapshot(snapshot, request.archive_name)
         verified = True
         return ExactArtifactSelection(artifact["id"], artifact["name"], service_digest, service_bytes, request.archive_name, inner_digest, inner_bytes, True)
@@ -1167,52 +1173,12 @@ def select_artifact_request(request: ArtifactSelectionRequest, *, service_zip_ou
             selected_path.unlink(missing_ok=True)
 
 
-def select_exact_artifact(artifacts: list[dict[str, Any]], identity: TrustedReleaseIdentity, *, service_zip: Path | None = None, now: datetime | None = None) -> ExactArtifactSelection:
-    """Select one exact artifact and distinguish its service ZIP from its inner archive."""
-    validate_artifact_selection_identity(identity)
-    require(isinstance(artifacts, list), "artifact metadata must be a list")
-    same_name = [artifact for artifact in artifacts if artifact.get("name") == identity.artifact_name]
-    require(len(same_name) == 1, "exact artifact name is missing or ambiguous")
-    matches = [artifact for artifact in artifacts if artifact.get("id") == identity.artifact_id]
-    require(len(matches) == 1, "exact artifact ID is missing or ambiguous")
-    artifact = matches[0]
-    require(isinstance(artifact.get("name"), str) and artifact.get("name") == identity.artifact_name, "exact artifact name mismatch")
-    require(artifact.get("name") == expected_artifact_name(identity.run_id, identity.run_attempt), "artifact name does not bind the requested attempt")
-    require(require_digest(artifact.get("digest"), "artifact.digest") == identity.artifact_service_zip_sha256, "artifact service ZIP digest mismatch")
-    _require_bounded_int(artifact.get("size_in_bytes"), "artifact.size_in_bytes", 1, MAX_ARTIFACT_BYTES)
-    require(artifact.get("size_in_bytes") == identity.artifact_service_zip_bytes, "artifact service ZIP byte count mismatch")
-    require(artifact.get("expired") is False, "artifact is expired")
-    workflow_run = artifact.get("workflow_run")
-    require(isinstance(workflow_run, dict), "artifact workflow run metadata is missing")
-    require(workflow_run.get("id") == identity.run_id, "artifact workflow run ID mismatch")
-    require(workflow_run.get("repository_id") == identity.repository_id, "artifact workflow repository ID mismatch")
-    workflow_head_sha = workflow_run.get("head_sha")
-    require(isinstance(workflow_head_sha, str) and GIT_SHA_RE.fullmatch(workflow_head_sha), "artifact workflow source SHA is malformed")
-    if identity.event == "push":
-        require(workflow_head_sha == identity.source_sha, "artifact workflow source SHA mismatch")
-    created = _parse_timestamp(artifact.get("created_at"), "artifact.created_at")
-    expires = _parse_timestamp(artifact.get("expires_at"), "artifact.expires_at")
-    require(expires > created, "artifact expiry is not after creation")
-    require((now or _now_utc()).astimezone(timezone.utc) < expires, "artifact retention has expired")
-    archive_digest = identity.archive_sha256
-    archive_bytes = identity.archive_bytes
-    byte_verified = False
-    if service_zip is not None:
-        snapshot = open_zip_snapshot(service_zip)
-        try:
-            require(snapshot.sha256 == identity.artifact_service_zip_sha256, "downloaded artifact service ZIP digest mismatch")
-            require(snapshot.size == identity.artifact_service_zip_bytes, "downloaded artifact service ZIP byte count mismatch")
-            archive_digest, archive_bytes = inspect_artifact_service_zip_snapshot(snapshot, identity.archive_name, identity.archive_sha256, identity.archive_bytes)
-            byte_verified = True
-        finally:
-            close_zip_snapshot(snapshot)
-    return ExactArtifactSelection(identity.artifact_id, identity.artifact_name, identity.artifact_service_zip_sha256, identity.artifact_service_zip_bytes, identity.archive_name, archive_digest, archive_bytes, byte_verified)
-
-
 def inspect_artifact_service_zip(service_zip: Path, identity: TrustedReleaseIdentity) -> tuple[str, int]:
     """Read exactly one inner runtime archive from GitHub's artifact-service ZIP."""
     snapshot = open_zip_snapshot(service_zip)
     try:
+        validate_trusted_release_identity(identity)
+        verify_artifact_service_zip_snapshot(snapshot, identity.artifact_service_zip_sha256, identity.artifact_service_zip_bytes)
         return inspect_artifact_service_zip_snapshot(snapshot, identity.archive_name, identity.archive_sha256, identity.archive_bytes)
     finally:
         close_zip_snapshot(snapshot)
@@ -1446,24 +1412,6 @@ def evaluate_synthetic_production_policy_fixture(fixture: dict[str, Any]) -> Eli
     return EligibilityResult(True, "synthetic-policy-fixture", False, "synthetic policy result is non-authoritative and cannot authorize production")
 
 
-def identity_from_selection_json(value: Any) -> TrustedReleaseIdentity:
-    """Parse only the exact artifact-selection contract; never parse authorization here."""
-    require(isinstance(value, dict), "artifact selection identity must be an object")
-    fields = (
-        "repository", "repository_id", "repository_owner_id", "source_ref", "source_sha", "event",
-        "signer_workflow", "signer_revision", "run_id", "run_attempt", "artifact_id", "artifact_name", "artifact_class",
-        "artifact_service_zip_sha256", "artifact_service_zip_bytes", "archive_name", "archive_sha256",
-        "archive_bytes", "platform", "image", "image_digest", "authorization_context",
-    )
-    require(set(value) == set(fields), "artifact selection identity has missing or unexpected fields")
-    try:
-        identity = TrustedReleaseIdentity(**{field: value[field] for field in fields})
-    except TypeError as error:
-        fail(f"artifact selection identity is malformed: {error}")
-    validate_artifact_selection_identity(identity)
-    return identity
-
-
 def selection_request_from_json(value: Any) -> ArtifactSelectionRequest:
     """Parse a bounded, non-authoritative exact-selection request."""
     require(isinstance(value, dict), "artifact selection request must be an object")
@@ -1488,14 +1436,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--evaluate-synthetic-policy", action="store_true")
     parser.add_argument("--fixture")
-    parser.add_argument("--select-exact-artifact", action="store_true")
-    parser.add_argument("--selection-identity")
     parser.add_argument("--selection-request")
-    parser.add_argument("--selection-repository")
-    parser.add_argument("--selection-run-id", type=int)
-    parser.add_argument("--selection-run-attempt", type=int)
-    parser.add_argument("--selection-artifacts")
-    parser.add_argument("--selection-run-metadata")
     parser.add_argument("--selection-service-zip")
     parser.add_argument("--selection-download-service-zip")
     return parser.parse_args()
@@ -1506,24 +1447,8 @@ def main() -> int:
     args = parse_args()
     if args.selection_request:
         request = selection_request_from_json(_read_bounded_json(Path(args.selection_request), "artifact selection request"))
-        require(args.selection_repository is None and args.selection_run_id is None and args.selection_run_attempt is None, "selection request and CLI identity selectors are mutually exclusive")
-        require(args.selection_artifacts is None and args.selection_run_metadata is None, "direct exact selection must fetch API metadata through the CLI")
         require(args.selection_service_zip is None or args.selection_download_service_zip is None, "selection ZIP input and download are mutually exclusive")
         selected = select_artifact_request(request, service_zip=Path(args.selection_service_zip) if args.selection_service_zip else None, service_zip_output=Path(args.selection_download_service_zip) if args.selection_download_service_zip else None)
-        print(json.dumps({"authoritative": False, "byteVerified": selected.byte_verified, "selection": {"artifactId": selected.artifact_id, "artifactName": selected.artifact_name, "artifactServiceZipSha256": selected.artifact_service_zip_sha256, "artifactServiceZipBytes": selected.artifact_service_zip_bytes, "archiveName": selected.archive_name, "archiveSha256": selected.archive_sha256, "archiveBytes": selected.archive_bytes}}, indent=2))
-        return 0
-    if args.select_exact_artifact:
-        required = (args.selection_identity, args.selection_artifacts, args.selection_run_metadata, args.selection_service_zip)
-        if any(value is None for value in required):
-            raise SystemExit("--select-exact-artifact requires selection identity, artifacts, run metadata, and service ZIP")
-        identity = identity_from_selection_json(_read_bounded_json(Path(args.selection_identity), "artifact selection identity"))
-        artifacts_document = _read_bounded_json(Path(args.selection_artifacts), "selection artifact API response")
-        require(isinstance(artifacts_document, dict) and isinstance(artifacts_document.get("artifacts"), list), "selection artifact API response is malformed")
-        run_metadata = _read_bounded_json(Path(args.selection_run_metadata), "selection run metadata")
-        validate_exact_run_attempt_metadata(run_metadata, identity)
-        validate_artifact_api_response(artifacts_document)
-        selected = select_exact_artifact(artifacts_document["artifacts"], identity, service_zip=Path(args.selection_service_zip))
-        require(selected.byte_verified, "selection did not consume and verify artifact service ZIP bytes")
         print(json.dumps({"authoritative": False, "byteVerified": selected.byte_verified, "selection": {"artifactId": selected.artifact_id, "artifactName": selected.artifact_name, "artifactServiceZipSha256": selected.artifact_service_zip_sha256, "artifactServiceZipBytes": selected.artifact_service_zip_bytes, "archiveName": selected.archive_name, "archiveSha256": selected.archive_sha256, "archiveBytes": selected.archive_bytes}}, indent=2))
         return 0
     if not args.evaluate_synthetic_policy or not args.fixture:
