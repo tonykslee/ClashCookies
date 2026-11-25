@@ -73,12 +73,15 @@ jobs:
           name: runtime-artifact-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/retrieved-runtime-artifact
 
+      - name: Run Linux descriptor-boundary regressions
+        run: python -m unittest discover -s tests -p 'test_runtime_artifact_security.py' -v
+
       - name: Validate retrieved bytes and safely extract
         run: |
           set -euo pipefail
           archive="$(find "$RUNNER_TEMP/retrieved-runtime-artifact" -maxdepth 1 -name '*.tar.gz' -print -quit)"
           test -n "$archive"
-          bash ./scripts/validate-runtime-artifact.sh \
+          validation_output="$(bash ./scripts/validate-runtime-artifact.sh \
             --archive "$archive" \
             --checksum "$archive.sha256" \
             --manifest "$archive.manifest.json" \
@@ -91,7 +94,12 @@ jobs:
             --expected-base-image "$RUNTIME_ARTIFACT_IMAGE" \
             --expected-base-image-digest "${RUNTIME_ARTIFACT_IMAGE##*@}" \
             --source-root "$GITHUB_WORKSPACE" \
-            --extract "$RUNNER_TEMP/extracted-runtime-artifact"
+            --extract "$RUNNER_TEMP/extracted-runtime-artifact")"
+          printf '%s\n' "$validation_output"
+          {
+            echo "## FB-028B bounded validation/extraction"
+            jq -r '"- Elapsed: \(.measurements.elapsedMs) ms\n- Headers: \(.measurements.headers.totalHeaders) total / \(.measurements.headers.metadataHeaders) metadata\n- Physical metadata: \(.measurements.headers.physicalMetadataBytes) bytes\n- Archive: \(.archiveBytes) bytes\n- Extracted footprint: \(.extractedFootprintBytes) bytes\n- Estimated temporary disk: \(.measurements.temporaryDiskBytesRequired) bytes\n- Peak memory: \(.measurements.peakMemoryBytes // "unavailable")"' <<< "$validation_output"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Start disposable PostgreSQL for runtime engine probe
         run: |

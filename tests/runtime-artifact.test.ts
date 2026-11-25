@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 
 type Entry = { name: string; content?: string; type?: "file" | "directory" | "symlink"; link?: string; mode?: number };
+type Extension = { type: string; payload?: Buffer; declaredSize?: number; padding?: Buffer };
 const sourceSha = "0123456789abcdef0123456789abcdef01234567";
 
 function tar(entries: Entry[]): Buffer {
@@ -36,6 +37,50 @@ function tar(entries: Entry[]): Buffer {
   }
   blocks.push(Buffer.alloc(1024));
   return gzipSync(Buffer.concat(blocks));
+}
+
+function tarHeader(name: string, type: number, size: number): Buffer {
+  const block = Buffer.alloc(512);
+  block.write(name, 0, 100, "utf8");
+  block.write("0000644", 100, 7, "ascii");
+  block.write("0000000", 108, 8, "ascii");
+  block.write("0000000", 116, 8, "ascii");
+  block.write(size.toString(8).padStart(11, "0"), 124, 11, "ascii");
+  block[156] = type;
+  block.fill(32, 148, 156);
+  let checksum = 0;
+  for (const byte of block) checksum += byte;
+  block.write(checksum.toString(8).padStart(6, "0"), 148, 6, "ascii");
+  return block;
+}
+
+function paxRecord(key: string, value: string): Buffer {
+  const body = `${key}=${value}\n`;
+  let length = Buffer.byteLength(body) + 2;
+  while (String(length).length + 1 + Buffer.byteLength(body) !== length) length = String(length).length + 1 + Buffer.byteLength(body);
+  return Buffer.from(`${length} ${body}`, "utf8");
+}
+
+function withExtensions(archive: Buffer, extensions: Extension[]): Buffer {
+  const raw = gunzipSync(archive);
+  const extensionBlocks: Buffer[] = [];
+  for (const extension of extensions) {
+    const payload = extension.payload ?? Buffer.alloc(0);
+    const declaredSize = extension.declaredSize ?? payload.length;
+    extensionBlocks.push(tarHeader("PaxHeader", extension.type.charCodeAt(0), declaredSize));
+    const padded = Buffer.alloc(Math.ceil(declaredSize / 512) * 512);
+    payload.copy(padded, 0, 0, Math.min(payload.length, padded.length));
+    if (extension.padding) extension.padding.copy(padded, declaredSize, 0, Math.min(extension.padding.length, padded.length - declaredSize));
+    extensionBlocks.push(padded);
+  }
+  return gzipSync(Buffer.concat([raw.subarray(0, raw.length - 1024), ...extensionBlocks, Buffer.alloc(1024)]));
+}
+
+function withLegacyNulDirectory(archive: Buffer): Buffer {
+  const raw = gunzipSync(archive);
+  const legacyDirectory = tarHeader("legacy/", 0, 512);
+  const hiddenHeader = tarHeader("hidden", 0, 0);
+  return gzipSync(Buffer.concat([raw.subarray(0, raw.length - 1024), legacyDirectory, hiddenHeader, Buffer.alloc(1024)]));
 }
 
 function fixture(options: { unsafe?: boolean; escapingSymlink?: boolean; cyclicSymlink?: boolean; intermediateSymlink?: boolean; unsafeMode?: boolean; missingManifest?: boolean; missingRuntime?: boolean; realTar?: boolean } = {}) {
@@ -107,7 +152,7 @@ function fixture(options: { unsafe?: boolean; escapingSymlink?: boolean; cyclicS
       else if (entry.type === "symlink") { mkdirSync(join(entryPath, ".."), { recursive: true }); symlinkSync(entry.link ?? "", entryPath); }
       else { mkdirSync(join(entryPath, ".."), { recursive: true }); writeFileSync(entryPath, entry.content ?? "", { mode: entry.mode ?? 0o644 }); chmodSync(entryPath, entry.mode ?? 0o644); }
     }
-    execFileSync("tar", ["--format=posix", "-czf", archivePath, "-C", payload, "dist", "node_modules", "prisma", "package.json", "yarn.lock", "runtime-artifact-manifest.json"], { stdio: "pipe" });
+    execFileSync("tar", ["--format=gnu", "-czf", archivePath, "-C", payload, "dist", "node_modules", "prisma", "package.json", "yarn.lock", "runtime-artifact-manifest.json"], { stdio: "pipe" });
     archive = readFileSync(archivePath);
   } else {
     archive = tar(entries);
@@ -177,7 +222,7 @@ function producerContractFixture() {
   writePayload("yarn.lock", "# fixture\n");
   const env = { ...process.env, SOURCE_SHA: sourceSha, ARTIFACT_NAME: name, BUILD_IMAGE: image, BUILD_PLATFORM: "linux/amd64", BUILD_ARCHITECTURE: "amd64", NODE_VERSION: "v20.0.0", YARN_VERSION: "1.22.22", BUILD_DURATION_MS: "7", BUILD_STARTED_AT: "2026-01-01T00:00:00Z", GITHUB_EVENT_NAME: "pull_request", GITHUB_WORKFLOW: "contract", GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "3", GITHUB_REF: "refs/pull/1/merge", GITHUB_REPOSITORY: "test/test", GITHUB_SERVER_URL: "https://github.com" };
   execFileSync(process.execPath, [join(process.cwd(), "scripts", "runtime-artifact-manifest.js"), "--root", payload, "--output", join(payload, "runtime-artifact-manifest.json")], { cwd: process.cwd(), env, stdio: "pipe" });
-  execFileSync("tar", ["--format=posix", "-czf", archivePath, "-C", payload, "dist", "node_modules", "prisma", "package.json", "yarn.lock", "runtime-artifact-manifest.json"], { stdio: "pipe" });
+  execFileSync("tar", ["--format=gnu", "-czf", archivePath, "-C", payload, "dist", "node_modules", "prisma", "package.json", "yarn.lock", "runtime-artifact-manifest.json"], { stdio: "pipe" });
   const archive = readFileSync(archivePath);
   const digest = createHash("sha256").update(archive).digest("hex");
   execFileSync(process.execPath, [join(process.cwd(), "scripts", "finalize-runtime-artifact.js"), "--root", payload, "--embedded", join(payload, "runtime-artifact-manifest.json"), "--output", `${archivePath}.manifest.json`, "--sha256", digest, "--archive-bytes", String(statSync(archivePath).size)], { cwd: process.cwd(), env, stdio: "pipe" });
@@ -312,8 +357,122 @@ describe("runtime artifact validation", () => {
     }
     writeFileSync(value.archivePath, corrupted);
     refreshExternalIntegrity(value.archivePath);
-    const reasons: Record<string, string> = { "truncated gzip": "malformed archive", "trailing bytes": "malformed archive", "invalid tar termination": "invalid tar termination header" };
+    const reasons: Record<string, string> = { "truncated gzip": "malformed archive", "trailing bytes": "malformed archive", "invalid tar termination": "malformed tar header checksum" };
     expectValidationFailure(value.archivePath, reasons[kind]);
     rmSync(value.root, { recursive: true, force: true });
   });
+
+  it.each([
+    ["oversized declared GNU long-name metadata", [{ type: "L", declaredSize: 65 * 1024 }], "extension metadata record exceeds the limit"],
+    ["oversized actual GNU long-name metadata", [{ type: "L", payload: Buffer.alloc(65 * 1024, 97) }], "extension metadata record exceeds the limit"],
+    ["aggregate physical GNU metadata", [{ type: "L", payload: Buffer.from("a\0") }, { type: "K", payload: Buffer.from("b\0") }], "aggregate physical metadata"],
+    ["extension recursion", [{ type: "L", payload: Buffer.from("a\0") }, { type: "K", payload: Buffer.from("b\0") }], "consecutive extension headers"],
+    ["physical metadata-header count", [{ type: "L", payload: Buffer.from("a\0") }, { type: "K", payload: Buffer.from("b\0") }], "physical metadata-header count"],
+    ["malformed GNU long-name metadata", [{ type: "L", payload: Buffer.from("bad\0name") }], "malformed GNU long-name metadata"],
+  ] as const)("rejects %s before tarfile extension parsing", (_label, extensions, reason) => {
+    const value = fixture();
+    writeFileSync(value.archivePath, withExtensions(readFileSync(value.archivePath), extensions));
+    refreshExternalIntegrity(value.archivePath);
+    const extra = _label === "aggregate physical GNU metadata" ? ["--max-metadata-total-bytes", "1023"] : _label === "extension recursion" ? ["--max-extension-headers", "1"] : _label === "physical metadata-header count" ? ["--max-metadata-headers", "1"] : [];
+    expectValidationFailure(value.archivePath, reason, ...extra);
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it("rejects global PAX amplification before tarfile dispatch", () => {
+    const value = fixture();
+    const records = Buffer.concat(Array.from({ length: 1000 }, (_, index) => paxRecord(`comment${index}`, "amplification")));
+    writeFileSync(value.archivePath, withExtensions(readFileSync(value.archivePath), [{ type: "g", payload: records }]));
+    refreshExternalIntegrity(value.archivePath);
+    expectValidationFailure(value.archivePath, "unsupported physical tar header type");
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it("never publishes into an existing extraction destination", () => {
+    const value = fixture();
+    const destination = join(value.root, "existing-destination");
+    mkdirSync(destination);
+    expectValidationFailure(value.archivePath, "extraction destination already exists", "--extract", destination);
+    expect(lstatSync(destination).isDirectory()).toBe(true);
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it("rejects a sidecar symlink instead of following it", () => {
+    if (process.platform === "win32") return;
+    const value = fixture();
+    const linkedManifest = join(value.root, "linked-manifest.json");
+    symlinkSync(`${value.archivePath}.manifest.json`, linkedManifest);
+    expectValidationFailure(value.archivePath, "published manifest must not be a symlink", "--manifest", linkedManifest);
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it.each(["source symlink", "source directory"])("rejects a non-regular %s", (kind) => {
+    if (process.platform === "win32" && kind === "source symlink") return;
+    const value = fixture();
+    if (kind === "source symlink") {
+      const replacement = join(value.root, "replacement.tar.gz");
+      symlinkSync(value.archivePath, replacement);
+      expectValidationFailure(replacement, "archive must not be a symlink");
+    } else {
+      rmSync(value.archivePath);
+      mkdirSync(value.archivePath);
+      expectValidationFailure(value.archivePath, "archive is not a regular file");
+    }
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it("does not leave a destination after extraction fails", () => {
+    const value = fixture();
+    const destination = join(value.root, "failed-extraction");
+    const corrupted = Buffer.from(readFileSync(value.archivePath));
+    corrupted[40] ^= 0xff;
+    writeFileSync(value.archivePath, corrupted);
+    refreshExternalIntegrity(value.archivePath);
+    expectValidationFailure(value.archivePath, "malformed archive", "--extract", destination);
+    expect(() => lstatSync(destination)).toThrow();
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it("rejects Solaris X and bad physical header framing before downstream parsing", () => {
+    const value = fixture();
+    writeFileSync(value.archivePath, withExtensions(readFileSync(value.archivePath), [{ type: "X", payload: Buffer.from("unsupported\n") }]));
+    refreshExternalIntegrity(value.archivePath);
+    expectValidationFailure(value.archivePath, "unsupported physical tar header type");
+    rmSync(value.root, { recursive: true, force: true });
+
+    const framed = fixture();
+    const archive = withExtensions(readFileSync(framed.archivePath), [{ type: "x", payload: paxRecord("comment", "bounded") }]);
+    const raw = gunzipSync(archive);
+    const headerOffset = raw.indexOf(Buffer.from("PaxHeader"));
+    raw[headerOffset] ^= 0xff;
+    writeFileSync(framed.archivePath, gzipSync(raw));
+    refreshExternalIntegrity(framed.archivePath);
+    expectValidationFailure(framed.archivePath, "invalid tar header checksum");
+    rmSync(framed.root, { recursive: true, force: true });
+  });
+
+  it("rejects hidden extension framing instead of honoring a PAX size override", () => {
+    const value = fixture();
+    const declaredComment = paxRecord("comment", "bounded");
+    const hiddenSizeOverride = paxRecord("size", "1024");
+    const hiddenExtension = withExtensions(readFileSync(value.archivePath), [{ type: "x", payload: declaredComment, padding: hiddenSizeOverride }]);
+    writeFileSync(value.archivePath, hiddenExtension);
+    refreshExternalIntegrity(value.archivePath);
+    expectValidationFailure(value.archivePath, "unsupported physical tar header type");
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it("rejects nonzero extension padding and legacy NUL-type directory framing before parser dispatch", () => {
+    const padded = fixture();
+    writeFileSync(padded.archivePath, withExtensions(readFileSync(padded.archivePath), [{ type: "L", payload: Buffer.from("valid-name\0"), padding: Buffer.from("nonzero") }]));
+    refreshExternalIntegrity(padded.archivePath);
+    expectValidationFailure(padded.archivePath, "nonzero extension metadata padding");
+    rmSync(padded.root, { recursive: true, force: true });
+
+    const legacy = fixture();
+    writeFileSync(legacy.archivePath, withLegacyNulDirectory(readFileSync(legacy.archivePath)));
+    refreshExternalIntegrity(legacy.archivePath);
+    expectValidationFailure(legacy.archivePath, "legacy NUL-type directory headers are unsupported");
+    rmSync(legacy.root, { recursive: true, force: true });
+  });
+
 });
