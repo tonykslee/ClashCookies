@@ -7,6 +7,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib.util
+import json
 import shutil
 import struct
 import subprocess
@@ -632,6 +633,47 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             with self.assertRaisesRegex(provenance.ProvenanceError, "signature is invalid"):
                 provenance.verify_signed_authorization_record(bad_signature, trust, identity, authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
 
+    def test_verifier_returns_private_verified_snapshot_when_caller_record_mutates(self) -> None:
+        identity = trusted_identity()
+        authorization = authorization_for(identity, authorization_id="snapshot-1")
+        with TemporaryDirectory() as directory:
+            envelope, trust, _ = self._signed_envelope(Path(directory), authorization)
+            real_run_bounded = provenance.run_bounded
+
+            def mutate_during_verification(command: list[str], **kwargs: object):
+                if "pkeyutl" in command:
+                    envelope["record"]["authorization"]["scope"] = "recovery-release"
+                    envelope["record"]["authorization"]["recovery_context"] = "unsigned-mutation"
+                return real_run_bounded(command, **kwargs)
+
+            with patch.object(provenance, "run_bounded", side_effect=mutate_during_verification):
+                verified = provenance.verify_signed_authorization_record(envelope, trust, identity, authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            self.assertEqual(verified.scope, "forward-release")
+            self.assertIsNone(verified.recovery_context)
+            journal_authorization = authorization_for(identity, authorization_id="snapshot-journal-1")
+            material = Path(directory) / "journal-material"
+            material.mkdir()
+            journal_envelope, journal_trust, _ = self._signed_envelope(material, journal_authorization)
+            journal_root = Path(directory) / "journal"
+            journal_root.mkdir()
+            journal_root.chmod(0o700)
+            journal = provenance.AuthorizationReplayJournal(journal_root, repository_root=material / "mutable-checkout", development_mode=(provenance.os.name == "nt"))
+            real_run_bounded = provenance.run_bounded
+
+            def mutate_journal_record(command: list[str], **kwargs: object):
+                if "pkeyutl" in command:
+                    journal_envelope["record"]["authorization"]["scope"] = "recovery-release"
+                    journal_envelope["record"]["authorization"]["recovery_context"] = "unsigned-journal-mutation"
+                return real_run_bounded(command, **kwargs)
+
+            with patch.object(provenance, "run_bounded", side_effect=mutate_journal_record):
+                journal.reserve(journal_envelope, identity, authorization_allowlist(), journal_trust, operation="forward-release", now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            state_files = [path for path in journal_root.iterdir() if path.suffix == ".json"]
+            self.assertEqual(len(state_files), 1)
+            state = json.loads(state_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(state["scope"], "forward-release")
+            self.assertIsNone(state["recovery_context"])
+
     def test_trust_configuration_rejects_non_ed25519_keys_substitution_and_checkout_local_roots(self) -> None:
         identity = trusted_identity()
         authorization = authorization_for(identity)
@@ -770,6 +812,25 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             with patch.object(provenance, "_fsync_directory", side_effect=provenance.ProvenanceError("simulated fsync failure")), self.assertRaisesRegex(provenance.ProvenanceError, "fsync"):
                 journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
 
+    def test_identical_reservation_retry_reestablishes_durability_after_initial_fsync_failure_and_restart(self) -> None:
+        identity = trusted_identity()
+        authorization = authorization_for(identity, authorization_id="durability-retry-1")
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "replay"
+            root.mkdir()
+            root.chmod(0o700)
+            envelope, trust, _ = self._signed_envelope(Path(directory), authorization)
+            journal = provenance.AuthorizationReplayJournal(root, repository_root=Path(directory) / "mutable-checkout", development_mode=(provenance.os.name == "nt"))
+            now = datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc)
+            with patch.object(provenance, "_fsync_directory", side_effect=provenance.ProvenanceError("durability unavailable")), self.assertRaisesRegex(provenance.ProvenanceError, "durability"):
+                journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
+            with patch.object(provenance, "_fsync_directory", side_effect=provenance.ProvenanceError("durability still unavailable")), self.assertRaisesRegex(provenance.ProvenanceError, "still unavailable"):
+                journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
+            restarted = provenance.AuthorizationReplayJournal(root, repository_root=Path(directory) / "mutable-checkout", development_mode=(provenance.os.name == "nt"))
+            with patch.object(provenance, "_fsync_directory", side_effect=provenance.ProvenanceError("durability after restart unavailable")), self.assertRaisesRegex(provenance.ProvenanceError, "after restart"):
+                restarted.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
+            restarted.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
+
     def test_replay_journal_rejects_malformed_state_and_requires_operation_context(self) -> None:
         identity = trusted_identity()
         authorization = authorization_for(identity, authorization_id="malformed-1")
@@ -798,6 +859,49 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             checkout.mkdir()
             with self.assertRaisesRegex(provenance.ProvenanceError, "not private"):
                 provenance.AuthorizationReplayJournal(root, repository_root=checkout)
+
+    @unittest.skipUnless(provenance.os.name == "posix", "Linux lock identity regression")
+    def test_replay_journal_unsafe_lock_symlink_and_hardlink_are_untouched(self) -> None:
+        identity = trusted_identity()
+        authorization = authorization_for(identity, authorization_id="unsafe-lock-1")
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "replay"
+            root.mkdir()
+            root.chmod(0o700)
+            envelope, trust, _ = self._signed_envelope(Path(directory), authorization)
+            target = Path(directory) / "lock-target"
+            target.write_bytes(b"sentinel")
+            target.chmod(0o600)
+            journal = provenance.AuthorizationReplayJournal(root, repository_root=Path(directory) / "mutable-checkout")
+            (root / ".journal.lock").symlink_to(target)
+            with self.assertRaises(provenance.ProvenanceError):
+                journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            self.assertEqual(target.read_bytes(), b"sentinel")
+            (root / ".journal.lock").unlink()
+            os_link = provenance.os.link
+            os_link(target, root / ".journal.lock")
+            with self.assertRaises(provenance.ProvenanceError):
+                journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            self.assertEqual(target.read_bytes(), b"sentinel")
+
+    @unittest.skipUnless(provenance.os.name == "posix", "Linux directory identity regression")
+    def test_replay_journal_rejects_substituted_directory_without_writing_new_root(self) -> None:
+        identity = trusted_identity()
+        authorization = authorization_for(identity, authorization_id="substituted-root-1")
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "replay"
+            root.mkdir()
+            root.chmod(0o700)
+            envelope, trust, _ = self._signed_envelope(Path(directory), authorization)
+            journal = provenance.AuthorizationReplayJournal(root, repository_root=Path(directory) / "mutable-checkout")
+            original = Path(directory) / "original-replay"
+            root.rename(original)
+            root.mkdir()
+            root.chmod(0o700)
+            with self.assertRaisesRegex(provenance.ProvenanceError, "identity changed|substituted"):
+                journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            self.assertFalse(any(path.suffix == ".json" for path in root.iterdir()))
+            self.assertFalse((root / ".journal.lock").exists())
 
     def test_production_eligibility_is_disabled_even_for_valid_forward_authorization(self) -> None:
         identity = trusted_identity()

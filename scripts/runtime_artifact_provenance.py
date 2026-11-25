@@ -21,6 +21,7 @@ import threading
 import time
 import tempfile
 import shutil
+import uuid
 from zipfile import BadZipFile, ZipFile
 from pathlib import Path
 from typing import Any
@@ -817,6 +818,14 @@ def _inspect_ed25519_key(snapshot: Path, directory: Path) -> str:
     return fingerprint
 
 
+def _read_verified_canonical_record(path: Path, expected: bytes) -> dict[str, Any]:
+    """Decode only the private bytes that were handed to OpenSSL for verification."""
+    decoded = _read_bounded_json(path, "verified authorization record snapshot")
+    require(isinstance(decoded, dict), "verified authorization record snapshot must be an object")
+    require(_canonical_json(decoded) == expected, "verified authorization record snapshot changed during verification")
+    return decoded
+
+
 def verify_signed_authorization_record(
     envelope: Any,
     trust: AuthorizationTrustConfig,
@@ -829,9 +838,6 @@ def verify_signed_authorization_record(
     _validate_trust_config(trust)
     record, signature, key_id = _validate_authorization_envelope(envelope)
     require(key_id == trust.expected_key_id, "authorization signing key is not the independently trusted key")
-    require(record.get("contract") == AUTHORIZATION_CONTRACT and record.get("version") == AUTHORIZATION_CONTRACT_VERSION, "authorization record contract version is unsupported")
-    payload_auth = record.get("authorization")
-    require(isinstance(payload_auth, dict) and payload_auth.get("signing_key_id") == key_id, "authorization signing key is not bound to the record")
     canonical = _canonical_json(record)
     with tempfile.TemporaryDirectory(prefix="clashcookies-auth-verify-") as directory_name:
         directory = Path(directory_name)
@@ -848,8 +854,12 @@ def verify_signed_authorization_record(
         except (OSError, subprocess.TimeoutExpired) as error:
             fail(f"Ed25519 authorization verification failed to run: {error}")
         require(result.returncode == 0, f"Ed25519 authorization signature is invalid: {result.stderr.strip() or result.stdout.strip()}")
+        verified_record = _read_verified_canonical_record(record_path, canonical)
+    require(verified_record.get("contract") == AUTHORIZATION_CONTRACT and verified_record.get("version") == AUTHORIZATION_CONTRACT_VERSION, "authorization record contract version is unsupported")
+    payload_auth = verified_record.get("authorization")
+    require(isinstance(payload_auth, dict) and payload_auth.get("signing_key_id") == key_id, "authorization signing key is not bound to the record")
     verification = AuthorizationVerificationReceipt(AUTHORIZATION_VERIFIER, hashlib.sha256(canonical).hexdigest(), (now or _now_utc()).astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), key_id, AUTHORIZATION_SIGNATURE_ALGORITHM, key_fingerprint)
-    authorization = _authorization_from_payload(record, verification)
+    authorization = _authorization_from_payload(verified_record, verification)
     validate_independent_authorization(authorization, identity, revision_allowlist=revision_allowlist, now=now)
     return authorization
 
@@ -858,11 +868,18 @@ def _identity_fingerprint(identity: TrustedReleaseIdentity) -> str:
     return hashlib.sha256(_canonical_json(_authorization_identity_payload(identity))).hexdigest()
 
 
-def _fsync_directory(path: Path, *, required: bool) -> None:
+def _fsync_directory(path: Path, *, required: bool, descriptor: int | None = None) -> None:
     """Fsync a journal directory, failing closed when Linux durability is promised."""
     if os.name != "posix":
         if required:
             fail("directory fsync durability is unavailable on this platform")
+        return
+    if descriptor is not None:
+        try:
+            os.fsync(descriptor)
+        except OSError as error:
+            if required:
+                fail(f"authorization replay directory fsync failed: {error}")
         return
     descriptor = None
     try:
@@ -880,7 +897,7 @@ def _fsync_directory(path: Path, *, required: bool) -> None:
 class AuthorizationReplayJournal:
     """Serialized replay state kept outside the mutable checkout."""
 
-    def __init__(self, root: Path, *, repository_root: Path, development_mode: bool = False) -> None:
+    def __init__(self, root: Path, *, repository_root: Path, development_mode: bool = False, lock_timeout_seconds: float = 5.0) -> None:
         _require_external_path(root, repository_root, "authorization replay journal")
         try:
             metadata = os.lstat(root)
@@ -893,7 +910,48 @@ class AuthorizationReplayJournal:
         if not self.durable:
             require(development_mode, "durable authorization replay storage is unsupported on Windows without explicit development mode")
         self._validate_private_directory()
+        self._root_fd = self._open_root_directory()
+        root_stat = os.fstat(self._root_fd) if self._root_fd is not None else os.stat(self.root)
+        self._root_identity = (root_stat.st_dev, root_stat.st_ino, root_stat.st_mode, root_stat.st_uid)
+        require(lock_timeout_seconds > 0, "authorization replay lock timeout must be positive")
+        self.lock_timeout_seconds = lock_timeout_seconds
         self.lock_path = self.root / ".journal.lock"
+
+    def _open_root_directory(self) -> int | None:
+        if os.name != "posix":
+            return None
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        try:
+            descriptor = os.open(self.root, flags)
+            metadata = os.fstat(descriptor)
+        except OSError as error:
+            fail(f"authorization replay journal directory cannot be opened safely: {error}")
+        require(stat.S_ISDIR(metadata.st_mode), "authorization replay journal root descriptor is not a directory")
+        return descriptor
+
+    def _assert_root_identity(self) -> None:
+        try:
+            path_metadata = os.lstat(self.root)
+            descriptor_metadata = os.fstat(self._root_fd) if self._root_fd is not None else path_metadata
+        except OSError as error:
+            fail(f"authorization replay journal directory identity is unavailable: {error}")
+        require(stat.S_ISDIR(path_metadata.st_mode) and not stat.S_ISLNK(path_metadata.st_mode), "authorization replay journal directory was substituted")
+        require((path_metadata.st_dev, path_metadata.st_ino, path_metadata.st_mode, path_metadata.st_uid) == self._root_identity, "authorization replay journal directory identity changed")
+        require((descriptor_metadata.st_dev, descriptor_metadata.st_ino, descriptor_metadata.st_mode, descriptor_metadata.st_uid) == self._root_identity, "authorization replay journal directory descriptor changed")
+
+    def close(self) -> None:
+        descriptor = getattr(self, "_root_fd", None)
+        if descriptor is not None:
+            self._root_fd = None
+            os.close(descriptor)
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except OSError:
+            pass
 
     def _validate_private_directory(self) -> None:
         metadata = os.stat(self.root)
@@ -911,28 +969,55 @@ class AuthorizationReplayJournal:
     @contextmanager
     def _locked(self):
         descriptor = None
+        acquired = False
         try:
-            descriptor = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-            if hasattr(os, "fchmod"):
-                os.fchmod(descriptor, 0o600)
+            self._assert_root_identity()
+            flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            if hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            if os.name == "posix":
+                descriptor = os.open(".journal.lock", flags, 0o600, dir_fd=self._root_fd)
+            else:
+                descriptor = os.open(self.lock_path, flags, 0o600)
+            metadata = os.fstat(descriptor)
+            require(stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1, "authorization replay lock must be a single regular file")
+            if os.name == "posix":
+                require(metadata.st_uid == os.geteuid() and stat.S_IMODE(metadata.st_mode) & 0o077 == 0 and stat.S_IMODE(metadata.st_mode) & 0o600 == 0o600, "authorization replay lock ownership or permissions are unsafe")
             if os.fstat(descriptor).st_size == 0:
                 os.write(descriptor, b"0")
                 os.fsync(descriptor)
-            self._validate_private_file(self.lock_path, "authorization replay lock")
+            self._assert_root_identity()
+            deadline = time.monotonic() + self.lock_timeout_seconds
             if os.name == "posix":
-                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                while True:
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            fail("authorization replay lock acquisition deadline exceeded")
+                        time.sleep(0.01)
             else:
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+                while True:
+                    try:
+                        os.lseek(descriptor, 0, os.SEEK_SET)
+                        msvcrt.locking(descriptor, getattr(msvcrt, "LK_NBLCK", msvcrt.LK_LOCK), 1)
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            fail("authorization replay lock acquisition deadline exceeded")
+                        time.sleep(0.01)
+            acquired = True
+            self._assert_root_identity()
             yield
         except OSError as error:
             fail(f"authorization replay journal lock failed: {error}")
         finally:
             if descriptor is not None:
                 try:
-                    if os.name == "posix":
+                    if acquired and os.name == "posix":
                         fcntl.flock(descriptor, fcntl.LOCK_UN)
-                    else:
+                    elif acquired:
                         os.lseek(descriptor, 0, os.SEEK_SET)
                         msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
                 finally:
@@ -942,17 +1027,78 @@ class AuthorizationReplayJournal:
         token = hashlib.sha256(authorization.authorization_id.encode("utf-8")).hexdigest()
         return self.root / f"{token}.json"
 
+    def _name(self, path: Path) -> str:
+        require(path.parent == self.root and path.name not in {"", ".", ".."}, "authorization replay path escaped its verified directory")
+        return path.name
+
+    def _open_relative(self, name: str, flags: int, mode: int = 0) -> int:
+        self._assert_root_identity()
+        if os.name == "posix":
+            return os.open(name, flags, mode, dir_fd=self._root_fd)
+        return os.open(self.root / name, flags, mode)
+
+    def _unlink_relative(self, path: Path) -> None:
+        self._assert_root_identity()
+        if os.name == "posix":
+            os.unlink(self._name(path), dir_fd=self._root_fd)
+        else:
+            path.unlink()
+
+    def _fsync_file(self, path: Path, label: str) -> None:
+        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        descriptor = None
+        try:
+            descriptor = self._open_relative(self._name(path), flags)
+            metadata = os.fstat(descriptor)
+            require(stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1, f"{label} is not a single regular file")
+            if os.name == "posix":
+                require(metadata.st_uid == os.geteuid() and stat.S_IMODE(metadata.st_mode) & 0o077 == 0, f"{label} ownership or permissions are unsafe")
+            os.fsync(descriptor)
+        except OSError as error:
+            fail(f"{label} fsync failed: {error}")
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _entry_exists(self, path: Path) -> bool:
+        self._assert_root_identity()
+        try:
+            if os.name == "posix":
+                os.stat(self._name(path), dir_fd=self._root_fd, follow_symlinks=False)
+            else:
+                os.lstat(path)
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError as error:
+            fail(f"authorization replay entry lookup failed: {error}")
+
     def _state(self, authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, operation: str, state: str) -> dict[str, Any]:
         verification = authorization.verification
         return {"contract": AUTHORIZATION_CONTRACT, "version": AUTHORIZATION_CONTRACT_VERSION, "authorization_id": authorization.authorization_id, "retry_key": authorization.retry_key, "record_sha256": verification.record_sha256, "key_fingerprint": verification.key_fingerprint, "identity_sha256": _identity_fingerprint(identity), "scope": authorization.scope, "operation": operation, "recovery_context": authorization.recovery_context, "issued_at": authorization.issued_at, "expires_at": authorization.expires_at, "state": state}
 
     def _sync_directory(self) -> None:
-        _fsync_directory(self.root, required=self.durable)
+        self._assert_root_identity()
+        _fsync_directory(self.root, required=self.durable, descriptor=self._root_fd)
 
     def _write_temp(self, value: dict[str, Any], prefix: str) -> Path:
         payload = _canonical_json(value)
-        descriptor, name = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=self.root)
-        path = Path(name)
+        descriptor = None
+        path = None
+        for _ in range(20):
+            candidate = self.root / f"{prefix}{uuid.uuid4().hex}.tmp"
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            if hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            try:
+                descriptor = self._open_relative(candidate.name, flags, 0o600)
+                path = candidate
+                break
+            except FileExistsError:
+                continue
+        require(descriptor is not None and path is not None, "authorization replay temporary name allocation failed")
         failure: Exception | None = None
         try:
             if hasattr(os, "fchmod"):
@@ -974,30 +1120,59 @@ class AuthorizationReplayJournal:
 
     def _remove_owned_temp(self, path: Path) -> None:
         try:
-            path.unlink()
+            self._unlink_relative(path)
         except FileNotFoundError:
             pass
         except OSError as error:
             fail(f"authorization replay temporary cleanup failed: {error}")
 
     def _publish_no_replace(self, temporary: Path, destination: Path) -> None:
+        self._assert_root_identity()
         try:
-            os.link(temporary, destination)
+            if os.name == "posix":
+                os.link(self._name(temporary), self._name(destination), src_dir_fd=self._root_fd, dst_dir_fd=self._root_fd)
+            else:
+                os.link(temporary, destination)
         except FileExistsError:
             raise
         except OSError as error:
             self._remove_owned_temp(temporary)
             fail(f"authorization replay reservation publication failed: {error}")
-        try:
-            self._sync_directory()
-        finally:
-            self._remove_owned_temp(temporary)
+        self._remove_owned_temp(temporary)
+        self._fsync_file(destination, "authorization replay reservation")
+        self._sync_directory()
 
     def _read(self, path: Path) -> dict[str, Any]:
-        self._validate_private_file(path, "authorization replay entry")
-        value = _read_bounded_json(path, "authorization replay entry")
-        require(isinstance(value, dict), "authorization replay entry is malformed")
-        return value
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        descriptor = None
+        try:
+            descriptor = self._open_relative(self._name(path), flags)
+            metadata = os.fstat(descriptor)
+            require(stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1, "authorization replay entry must be a single regular file")
+            if os.name == "posix":
+                require(metadata.st_uid == os.geteuid() and stat.S_IMODE(metadata.st_mode) & 0o077 == 0, "authorization replay entry ownership or permissions are unsafe")
+            require(0 < metadata.st_size <= MAX_ARTIFACT_JSON_BYTES, "authorization replay entry is empty or oversized")
+            chunks: list[bytes] = []
+            remaining = metadata.st_size
+            while remaining:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                require(chunk, "authorization replay entry changed during read")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            require(os.fstat(descriptor).st_size == metadata.st_size, "authorization replay entry changed during read")
+            try:
+                value = json.loads(b"".join(chunks).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                fail(f"authorization replay entry is malformed: {error}")
+            require(isinstance(value, dict), "authorization replay entry is malformed")
+            return value
+        except OSError as error:
+            fail(f"authorization replay entry is unavailable: {error}")
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
     def _check_existing(self, existing: dict[str, Any], expected: dict[str, Any], now: datetime) -> None:
         for field, value in expected.items():
@@ -1005,6 +1180,11 @@ class AuthorizationReplayJournal:
                 require(existing.get(field) == value, "authorization replay record does not exactly match the signed authorization")
         require(existing.get("state") == "reserved", "authorization replay detected")
         require(_parse_timestamp(existing.get("expires_at"), "authorization replay expires_at") > now, "authorization replay entry is expired")
+
+    def _reestablish_existing_durability(self, path: Path) -> None:
+        self._assert_root_identity()
+        self._fsync_file(path, "authorization replay reservation retry")
+        self._sync_directory()
 
     def _verify_operation(self, envelope: Any, identity: TrustedReleaseIdentity, revision_allowlist: AuthorizationRevisionAllowlist, trust: AuthorizationTrustConfig, operation: str, now: datetime | None) -> IndependentReleaseAuthorization:
         require(operation in {"forward-release", "recovery-release"}, "authorization operation context is required")
@@ -1026,8 +1206,10 @@ class AuthorizationReplayJournal:
                 except FileExistsError:
                     self._remove_owned_temp(temporary)
                     self._check_existing(self._read(path), expected, current)
+                    self._reestablish_existing_durability(path)
             except FileExistsError:
                 self._check_existing(self._read(path), expected, current)
+                self._reestablish_existing_durability(path)
 
     def consume(self, envelope: Any, identity: TrustedReleaseIdentity, revision_allowlist: AuthorizationRevisionAllowlist, trust: AuthorizationTrustConfig, *, operation: str, now: datetime | None = None) -> None:
         """Verify and atomically consume a reservation under the same serialized lock."""
@@ -1035,12 +1217,17 @@ class AuthorizationReplayJournal:
             authorization = self._verify_operation(envelope, identity, revision_allowlist, trust, operation, now)
             current = (now or _now_utc()).astimezone(timezone.utc)
             path = self._path(authorization)
-            require(path.exists(), "authorization replay reservation is missing")
+            require(self._entry_exists(path), "authorization replay reservation is missing")
             expected = self._state(authorization, identity, operation, "reserved")
             self._check_existing(self._read(path), expected, current)
             temporary = self._write_temp(self._state(authorization, identity, operation, "consumed"), ".authorization-consume-")
             try:
-                os.replace(temporary, path)
+                self._assert_root_identity()
+                if os.name == "posix":
+                    os.replace(self._name(temporary), self._name(path), src_dir_fd=self._root_fd, dst_dir_fd=self._root_fd)
+                else:
+                    os.replace(temporary, path)
+                self._fsync_file(path, "authorization replay consumed entry")
                 self._sync_directory()
             except OSError as error:
                 fail(f"authorization replay journal commit failed: {error}")
