@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { execFileSync } from "node:child_process";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -175,7 +175,7 @@ function runValidation(archivePath: string, ...extra: string[]) {
 
 function attestationCli(root: string) {
   const script = join(root, "fake-gh.js");
-  const source = `
+  const source = `#!/usr/bin/env node
 const fs = require("node:fs");
 const crypto = require("node:crypto");
 const args = process.argv.slice(2);
@@ -228,7 +228,7 @@ function runAttestedValidation(value: { root: string; archivePath: string }, opt
   if (process.platform !== "win32") args.push("--extract", extracted);
   const command = process.platform === "win32" ? "python" : "bash";
   const commandArgs = process.platform === "win32" ? [join(process.cwd(), "scripts", "validate-runtime-artifact.py"), ...args] : [join(process.cwd(), "scripts", "validate-runtime-artifact.sh"), ...args];
-  const env = { ...process.env, GH_ATTESTATION_CLI: cli, ...(options.replaceWith ? { REPLACE_ARCHIVE: value.archivePath, REPLACE_WITH: options.replaceWith } : {}), ...(options.createDestination ? { CREATE_DESTINATION: options.createDestination } : {}) };
+  const env = { ...process.env, GH_ATTESTATION_CLI: cli, ...(process.platform !== "win32" ? { TMPDIR: value.root } : {}), ...(options.replaceWith ? { REPLACE_ARCHIVE: value.archivePath, REPLACE_WITH: options.replaceWith } : {}), ...(options.createDestination ? { CREATE_DESTINATION: options.createDestination } : {}) };
   return execFileSync(command, commandArgs, { cwd: process.cwd(), env, encoding: "utf8", stdio: "pipe" });
 }
 
@@ -368,6 +368,8 @@ describe("runtime artifact validation", () => {
     if (process.platform === "win32") return;
     const value = fixture();
     const destination = join(value.root, "attested-extracted");
+    mkdirSync(destination);
+    writeFileSync(join(destination, "untouched.txt"), "preserve me\n");
     let stderr = "";
     try {
       runAttestedValidation(value, { createDestination: destination });
@@ -376,6 +378,8 @@ describe("runtime artifact validation", () => {
     }
     expect(stderr).toContain("extraction destination already exists");
     expect(statSync(destination).isDirectory()).toBe(true);
+    expect(readFileSync(join(destination, "untouched.txt"), "utf8")).toBe("preserve me\n");
+    expect(readdirSync(value.root).filter((name) => name.startsWith(".runtime-artifact-validation-") || name.startsWith(".runtime-artifact-extract-")).sort()).toEqual([]);
     expect(JSON.parse(readFileSync(join(value.root, "provenance.json"), "utf8")).acceptance).toEqual({ contentValidated: false, extractedAndPublished: false });
     rmSync(value.root, { recursive: true, force: true });
   });
