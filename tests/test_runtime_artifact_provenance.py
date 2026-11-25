@@ -225,7 +225,7 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
                 provenance.validate_verified_result(result, archive_name=f"clashcookies-runtime-{SOURCE_SHA}.tar.gz", archive_digest=ARCHIVE_SHA, archive_bytes=101, expected=expected(), run_metadata=run_metadata())
 
     def test_official_verifier_command_is_required_and_bounded(self) -> None:
-        with patch.object(provenance.subprocess, "run", side_effect=FileNotFoundError("gh")):
+        with patch.object(provenance, "run_bounded", side_effect=FileNotFoundError("gh")):
             with self.assertRaises(provenance.ProvenanceError):
                 provenance.run_gh_attestation_verify(Path(__file__), bundle=None, repository=REPOSITORY, signer_workflow=SIGNER_WORKFLOW, signer_revision=SIGNER_SHA, source_ref=PR_SOURCE_REF, source_sha=SOURCE_SHA)
 
@@ -233,9 +233,14 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         for stdout in ("not-json", "[]", "[{}, {}]"):
             version = provenance.subprocess.CompletedProcess([], 0, "gh version 2.89.0 (test)\n", "")
             verification = provenance.subprocess.CompletedProcess([], 0, stdout, "")
-            with self.subTest(stdout=stdout), patch.object(provenance.subprocess, "run", side_effect=[version, verification]):
+            with self.subTest(stdout=stdout), patch.object(provenance, "run_bounded", side_effect=[version, verification]):
                 with self.assertRaises(provenance.ProvenanceError):
                     provenance.run_gh_attestation_verify(Path(__file__), bundle=None, repository=REPOSITORY, signer_workflow=SIGNER_WORKFLOW, signer_revision=SIGNER_SHA, source_ref=PR_SOURCE_REF, source_sha=SOURCE_SHA)
+
+    def test_subprocess_output_is_bounded_during_execution(self) -> None:
+        command = [sys.executable, "-c", "import sys; sys.stdout.write('x' * 10000000)"]
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.run_bounded(command, timeout_seconds=5, max_output_bytes=1024, label="test command")
 
     def test_unsupported_contract_is_rejected(self) -> None:
         result = provenance.evaluate_synthetic_production_policy_fixture({"fixtureKind": "wrong", "synthetic": True})

@@ -7,9 +7,12 @@ import argparse
 from dataclasses import dataclass
 import json
 import os
+import queue
 import re
 import stat
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -165,10 +168,84 @@ def require_digest(value: Any, path: str) -> str:
     return value
 
 
+def _gh_executable() -> str:
+    """Return the workflow-pinned executable when validation supplies one."""
+    executable = os.environ.get("GH_ATTESTATION_CLI", "gh")
+    require(isinstance(executable, str) and executable != "", "official GitHub CLI executable is missing")
+    return executable
+
+
+def run_bounded(command: list[str], *, timeout_seconds: int, max_output_bytes: int, label: str) -> subprocess.CompletedProcess[str]:
+    """Run a command with bounded reader queues, output buffers, and a deadline."""
+    try:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError:
+        raise
+    assert process.stdout is not None and process.stderr is not None
+    streams = (process.stdout, process.stderr)
+    queues = (queue.Queue(maxsize=1), queue.Queue(maxsize=1))
+
+    def drain(stream: Any, output_queue: queue.Queue[bytes | None]) -> None:
+        try:
+            while True:
+                chunk = stream.read(min(65536, max_output_bytes + 1))
+                if not chunk:
+                    break
+                output_queue.put(chunk)
+        finally:
+            output_queue.put(None)
+
+    readers = [threading.Thread(target=drain, args=(stream, output_queue), daemon=True) for stream, output_queue in zip(streams, queues)]
+    for reader in readers:
+        reader.start()
+    buffers = [bytearray(), bytearray()]
+    finished = [False, False]
+    deadline = time.monotonic() + timeout_seconds
+
+    def stop_process() -> None:
+        if process.poll() is None:
+            process.kill()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+
+    try:
+        while not all(finished):
+            if time.monotonic() > deadline:
+                stop_process()
+                raise subprocess.TimeoutExpired(command, timeout_seconds)
+            progress = False
+            for index, output_queue in enumerate(queues):
+                while True:
+                    try:
+                        item = output_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    progress = True
+                    if item is None:
+                        finished[index] = True
+                        break
+                    buffers[index].extend(item)
+                    if len(buffers[index]) > max_output_bytes:
+                        stop_process()
+                        raise ProvenanceError(f"{label} output exceeds the limit during execution")
+            if not progress:
+                time.sleep(0.005)
+        return subprocess.CompletedProcess(command, process.returncode, bytes(buffers[0]).decode("utf-8", "replace"), bytes(buffers[1]).decode("utf-8", "replace"))
+    finally:
+        if process.poll() is None:
+            stop_process()
+        for stream in streams:
+            stream.close()
+        for reader in readers:
+            reader.join(timeout=2)
+
+
 def verify_gh_version(expected_version: str = SUPPORTED_GH_VERSION, timeout_seconds: int = 10) -> str:
     """Require the recorded official GitHub CLI version before accepting evidence."""
     try:
-        result = subprocess.run(["gh", "version"], check=False, capture_output=True, text=True, timeout=timeout_seconds)
+        result = run_bounded([_gh_executable(), "version"], timeout_seconds=timeout_seconds, max_output_bytes=4096, label="official GitHub CLI version")
     except (OSError, subprocess.TimeoutExpired) as error:
         fail(f"official GitHub CLI version check unavailable or timed out: {error}")
     require(result.returncode == 0, "official GitHub CLI version check failed")
@@ -207,7 +284,7 @@ def run_gh_attestation_verify(
     verified_version = verify_gh_version(verifier_version)
     cli_signer_workflow = signer_workflow if "/" in signer_workflow.split(".github/", 1)[0] else f"{repository}/{signer_workflow}"
     command = [
-        "gh",
+        _gh_executable(),
         "attestation",
         "verify",
         str(archive),
@@ -229,7 +306,7 @@ def run_gh_attestation_verify(
     if bundle is not None:
         command.extend(["--bundle", str(bundle)])
     try:
-        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=timeout_seconds)
+        result = run_bounded(command, timeout_seconds=timeout_seconds, max_output_bytes=MAX_VERIFIER_OUTPUT_BYTES, label="official GitHub attestation verifier")
     except (OSError, subprocess.TimeoutExpired) as error:
         fail(f"official GitHub attestation verifier unavailable or timed out: {error}")
     require(len(result.stdout) <= MAX_VERIFIER_OUTPUT_BYTES and len(result.stderr) <= MAX_VERIFIER_OUTPUT_BYTES, "official GitHub attestation verifier output exceeds the limit")
@@ -249,9 +326,8 @@ def run_gh_attestation_verify(
 
 def fetch_run_metadata(repository: str, run_id: int, timeout_seconds: int = 30) -> dict[str, Any]:
     """Read authenticated GitHub Actions run metadata for independent correlation."""
-    command = ["gh", "api", f"repos/{repository}/actions/runs/{run_id}"]
     try:
-        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=timeout_seconds)
+        result = run_bounded([_gh_executable(), "api", f"repos/{repository}/actions/runs/{run_id}"], timeout_seconds=timeout_seconds, max_output_bytes=MAX_VERIFIER_OUTPUT_BYTES, label="authenticated GitHub Actions run metadata")
     except (OSError, subprocess.TimeoutExpired) as error:
         fail(f"authenticated GitHub Actions run metadata unavailable or timed out: {error}")
     require(len(result.stdout) <= MAX_VERIFIER_OUTPUT_BYTES and len(result.stderr) <= MAX_VERIFIER_OUTPUT_BYTES, "authenticated GitHub Actions run metadata output exceeds the limit")
