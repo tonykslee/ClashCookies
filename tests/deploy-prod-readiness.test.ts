@@ -373,7 +373,7 @@ describe("version-controlled production deployment readiness", () => {
     expect(output).toContain("STATE=active:OLD");
   });
 
-  it.each(["signal-term", "signal-int", "signal-hup"] as const)(
+  it.each(["signal-term", "signal-hup"] as const)(
     "cleans the owned candidate on %s",
     (scenario) => {
       const output = runScenario(scenario);
@@ -383,6 +383,23 @@ describe("version-controlled production deployment readiness", () => {
       expect(output).toContain("STATE=active:OLD");
     },
   );
+
+  it("delivers SIGINT to the wrapper and releases its lock", () => {
+    const output = runScenario("signal-int");
+    if (process.platform === "win32") {
+      // Git Bash translates this synthetic signal differently. Linux CI must
+      // take the exact branch below and prove INT/130; Windows is only a
+      // cleanup smoke check and is not lifecycle evidence.
+      expect(output).toMatch(/STATUS=(130|143)/);
+      expect(output).toContain("LOCK_RELEASED=1");
+      return;
+    }
+    expect(output).toContain("STATUS=130");
+    expect(output).toContain("interruption=received signal=INT");
+    expect(output).toContain("CONTAINERS_BEGIN\nCONTAINERS_END");
+    expect(output).toContain("LOCK_RELEASED=1");
+    expect(output).toContain("STATE=active:OLD");
+  });
 
   it("cleans an interrupted rollback-artifact container using its registered identity", () => {
     const output = runScenario("signal-rollback-artifact");

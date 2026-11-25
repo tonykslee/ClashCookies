@@ -470,11 +470,11 @@ EOF
 chmod +x "$bin_dir"/*
 
 start_deploy() {
-  # Bash launches asynchronous children with SIGINT ignored.  Reset that
-  # disposition in the child before exec so Linux signal-int exercises the
+  # Bash launches asynchronous children with SIGINT ignored.  GNU env resets
+  # the inherited disposition before exec so Linux signal-int exercises the
   # wrapper's real INT trap rather than silently continuing.
   if [ "$DEPLOY_TEST_SCENARIO" = signal-int ]; then
-    bash -c 'trap - INT; exec "$1"' _ "$deploy_script" > "$output_file" 2>&1 &
+    env --default-signal=INT bash "$deploy_script" > "$output_file" 2>&1 &
   else
     bash "$deploy_script" > "$output_file" 2>&1 &
   fi
@@ -620,6 +620,9 @@ fi
 set -e
 
 printf 'STATUS=%s\n' "$status"
+if [ "$scenario" = signal-int ]; then
+  if [ -e "${root}/deploy.lock" ]; then printf 'LOCK_RELEASED=0\n'; else printf 'LOCK_RELEASED=1\n'; fi
+fi
 printf 'OUTPUT_BEGIN\n'; cat "$output_file"; printf 'OUTPUT_END\n'
 printf 'LOG_BEGIN\n'; cat "$log_file"; printf 'LOG_END\n'
 printf 'STATE=%s\n' "$(cat "$state_file")"

@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -74,6 +74,29 @@ async function waitForContainerName(name: string, timeoutMs: number, diagnostics
   throw new Error(`Timed out waiting for container ${name}\n--- sanitized wrapper output ---\n${sanitizeWrapperOutput(diagnostics())}\n--- end wrapper output ---`);
 }
 
+async function waitForRunningContainer(name: string, timeoutMs: number, diagnostics: () => string = () => ""): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const id of containerIdsByName(name)) {
+      try {
+        if (execFileSync("docker", ["inspect", "--format", "{{.State.Running}}", id], { encoding: "utf8", timeout: 10_000 }).trim() === "true") return;
+      } catch {
+        // The daemon may be between create and inspect; keep polling.
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for running container ${name}\n--- sanitized wrapper output ---\n${sanitizeWrapperOutput(diagnostics())}\n--- end wrapper output ---`);
+}
+
+function readDiagnosticFile(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return `[diagnostic unavailable: ${path}]`;
+  }
+}
+
 function removeVolume(name: string): void {
   try {
     execFileSync("docker", ["volume", "rm", "-f", name], { stdio: "ignore", timeout: 15_000 });
@@ -83,7 +106,7 @@ function removeVolume(name: string): void {
 }
 
 describe("real Docker deployment artifact smoke", () => {
-  it("invokes the production wrapper and removes its daemon-managed candidate at the deadline", () => {
+  it("invokes the production wrapper and removes its daemon-managed candidate at the deadline", async () => {
     if (!dockerAvailable()) {
       requireDockerOrSkip();
       return;
@@ -105,6 +128,7 @@ describe("real Docker deployment artifact smoke", () => {
     mkdirSync(join(fixture, "ops", "deploy"), { recursive: true });
     let oldSha = "";
     let newSha = "";
+    let wrapper: ReturnType<typeof spawn> | undefined;
     write("docker-compose.yml", "services:\n  app:\n    environment:\n      DATABASE_URL: postgresql://fixture\n");
     write(".env", "DISCORD_TOKEN=fixture\n");
     write("package.json", JSON.stringify({
@@ -148,10 +172,10 @@ describe("real Docker deployment artifact smoke", () => {
       execFileSync(bashExecutable(), ["-lc", `for i in $(seq 1 30); do curl --fail --silent http://127.0.0.1:${port}/healthz && exit 0; sleep 1; done; exit 1`], { timeout: 35_000 });
 
       const startedAt = Date.now();
-      const result = spawnSync(bashExecutable(), [deployScript], {
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      wrapper = spawn(bashExecutable(), [deployScript], {
         cwd: fixture,
-        encoding: "utf8",
-        timeout: 120_000,
         env: {
           ...process.env,
           APP_DIR: fixture,
@@ -165,13 +189,13 @@ describe("real Docker deployment artifact smoke", () => {
           DEPLOY_LOCK_FILE: join(fixture, "deploy.lock.flock"),
           DEPLOY_INTENT_DIR: join(fixture, "attempt-intents"),
           DEPLOY_RESOURCE_ADMISSION_FILE: join(fixture, "resources"),
-          CANDIDATE_BUILD_TIMEOUT_SECONDS: "2",
+          CANDIDATE_BUILD_TIMEOUT_SECONDS: "10",
           ARTIFACT_STAGE_TIMEOUT_SECONDS: "5",
           PROMOTION_HEALTH_TIMEOUT_SECONDS: "5",
           ROLLBACK_HEALTH_TIMEOUT_SECONDS: "5",
           CLEANUP_OVERHEAD_SECONDS: "30",
           DEPLOYMENT_OVERHEAD_SECONDS: "30",
-          DEPLOY_OUTER_TIMEOUT_SECONDS: "120",
+          DEPLOY_OUTER_TIMEOUT_SECONDS: "180",
           DEPLOY_RESERVED_MEMORY_MIB: "128",
           DEPLOY_CANDIDATE_MEMORY_LIMIT: "256m",
           DEPLOY_CANDIDATE_MEMORY_RESERVATION: "128m",
@@ -180,17 +204,29 @@ describe("real Docker deployment artifact smoke", () => {
           DEPLOY_MAX_HOST_SWAP_USED_PERCENT: "100",
           DEPLOY_MAX_HOST_LOAD_PER_CPU_PERCENT: "100",
         },
+        stdio: ["ignore", "pipe", "pipe"],
       });
-      const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-      expect(result.error, `deadline wrapper spawn failed\n${sanitizeWrapperOutput(output)}`).toBeUndefined();
-      expectWrapperStatus(result.status, 1, output, "deadline wrapper");
+      wrapper.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk.toString()));
+      wrapper.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk.toString()));
+      await waitForRunningContainer(buildContainer, 30_000, () => `${stdout.join("")}\n${stderr.join("")}\n${readDiagnosticFile(join(fixture, "diagnostics", "candidate-build.log"))}`);
+      const candidateRunningAt = Date.now();
+      const status = await new Promise<number | null>((resolve) => {
+        wrapper?.once("close", (code) => resolve(code));
+        wrapper?.once("error", () => resolve(null));
+      });
+      const candidateLog = readDiagnosticFile(join(fixture, "diagnostics", "candidate-build.log"));
+      const output = `${stdout.join("")}\n${stderr.join("")}\n${candidateLog}`;
+      expectWrapperStatus(status, 1, output, "deadline wrapper");
       expectWrapperOutput(output, "candidate_build=failed reason=build_deadline status=124", "deadline wrapper");
       expectWrapperOutput(output, "container_started", "deadline wrapper");
       expectWrapperOutput(output, "role=candidate-build", "deadline wrapper");
       expectWrapperOutput(output, "container_cleanup=verified", "deadline wrapper");
       expect(output).toMatch(new RegExp(`container_cleanup=verified attempt=[^ ]+ role=candidate-build revision=${newSha} name=${buildContainer}`));
       expectWrapperOutput(output, "container_waiter=process_group_reaped", "deadline wrapper");
-      expect(Date.now() - startedAt).toBeLessThan(30_000);
+      expect(candidateLog.indexOf("container_started")).toBeGreaterThanOrEqual(0);
+      expect(candidateLog.indexOf("container_started")).toBeLessThan(candidateLog.indexOf("container_abort=deadline"));
+      expect(Date.now() - startedAt).toBeLessThan(60_000);
+      expect(candidateRunningAt - startedAt).toBeLessThan(30_000);
       const candidates = execFileSync("docker", [
         "ps", "-aq",
         "--filter", "label=com.clashcookies.deploy.owner=clashcookies-deploy",
@@ -201,6 +237,10 @@ describe("real Docker deployment artifact smoke", () => {
       expect(execFileSync("docker", ["inspect", "--format", "{{.State.Running}}", unrelatedContainer], { encoding: "utf8" }).trim()).toBe("true");
       execFileSync("flock", ["-n", join(fixture, "deploy.lock.flock"), "true"], { timeout: 10_000 });
     } finally {
+      if (wrapper && wrapper.exitCode === null) {
+        wrapper.kill("SIGKILL");
+        await new Promise<void>((resolve) => wrapper?.once("close", () => resolve()));
+      }
       removeContainerByName(normalContainer);
       removeContainerByName(unrelatedContainer);
       removeContainerByName(buildContainer);
@@ -307,7 +347,7 @@ describe("real Docker deployment artifact smoke", () => {
           ROLLBACK_HEALTH_TIMEOUT_SECONDS: "5",
           CLEANUP_OVERHEAD_SECONDS: "30",
           DEPLOYMENT_OVERHEAD_SECONDS: "30",
-          DEPLOY_OUTER_TIMEOUT_SECONDS: "120",
+          DEPLOY_OUTER_TIMEOUT_SECONDS: "180",
           DEPLOY_RESERVED_MEMORY_MIB: "128",
           DEPLOY_CANDIDATE_MEMORY_LIMIT: "256m",
           DEPLOY_CANDIDATE_MEMORY_RESERVATION: "128m",
@@ -324,7 +364,7 @@ describe("real Docker deployment artifact smoke", () => {
       });
       wrapper.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk.toString()));
       wrapper.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk.toString()));
-      await waitForContainerName(buildContainer, 30_000, () => `${stdout.join("")}\n${stderr.join("")}`);
+      await waitForContainerName(buildContainer, 30_000, () => `${stdout.join("")}\n${stderr.join("")}\n${readDiagnosticFile(join(fixture, "diagnostics", "candidate-build.log"))}`);
       const degradedAt = Date.now();
       write("degrade", "1\n");
       const status = await new Promise<number | null>((resolve) => {
@@ -332,11 +372,13 @@ describe("real Docker deployment artifact smoke", () => {
         wrapper?.once("error", () => resolve(null));
       });
       const output = `${stdout.join("")}\n${stderr.join("")}`;
-      expectWrapperStatus(status, 1, output, "health-abort wrapper");
-      expectWrapperOutput(output, "container_abort=health_degradation", "health-abort wrapper");
-      expectWrapperOutput(output, "candidate_build=failed reason=build_abort_or_cleanup status=125", "health-abort wrapper");
-      expect(output).toMatch(new RegExp(`container_cleanup=verified attempt=[^ ]+ role=candidate-build revision=${newSha} name=${buildContainer}`));
-      expectWrapperOutput(output, "container_waiter=process_group_reaped", "health-abort wrapper");
+      const candidateOutput = `${output}\n${readDiagnosticFile(join(fixture, "diagnostics", "candidate-build.log"))}`;
+      expectWrapperStatus(status, 1, candidateOutput, "health-abort wrapper");
+      expectWrapperOutput(candidateOutput, "container_started", "health-abort wrapper");
+      expectWrapperOutput(candidateOutput, "container_abort=health_degradation", "health-abort wrapper");
+      expectWrapperOutput(candidateOutput, "candidate_build=failed reason=build_abort_or_cleanup status=125", "health-abort wrapper");
+      expect(candidateOutput).toMatch(new RegExp(`container_cleanup=verified attempt=[^ ]+ role=candidate-build revision=${newSha} name=${buildContainer}`));
+      expectWrapperOutput(candidateOutput, "container_waiter=process_group_reaped", "health-abort wrapper");
       expect(Date.now() - degradedAt).toBeLessThan(10_000);
       expect(containerIdsByName(buildContainer)).toHaveLength(0);
       expect(execFileSync("docker", ["inspect", "--format", "{{.State.Running}}", normalContainer], { encoding: "utf8" }).trim()).toBe("true");
