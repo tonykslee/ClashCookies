@@ -781,10 +781,10 @@ def _write_private_bytes(path: Path, payload: bytes, label: str) -> None:
             os.close(descriptor)
 
 
-def _private_snapshot(source: Path, directory: Path, label: str) -> Path:
+def _private_snapshot(source: Path, directory: Path, label: str, *, maximum: int = MAX_AUTHORIZATION_PUBLIC_KEY_BYTES, filename: str = "trusted-public-key.pem") -> Path:
     """Copy one bounded regular input and use only that private snapshot thereafter."""
-    source_descriptor, source_size = _open_nofollow_regular(source, MAX_AUTHORIZATION_PUBLIC_KEY_BYTES, label)
-    snapshot = directory / "trusted-public-key.pem"
+    source_descriptor, source_size = _open_nofollow_regular(source, maximum, label)
+    snapshot = directory / filename
     try:
         chunks: list[bytes] = []
         remaining = source_size
@@ -1428,6 +1428,7 @@ def run_gh_attestation_verify(
     custom_trusted_root: Path | None = None,
     offline: bool = False,
     repository_root: Path | None = None,
+    excluded_roots: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
     """Run the official GitHub CLI verifier against the immutable archive snapshot.
 
@@ -1441,11 +1442,14 @@ def run_gh_attestation_verify(
     if bundle is not None:
         require_regular_bounded(bundle, MAX_BUNDLE_BYTES, "attestation bundle")
     if offline:
+        require(bundle is not None, "offline attestation verification requires the original attestation bundle")
         require(custom_trusted_root is not None, "offline attestation verification requires an independently supplied trusted root")
     if custom_trusted_root is not None:
         require_regular_bounded(custom_trusted_root, MAX_BUNDLE_BYTES, "custom trusted root")
         if repository_root is not None:
             _require_external_path(custom_trusted_root, repository_root, "custom trusted root")
+        for excluded_root in excluded_roots:
+            _require_external_path(custom_trusted_root, excluded_root, "custom trusted root")
         root_metadata = os.lstat(custom_trusted_root)
         root_parent_metadata = os.lstat(custom_trusted_root.parent)
         require(stat.S_ISDIR(root_parent_metadata.st_mode) and not stat.S_ISLNK(root_parent_metadata.st_mode), "custom trusted root parent is unsafe")
@@ -1464,7 +1468,7 @@ def run_gh_attestation_verify(
         environment["GH_CONFIG_DIR"] = config_dir
         environment["GH_PROMPT_DISABLED"] = "true"
         try:
-            root_snapshot = _private_snapshot(custom_trusted_root, Path(config_dir), "custom trusted root")
+            root_snapshot = _private_snapshot(custom_trusted_root, Path(config_dir), "custom trusted root", maximum=MAX_BUNDLE_BYTES, filename="trusted-root.jsonl")
         except Exception:
             shutil.rmtree(config_dir, ignore_errors=True)
             raise
