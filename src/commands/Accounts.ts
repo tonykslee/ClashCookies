@@ -503,7 +503,10 @@ async function buildAccountDisplayRowsWithTenure(input: {
   const analyticsByTag = new Map(analytics.map((result) => [normalizeTag(result.playerTag), result]));
   return rows.map((row) => ({
     ...row,
-    tenureLabel: formatMembershipTenureLabel(analyticsByTag.get(row.tag) ?? UNAVAILABLE_TENURE),
+    tenureLabel: formatMembershipTenureLabel(
+      analyticsByTag.get(row.tag) ?? UNAVAILABLE_TENURE,
+      { allUnavailablePresentation: "components" },
+    ),
   }));
 }
 
