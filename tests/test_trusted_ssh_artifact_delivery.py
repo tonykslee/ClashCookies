@@ -16,8 +16,10 @@ import hashlib
 import shlex
 import shutil
 import socket
+import stat
 import subprocess
 import sys
+import tarfile
 import time
 from tempfile import TemporaryDirectory
 import unittest
@@ -100,7 +102,9 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             replacement = None
             original = None
             with self.assertRaisesRegex(delivery.DeliveryError, "temporary directory was substituted"):
-                with delivery._owned_temp_directory(parent, "identity-test-") as attempt:
+                with delivery._owned_temp_directory(parent, "identity-test-") as attempt_owner:
+                    attempt = attempt_owner.path
+                    assert attempt is not None
                     original = attempt.with_name(attempt.name + "-original")
                     attempt.rename(original)
                     attempt.mkdir(mode=0o700)
@@ -109,6 +113,36 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             self.assertIsNotNone(replacement)
             self.assertTrue(original.is_dir())
             self.assertTrue(replacement.is_dir())
+
+    @unittest.skipUnless(os.name == "posix", "attempt disappearance regression requires POSIX descriptors")
+    def test_owned_attempt_directory_disappearance_fails_closed(self) -> None:
+        with TemporaryDirectory() as root_name:
+            parent = Path(root_name)
+            parent.chmod(0o700)
+            with self.assertRaisesRegex(delivery.DeliveryError, "temporary directory disappeared"):
+                with delivery._owned_temp_directory(parent, "disappearance-test-") as attempt_owner:
+                    attempt = attempt_owner.path
+                    assert attempt is not None
+                    shutil.rmtree(attempt)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "publication handoff regression requires Linux renameat2")
+    def test_publication_handoff_preserves_content_after_post_rename_failure(self) -> None:
+        identity = development_identity()
+        with TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            root.chmod(0o700)
+            publication = root / "publication"
+            publication.mkdir(mode=0o700)
+            with self.assertRaisesRegex(delivery.DeliveryError, "post-rename failure"):
+                with delivery._owned_temp_directory(publication, "handoff-test-") as staging_owner:
+                    staging = staging_owner.path
+                    assert staging is not None
+                    (staging / "marker").write_bytes(b"accepted")
+                    with patch.object(delivery, "_payload_matches", side_effect=delivery.DeliveryError("post-rename failure")):
+                        delivery._publish_payload(staging, publication, identity, staging_owner=staging_owner)
+            destination = publication / delivery._safe_publication_name(identity)
+            self.assertEqual((destination / "marker").read_bytes(), b"accepted")
+            self.assertFalse(staging.exists())
 
     def test_frame_round_trip_is_bounded_and_exact(self) -> None:
         identity = development_identity()
@@ -157,19 +191,27 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 delivery._read_frame(stream, attempt, delivery.DeliveryLimits())
 
     def test_checksum_sidecar_limit_is_enforced_before_extraction(self) -> None:
-        identity = development_identity()
+        base_identity = development_identity()
         with TemporaryDirectory() as root_name:
             root = Path(root_name)
             source = root / "artifact-service.zip"
             output = root / "attempt"
             output.mkdir(mode=0o700)
+            archive_buffer = BytesIO()
+            with tarfile.open(fileobj=archive_buffer, mode="w:gz") as tar:
+                content = b"{}"
+                member = tarfile.TarInfo("package.json")
+                member.size = len(content)
+                tar.addfile(member, BytesIO(content))
+            inner_archive = archive_buffer.getvalue()
+            identity = replace(base_identity, archive_sha256=hashlib.sha256(inner_archive).hexdigest(), archive_bytes=len(inner_archive))
             with ZipFile(source, "w") as archive:
-                archive.writestr(identity.archive_name, b"archive")
+                archive.writestr(identity.archive_name, inner_archive)
                 archive.writestr(f"{identity.archive_name}.sha256", b"x" * (delivery.MAX_CHECKSUM_BYTES + 1))
                 archive.writestr(f"{identity.archive_name}.manifest.json", b"{}")
             snapshot = delivery.provenance.open_zip_snapshot(source, directory=output)
             try:
-                with self.assertRaisesRegex(delivery.DeliveryError, "exceeds its limit"):
+                with self.assertRaisesRegex(delivery.DeliveryError, r"required ZIP entry .*\.sha256 exceeds its limit"):
                     delivery._extract_original_entries(snapshot, identity, output)
             finally:
                 delivery.provenance.close_zip_snapshot(snapshot)
@@ -387,9 +429,6 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             with ThreadPoolExecutor(max_workers=2) as executor:
                 outcomes = list(executor.map(lambda _index: delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now), range(2)))
             self.assertEqual({item.status for item in outcomes}, {"retry-success"})
-            journal.consume(envelope, identity, allowlist, trust, operation="forward-release", now=now)
-            with self.assertRaises(delivery.provenance.ProvenanceError):
-                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
             expired_journal_root = root / "expired-journal"
             expired_journal_root.mkdir(mode=0o700)
             expired_journal = delivery.provenance.AuthorizationReplayJournal(expired_journal_root, repository_root=checkout)
@@ -403,6 +442,9 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             tampered["signature"]["value"] = base64.b64encode(b"\0" * 64).decode("ascii")
             with self.assertRaises(delivery.provenance.ProvenanceError):
                 delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=tampered, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
+            journal.consume(envelope, identity, allowlist, trust, operation="forward-release", now=now)
+            with self.assertRaises(delivery.provenance.ProvenanceError):
+                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
 
     def test_endpoint_rejects_destination_and_remote_command_injection(self) -> None:
         with TemporaryDirectory() as root_name:
@@ -557,6 +599,14 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 self.assertFalse((receiving / ".receiver.lock").exists(), "host-key rejection reached the receiver lock")
                 self.assertEqual(list(publication.iterdir()), [], "host-key rejection reached publication activity")
 
+            def custody_state(path: Path) -> list[tuple[str, int, int, str]]:
+                state = []
+                for child in sorted(path.rglob("*")):
+                    metadata = os.lstat(child)
+                    digest = hashlib.sha256(child.read_bytes()).hexdigest() if stat.S_ISREG(metadata.st_mode) else ""
+                    state.append((child.relative_to(path).as_posix(), metadata.st_mode, metadata.st_size, digest))
+                return state
+
             json_identity = delivery.identity_from_json(json.loads(identity_path.read_text(encoding="utf-8")))
             for private_path in (service_zip, bundle, identity_path, trusted_root, expectation):
                 self.assertTrue(private_path.is_file(), f"missing integration input: {private_path}")
@@ -610,6 +660,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 trusted_root.write_bytes(trusted_bytes)
                 trusted_root.chmod(0o600)
 
+                changed_before = (custody_state(receiving), custody_state(publication))
                 stop_server(server)
                 subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(root / "changed_server_key")], check=True, capture_output=True)
                 changed_key = root / "changed_server_key"
@@ -618,7 +669,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 wait_for_server()
                 with self.assertRaisesRegex(delivery.DeliveryError, "[Hh]ost key"):
                     deliver()
-                assert_no_receiver_activity()
+                self.assertEqual((custody_state(receiving), custody_state(publication)), changed_before, "changed-host-key rejection mutated receiver or publication custody")
             finally:
                 stop_server(server)
 

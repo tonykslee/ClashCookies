@@ -668,7 +668,9 @@ def _payload_matches(path: Path, identity: Any, expected_bundle: tuple[str, int]
             authorization_digest, authorization_size = provenance._sha256_file(path / "authorization-envelope.json", provenance.MAX_AUTHORIZATION_RECORD_BYTES, "published authorization envelope")
             if (authorization_digest, authorization_size) != expected_authorization:
                 return False
-        with _owned_temp_directory(path.parent, "clashcookies-publication-verify-") as verification:
+        with _owned_temp_directory(path.parent, "clashcookies-publication-verify-") as verification_owner:
+            verification = verification_owner.path
+            assert verification is not None
             snapshot = provenance.open_zip_snapshot(service_zip, directory=verification)
             try:
                 provenance.verify_artifact_service_zip_snapshot(snapshot, identity.artifact_service_zip_sha256, identity.artifact_service_zip_bytes)
@@ -700,7 +702,7 @@ def _fsync_existing_publication(path: Path, expected_bundle: tuple[str, int] | N
         os.close(descriptor)
 
 
-def _publish_payload(staging: Path, publication_root: Path, identity: Any, expected_bundle: tuple[str, int] | None = None, expected_authorization: tuple[str, int] | None = None) -> tuple[Path, bool]:
+def _publish_payload(staging: Path, publication_root: Path, identity: Any, expected_bundle: tuple[str, int] | None = None, expected_authorization: tuple[str, int] | None = None, staging_owner: _OwnedTempDirectory | None = None) -> tuple[Path, bool]:
     destination = publication_root / _safe_publication_name(identity)
     _require(staging.parent.absolute() == publication_root.absolute(), "publication staging must be directly inside the configured publication directory")
     _attempt_bytes(staging, MAX_TEMPORARY_BYTES)
@@ -711,6 +713,8 @@ def _publish_payload(staging: Path, publication_root: Path, identity: Any, expec
         opened_metadata = os.fstat(root_descriptor)
         _require((opened_metadata.st_dev, opened_metadata.st_ino) == (root_metadata.st_dev, root_metadata.st_ino), "publication directory changed during open")
         _rename_noreplace(root_descriptor, staging.name, destination.name)
+        if staging_owner is not None:
+            staging_owner.mark_published(destination)
         os.fsync(root_descriptor)
         current_metadata = os.lstat(publication_root)
         _require((current_metadata.st_dev, current_metadata.st_ino) == (root_metadata.st_dev, root_metadata.st_ino), "publication directory changed during publication")
@@ -779,46 +783,94 @@ def _assert_delivery_storage(receiving_root: Path, limits: DeliveryLimits, publi
         _require(free >= limits.max_temporary_bytes, "delivery storage does not have enough bounded temporary capacity")
 
 
-@contextmanager
-def _owned_temp_directory(parent: Path, prefix: str) -> Iterator[Path]:
-    """Allocate and remove one attempt-owned directory under a stable parent."""
-    parent_metadata = os.lstat(parent)
-    _require(stat.S_ISDIR(parent_metadata.st_mode) and not stat.S_ISLNK(parent_metadata.st_mode), "temporary directory parent is not a real directory")
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    parent_descriptor = os.open(parent, flags)
-    temporary: Path | None = None
-    temporary_descriptor: int | None = None
-    temporary_identity: tuple[int, int, int, int] | None = None
-    try:
-        opened = os.fstat(parent_descriptor)
-        _require((opened.st_dev, opened.st_ino) == (parent_metadata.st_dev, parent_metadata.st_ino), "temporary directory parent changed during open")
-        temporary = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
-        temporary_descriptor = os.open(temporary, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
-        temporary_metadata = os.fstat(temporary_descriptor)
-        _require(stat.S_ISDIR(temporary_metadata.st_mode) and not stat.S_ISLNK(temporary_metadata.st_mode), "attempt-owned temporary directory is not a real directory")
-        temporary_identity = (temporary_metadata.st_dev, temporary_metadata.st_ino, temporary_metadata.st_mode, temporary_metadata.st_uid)
-        current = os.lstat(parent)
-        _require((current.st_dev, current.st_ino) == (parent_metadata.st_dev, parent_metadata.st_ino), "temporary directory parent changed during allocation")
-        yield temporary
-    finally:
+class _OwnedTempDirectory:
+    """Own one temporary directory until cleanup or an explicit publication handoff."""
+
+    def __init__(self, parent: Path, prefix: str) -> None:
+        self.parent = parent
+        self.prefix = prefix
+        self.path: Path | None = None
+        self._parent_fd: int | None = None
+        self._parent_identity: tuple[int, int, int, int] | None = None
+        self._directory_fd: int | None = None
+        self._directory_identity: tuple[int, int, int, int] | None = None
+        self._published_path: Path | None = None
+        self._published_identity: tuple[int, int, int, int] | None = None
+
+    @staticmethod
+    def _identity(metadata: os.stat_result) -> tuple[int, int, int, int]:
+        return metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_uid
+
+    def __enter__(self) -> "_OwnedTempDirectory":
+        parent_metadata = os.lstat(self.parent)
+        _require(stat.S_ISDIR(parent_metadata.st_mode) and not stat.S_ISLNK(parent_metadata.st_mode), "temporary directory parent is not a real directory")
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        self._parent_fd = os.open(self.parent, flags)
         try:
-            current = os.lstat(parent)
-            opened = os.fstat(parent_descriptor)
-            _require((current.st_dev, current.st_ino) == (parent_metadata.st_dev, parent_metadata.st_ino), "temporary directory parent changed during cleanup")
-            _require((opened.st_dev, opened.st_ino) == (parent_metadata.st_dev, parent_metadata.st_ino), "temporary directory parent descriptor changed during cleanup")
-            if temporary is not None:
-                _require(os.path.lexists(temporary), "attempt-owned temporary directory disappeared")
-                metadata = os.lstat(temporary)
-                _require(temporary_descriptor is not None and temporary_identity is not None, "attempt-owned temporary directory identity is unavailable")
-                opened_temporary = os.fstat(temporary_descriptor)
+            opened = os.fstat(self._parent_fd)
+            self._parent_identity = self._identity(opened)
+            _require(self._parent_identity == self._identity(parent_metadata), "temporary directory parent changed during open")
+            self.path = Path(tempfile.mkdtemp(prefix=self.prefix, dir=self.parent))
+            self._directory_fd = os.open(self.path, flags)
+            directory_metadata = os.fstat(self._directory_fd)
+            _require(stat.S_ISDIR(directory_metadata.st_mode) and not stat.S_ISLNK(directory_metadata.st_mode), "attempt-owned temporary directory is not a real directory")
+            self._directory_identity = self._identity(directory_metadata)
+            current = os.lstat(self.parent)
+            _require(self._identity(current) == self._parent_identity, "temporary directory parent changed during allocation")
+            return self
+        except BaseException:
+            self._close_descriptors()
+            raise
+
+    def mark_published(self, destination: Path) -> None:
+        _require(self.path is not None and self._directory_fd is not None and self._directory_identity is not None, "temporary directory is not active")
+        _require(destination.parent.absolute() == self.parent.absolute(), "published directory escaped its owned parent")
+        metadata = os.lstat(destination)
+        opened = os.fstat(self._directory_fd)
+        _require(stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), "published directory is not a real directory")
+        _require(self._identity(opened) == self._directory_identity, "owned staging directory descriptor changed before publication")
+        _require(self._identity(metadata) == self._directory_identity, "published directory inode does not match owned staging directory")
+        self._published_path = destination
+        self._published_identity = self._directory_identity
+
+    def _close_descriptors(self) -> None:
+        if self._directory_fd is not None:
+            os.close(self._directory_fd)
+            self._directory_fd = None
+        if self._parent_fd is not None:
+            os.close(self._parent_fd)
+            self._parent_fd = None
+
+    def __exit__(self, _exc_type: Any, _exc_value: Any, _traceback: Any) -> bool:
+        try:
+            _require(self._parent_fd is not None and self._parent_identity is not None, "temporary directory parent descriptor is unavailable")
+            current_parent = os.lstat(self.parent)
+            opened_parent = os.fstat(self._parent_fd)
+            _require(self._identity(current_parent) == self._parent_identity, "temporary directory parent changed during cleanup")
+            _require(self._identity(opened_parent) == self._parent_identity, "temporary directory parent descriptor changed during cleanup")
+            if self._published_path is not None:
+                _require(self._published_identity is not None and self._directory_fd is not None, "published directory identity is unavailable")
+                published_metadata = os.lstat(self._published_path)
+                opened_directory = os.fstat(self._directory_fd)
+                _require(stat.S_ISDIR(published_metadata.st_mode) and not stat.S_ISLNK(published_metadata.st_mode), "published directory was substituted")
+                _require(self._identity(published_metadata) == self._published_identity, "published directory was substituted")
+                _require(self._identity(opened_directory) == self._published_identity, "published directory descriptor changed")
+            else:
+                _require(self.path is not None and self._directory_fd is not None and self._directory_identity is not None, "attempt-owned temporary directory identity is unavailable")
+                _require(os.path.lexists(self.path), "attempt-owned temporary directory disappeared")
+                metadata = os.lstat(self.path)
+                opened_directory = os.fstat(self._directory_fd)
                 _require(stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), "attempt-owned temporary directory was substituted")
-                _require((metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_uid) == temporary_identity, "attempt-owned temporary directory was substituted")
-                _require((opened_temporary.st_dev, opened_temporary.st_ino, opened_temporary.st_mode, opened_temporary.st_uid) == temporary_identity, "attempt-owned temporary directory descriptor changed")
-                shutil.rmtree(temporary)
+                _require(self._identity(metadata) == self._directory_identity, "attempt-owned temporary directory was substituted")
+                _require(self._identity(opened_directory) == self._directory_identity, "attempt-owned temporary directory descriptor changed")
+                shutil.rmtree(self.path)
         finally:
-            if temporary_descriptor is not None:
-                os.close(temporary_descriptor)
-            os.close(parent_descriptor)
+            self._close_descriptors()
+        return False
+
+
+def _owned_temp_directory(parent: Path, prefix: str) -> _OwnedTempDirectory:
+    return _OwnedTempDirectory(parent, prefix)
 
 
 def publish_development_delivery(
@@ -843,7 +895,9 @@ def publish_development_delivery(
     _assert_private_input(service_zip, repository_root, "received artifact-service ZIP", limits.max_service_zip_bytes)
     _assert_private_input(attestation_bundle, repository_root, "received attestation bundle", limits.max_bundle_bytes)
     _assert_private_input(trusted_root, repository_root, "independently configured trusted root", limits.max_bundle_bytes)
-    with _receiver_lock(receiving_root), _owned_temp_directory(receiving_root, "clashcookies-delivery-") as attempt:
+    with _receiver_lock(receiving_root), _owned_temp_directory(receiving_root, "clashcookies-delivery-") as attempt_owner:
+        attempt = attempt_owner.path
+        assert attempt is not None
         snapshot = provenance.open_zip_snapshot(service_zip, directory=attempt)
         try:
             provenance.verify_artifact_service_zip_snapshot(snapshot, expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes)
@@ -871,9 +925,11 @@ def publish_development_delivery(
             provenance.validate_verified_result(verified, archive_name=expected_identity.archive_name, archive_digest=expected_identity.archive_sha256, archive_bytes=expected_identity.archive_bytes, expected=offline_expectation, run_metadata=None, require_run_metadata=False)
             _validate_provenance_binding(expected_identity, offline_expectation, verified)
             _attempt_bytes(attempt, limits.max_temporary_bytes)
-            with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload:
+            with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload_owner:
+                payload = payload_owner.path
+                assert payload is not None
                 expected_bundle, _ = _publication_payload(payload, expected_identity, snapshot, attestation_bundle)
-                destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle)
+                destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle, staging_owner=payload_owner)
         finally:
             provenance.close_zip_snapshot(snapshot)
     return DeliveryResult("retry-success" if retry else "published", str(destination), _identity_digest(expected_identity), expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes, expected_identity.archive_sha256, expected_identity.archive_bytes, True, False)
@@ -906,15 +962,19 @@ def publish_synthetic_authorized_delivery_for_test(
     _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory")])
     _assert_delivery_storage(receiving_root, DeliveryLimits(), publication_root)
     _assert_private_input(service_zip, repository_root, "received artifact-service ZIP", MAX_SERVICE_ZIP_BYTES)
-    with _receiver_lock(receiving_root), _owned_temp_directory(receiving_root, "clashcookies-synthetic-delivery-") as attempt:
+    with _receiver_lock(receiving_root), _owned_temp_directory(receiving_root, "clashcookies-synthetic-delivery-") as attempt_owner:
+        attempt = attempt_owner.path
+        assert attempt is not None
         snapshot = provenance.open_zip_snapshot(service_zip, directory=attempt)
         try:
             provenance.verify_artifact_service_zip_snapshot(snapshot, expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes)
             provenance.inspect_artifact_service_zip_snapshot(snapshot, expected_identity.archive_name, expected_identity.archive_sha256, expected_identity.archive_bytes)
             journal.reserve(authorization_envelope, expected_identity, revision_allowlist, trust, operation=operation, now=now)
-            with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload:
+            with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload_owner:
+                payload = payload_owner.path
+                assert payload is not None
                 _, expected_authorization = _publication_payload(payload, expected_identity, snapshot, None, authorization_envelope)
-                destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_authorization=expected_authorization)
+                destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_authorization=expected_authorization, staging_owner=payload_owner)
         finally:
             provenance.close_zip_snapshot(snapshot)
     return DeliveryResult("retry-success" if retry else "published", str(destination), _identity_digest(expected_identity), expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes, expected_identity.archive_sha256, expected_identity.archive_bytes, False, True)
@@ -1131,7 +1191,9 @@ def receive_command(args: argparse.Namespace) -> int:
     _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory"), (expected_identity_path, "expected identity")])
     limits = DeliveryLimits()
     _assert_delivery_storage(receiving_root, limits, publication_root)
-    with _receiver_deadline(limits.max_elapsed_seconds) as deadline, _receiver_lock(receiving_root), _owned_temp_directory(receiving_root, "clashcookies-receive-") as attempt:
+    with _receiver_deadline(limits.max_elapsed_seconds) as deadline, _receiver_lock(receiving_root), _owned_temp_directory(receiving_root, "clashcookies-receive-") as attempt_owner:
+        attempt = attempt_owner.path
+        assert attempt is not None
         identity_payload, files, frame_destination = _read_frame(sys.stdin.buffer, attempt, limits, deadline)
         _require(identity_payload == _identity_payload(expected_identity), "received identity is not the independently expected identity")
         # The destination is data, not shell syntax.  It is still bound to the
@@ -1176,9 +1238,11 @@ def receive_command(args: argparse.Namespace) -> int:
             provenance.validate_verified_result(verified, archive_name=expected_identity.archive_name, archive_digest=expected_identity.archive_sha256, archive_bytes=expected_identity.archive_bytes, expected=expectation, run_metadata=None, require_run_metadata=False)
             _validate_provenance_binding(expected_identity, expectation, verified)
             _attempt_bytes(attempt, limits.max_temporary_bytes)
-            with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload:
+            with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload_owner:
+                payload = payload_owner.path
+                assert payload is not None
                 expected_bundle, _ = _publication_payload(payload, expected_identity, snapshot, files["attestation-bundle.json"])
-                destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle)
+                destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle, staging_owner=payload_owner)
             result = DeliveryResult("retry-success" if retry else "published", str(destination), _identity_digest(expected_identity), expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes, expected_identity.archive_sha256, expected_identity.archive_bytes, True, False)
             print(json.dumps(asdict(result), sort_keys=True))
             return 0
