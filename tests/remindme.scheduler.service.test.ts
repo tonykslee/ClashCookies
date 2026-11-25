@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   UserActivityReminderDeliveryStatus,
   UserActivityReminderMethod,
@@ -36,6 +36,7 @@ vi.mock("../src/services/TodoSnapshotService", async () => {
 });
 
 import {
+  UserActivityReminderSchedulerService,
   runUserActivityReminderSchedulerCycle,
   shouldReminderOffsetFireForTest,
 } from "../src/services/remindme/UserActivityReminderSchedulerService";
@@ -117,6 +118,103 @@ describe("UserActivityReminderSchedulerService", () => {
       updatedCount: 0,
     });
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  function createStatusServiceMock() {
+    return {
+      markStarted: vi.fn().mockResolvedValue({}),
+      markSucceeded: vi.fn().mockResolvedValue({}),
+      markFailed: vi.fn().mockResolvedValue({}),
+      markSkipped: vi.fn().mockResolvedValue({}),
+    };
+  }
+
+  it("contains startup and interval failures while allowing later cycles to recover", async () => {
+    vi.useFakeTimers();
+    const statusService = createStatusServiceMock();
+    statusService.markFailed.mockRejectedValueOnce({ code: "P2024" });
+    prismaMock.userActivityReminderRule.findMany
+      .mockRejectedValueOnce({ code: "P2024" })
+      .mockRejectedValueOnce({ code: "P2024" })
+      .mockResolvedValueOnce([]);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const scheduler = new UserActivityReminderSchedulerService(
+      {} as any,
+      {} as any,
+      {} as any,
+      100,
+      statusService as any,
+    );
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(prismaMock.userActivityReminderRule.findMany).toHaveBeenCalledTimes(3);
+    expect(statusService.markFailed).toHaveBeenCalledTimes(2);
+    expect(statusService.markSucceeded).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[remindme] event=automatic_cycle_failed scheduler=user_activity_reminder_scheduler trigger=startup failure_code=P2024",
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[remindme] event=automatic_cycle_failed scheduler=user_activity_reminder_scheduler trigger=interval failure_code=P2024",
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "[poll-status] status_update_failed job_key=user_activity_reminder_scheduler stage=failed",
+      ),
+    );
+
+    scheduler.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps direct runCycle failures observable and releases the overlap guard", async () => {
+    const statusService = createStatusServiceMock();
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+      prismaMock.userActivityReminderRule.findMany.mockImplementationOnce(
+        async () => {
+          await gate;
+          throw { code: "P2024" };
+        },
+      );
+    });
+    const scheduler = new UserActivityReminderSchedulerService(
+      {} as any,
+      {} as any,
+      {} as any,
+      100,
+      statusService as any,
+    );
+
+    const firstCycle = scheduler.runCycle();
+    await expect(scheduler.runCycle()).resolves.toEqual({
+      evaluated: 0,
+      fired: 0,
+      deduped: 0,
+      failed: 0,
+    });
+    releaseGate();
+    await expect(firstCycle).rejects.toMatchObject({ code: "P2024" });
+
+    prismaMock.userActivityReminderRule.findMany.mockResolvedValueOnce([]);
+    await expect(scheduler.runCycle()).resolves.toEqual({
+      evaluated: 0,
+      fired: 0,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(statusService.markSkipped).toHaveBeenCalledTimes(1);
   });
 
   it("fires one due reminder per active type context (WAR/CWL/RAIDS/GAMES)", async () => {
@@ -758,6 +856,70 @@ describe("UserActivityReminderSchedulerService", () => {
       failed: 0,
     });
     expect(dispatch.dispatchReminder).not.toHaveBeenCalled();
+  });
+
+  it("does not redispatch a claimed reminder after dispatch succeeds but delivery persistence fails", async () => {
+    const nowMs = Date.parse("2026-03-27T12:00:00.000Z");
+    prismaMock.userActivityReminderRule.findMany.mockResolvedValue([
+      {
+        id: "rule-raids-after-dispatch",
+        discordUserId: "111111111111111111",
+        type: UserActivityReminderType.RAIDS,
+        playerTag: "#P3333333",
+        method: UserActivityReminderMethod.DM,
+        offsetMinutes: 60,
+        isActive: true,
+        surfaceChannelId: null,
+      },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      snapshotRow({
+        playerTag: "#P3333333",
+        clanTag: "#2QG2C08UP",
+        clanName: "Raid Clan",
+        raidActive: true,
+        raidEndsAt: new Date(nowMs + 30 * 60 * 1000),
+      }),
+    ]);
+    prismaMock.userActivityReminderDelivery.create
+      .mockResolvedValueOnce({ id: "delivery-claimed" })
+      .mockRejectedValueOnce({ code: "P2002" });
+    prismaMock.userActivityReminderDelivery.update.mockRejectedValueOnce({
+      code: "P2024",
+    });
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-delivered",
+        deliverySurface: "DM:111111111111111111",
+      }),
+    };
+
+    await expect(
+      runUserActivityReminderSchedulerCycle({
+        client: {} as any,
+        cocService: {} as any,
+        dispatch: dispatch as any,
+        nowMs,
+        intervalMs: 60_000,
+      }),
+    ).rejects.toMatchObject({ code: "P2024" });
+
+    const retryCounts = await runUserActivityReminderSchedulerCycle({
+      client: {} as any,
+      cocService: {} as any,
+      dispatch: dispatch as any,
+      nowMs: nowMs + 60_000,
+      intervalMs: 60_000,
+    });
+
+    expect(retryCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 1,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
   });
 
   it("skips due reminders when targeted activity is already completed for each type", async () => {
