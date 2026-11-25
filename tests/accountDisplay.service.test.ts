@@ -83,6 +83,30 @@ describe("AccountDisplayService", () => {
     );
   });
 
+  it("appends the compact tenure label without adding another account row", () => {
+    const text = buildAccountDisplayRowText(
+      {
+        tag: "#PYLQ0289",
+        name: "Displayed Alpha",
+        repBadgeTokens: [],
+        townHall: 16,
+        weight: 210000,
+        weightSource: "FwaClanMemberCurrent",
+        clanTag: "#CURR1",
+        clanName: "Current Clan",
+        clanRole: null,
+        clanState: "known",
+        isTrackedFwaClan: true,
+        trackedClanSortOrder: 0,
+        tenureLabel: "C63+/S31/A118+",
+      },
+      new Map(),
+    );
+
+    expect(text).toContain("`#PYLQ0289` - 210k · C63+/S31/A118+");
+    expect(text.match(/OpenPlayerProfile/g)).toHaveLength(1);
+  });
+
   it("combines canonical account rows with rep badges", async () => {
     accountRowsServiceMock.buildAccountsRows.mockResolvedValue([
       {

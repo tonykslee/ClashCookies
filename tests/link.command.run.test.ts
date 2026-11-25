@@ -2099,6 +2099,15 @@ describe("/link run", () => {
       allianceStreakSyncs: 21,
       allianceStreakIsLowerBound: true,
     })).toBe("C—/S2+/A21+");
+    expect(formatLinkListTenureLabel({
+      homeMembershipPeriodId: null,
+      clanTenureSyncs: null,
+      clanTenureIsLowerBound: false,
+      clanStreakSyncs: null,
+      clanStreakIsLowerBound: false,
+      allianceStreakSyncs: null,
+      allianceStreakIsLowerBound: false,
+    })).toBe("—");
     expect(formatLinkListTenureLabel(null)).toBe("—");
   });
 

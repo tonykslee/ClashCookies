@@ -1,6 +1,11 @@
 import { EmbedBuilder } from "discord.js";
 import { toPositiveCompoWeight } from "../../helper/compoActualWeight";
 import type { CompoWarDisplayBucket } from "../../helper/compoWarWeightBuckets";
+import {
+  formatMembershipTenureLabel,
+  MEMBERSHIP_TENURE_LEGEND,
+  type MembershipTenureDisplayInput,
+} from "../../helper/membershipTenure";
 
 // Pure link-list render/layout helpers.
 // Keep command registration, DB calls, and interaction routing in Link.ts.
@@ -635,27 +640,10 @@ export function formatLinkListViolationCountLabel(
 }
 
 /** Purpose: render compact Home tenure and streak analytics without hiding uncertainty. */
-export function formatLinkListTenureLabel(input: {
-  homeMembershipPeriodId: string | null;
-  clanTenureSyncs: number | null;
-  clanTenureIsLowerBound: boolean;
-  clanStreakSyncs: number | null;
-  clanStreakIsLowerBound: boolean;
-  allianceStreakSyncs: number | null;
-  allianceStreakIsLowerBound: boolean;
-} | null | undefined): string {
-  if (!input) return WEIGHT_PLACEHOLDER;
-  const formatMetric = (value: number | null, lowerBound: boolean): string => {
-    if (value === null || !Number.isFinite(value)) return WEIGHT_PLACEHOLDER;
-    return `${Math.max(0, Math.trunc(value))}${lowerBound ? "+" : ""}`;
-  };
-  const values = [
-    formatMetric(input.clanTenureSyncs, input.clanTenureIsLowerBound),
-    formatMetric(input.clanStreakSyncs, input.clanStreakIsLowerBound),
-    formatMetric(input.allianceStreakSyncs, input.allianceStreakIsLowerBound),
-  ];
-  if (values.every((value) => value === WEIGHT_PLACEHOLDER)) return WEIGHT_PLACEHOLDER;
-  return `C${values[0]}/S${values[1]}/A${values[2]}`;
+export function formatLinkListTenureLabel(
+  input: MembershipTenureDisplayInput | null | undefined,
+): string {
+  return formatMembershipTenureLabel(input);
 }
 
 /** Purpose: render one player's ACTUAL composition surplus/deficit against the shared clan projection. */
@@ -724,7 +712,7 @@ export function buildLinkListDescriptionLines(input: {
   const lines: string[] = [];
 
   if (columns.includes("tenure")) {
-    lines.push("C = Clan Tenure • S = Clan Streak • A = Alliance Streak");
+    lines.push(MEMBERSHIP_TENURE_LEGEND);
   }
   if (columns.includes("compo")) {
     lines.push(
