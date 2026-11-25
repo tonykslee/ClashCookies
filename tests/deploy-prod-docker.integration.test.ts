@@ -30,6 +30,20 @@ function bashExecutable(): string {
   return process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
 }
 
+function sanitizeWrapperOutput(output: string): string {
+  return output
+    .replace(/((?:DISCORD|DATABASE|TOKEN|PASSWORD|SECRET|AUTH)[A-Z0-9_]*=)[^\s\r\n]+/gi, "$1[redacted]")
+    .replace(/(Authorization:\s*Bearer\s+)[^\s\r\n]+/gi, "$1[redacted]");
+}
+
+function expectWrapperOutput(output: string, expected: string, label: string): void {
+  expect(output, `${label}: missing ${JSON.stringify(expected)}\n--- sanitized wrapper output ---\n${sanitizeWrapperOutput(output)}\n--- end wrapper output ---`).toContain(expected);
+}
+
+function expectWrapperStatus(status: number | null, expected: number, output: string, label: string): void {
+  expect(status, `${label}: unexpected status\n--- sanitized wrapper output ---\n${sanitizeWrapperOutput(output)}\n--- end wrapper output ---`).toBe(expected);
+}
+
 function containerIdsByName(name: string): string[] {
   try {
     return execFileSync("docker", ["ps", "-aq", "--filter", `name=${name}`], {
@@ -51,13 +65,13 @@ function removeContainerByName(name: string): void {
   }
 }
 
-async function waitForContainerName(name: string, timeoutMs: number): Promise<void> {
+async function waitForContainerName(name: string, timeoutMs: number, diagnostics: () => string = () => ""): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (containerIdsByName(name).length > 0) return;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error(`Timed out waiting for container ${name}`);
+  throw new Error(`Timed out waiting for container ${name}\n--- sanitized wrapper output ---\n${sanitizeWrapperOutput(diagnostics())}\n--- end wrapper output ---`);
 }
 
 function removeVolume(name: string): void {
@@ -147,6 +161,9 @@ describe("real Docker deployment artifact smoke", () => {
           PROD_NETWORK: "bridge",
           TARGET_REF: "origin/main",
           DEPLOY_DIAGNOSTIC_DIR: join(fixture, "diagnostics"),
+          DEPLOY_LOCK_PATH: join(fixture, "deploy.lock"),
+          DEPLOY_LOCK_FILE: join(fixture, "deploy.lock.flock"),
+          DEPLOY_INTENT_DIR: join(fixture, "attempt-intents"),
           DEPLOY_RESOURCE_ADMISSION_FILE: join(fixture, "resources"),
           CANDIDATE_BUILD_TIMEOUT_SECONDS: "2",
           ARTIFACT_STAGE_TIMEOUT_SECONDS: "5",
@@ -165,14 +182,14 @@ describe("real Docker deployment artifact smoke", () => {
         },
       });
       const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-      expect(result.error).toBeUndefined();
-      expect(result.status).toBe(1);
-      expect(output).toContain("candidate_build=failed reason=build_deadline status=124");
-      expect(output).toContain("container_started");
-      expect(output).toContain("role=candidate-build");
-      expect(output).toContain("container_cleanup=verified");
+      expect(result.error, `deadline wrapper spawn failed\n${sanitizeWrapperOutput(output)}`).toBeUndefined();
+      expectWrapperStatus(result.status, 1, output, "deadline wrapper");
+      expectWrapperOutput(output, "candidate_build=failed reason=build_deadline status=124", "deadline wrapper");
+      expectWrapperOutput(output, "container_started", "deadline wrapper");
+      expectWrapperOutput(output, "role=candidate-build", "deadline wrapper");
+      expectWrapperOutput(output, "container_cleanup=verified", "deadline wrapper");
       expect(output).toMatch(new RegExp(`container_cleanup=verified attempt=[^ ]+ role=candidate-build revision=${newSha} name=${buildContainer}`));
-      expect(output).toContain("container_waiter=reaped");
+      expectWrapperOutput(output, "container_waiter=process_group_reaped", "deadline wrapper");
       expect(Date.now() - startedAt).toBeLessThan(30_000);
       const candidates = execFileSync("docker", [
         "ps", "-aq",
@@ -182,6 +199,7 @@ describe("real Docker deployment artifact smoke", () => {
       expect(candidates).toBe("");
       expect(execFileSync("docker", ["inspect", "--format", "{{.State.Running}}", normalContainer], { encoding: "utf8" }).trim()).toBe("true");
       expect(execFileSync("docker", ["inspect", "--format", "{{.State.Running}}", unrelatedContainer], { encoding: "utf8" }).trim()).toBe("true");
+      execFileSync("flock", ["-n", join(fixture, "deploy.lock.flock"), "true"], { timeout: 10_000 });
     } finally {
       removeContainerByName(normalContainer);
       removeContainerByName(unrelatedContainer);
@@ -279,6 +297,9 @@ describe("real Docker deployment artifact smoke", () => {
           PROD_NETWORK: "bridge",
           TARGET_REF: "origin/main",
           DEPLOY_DIAGNOSTIC_DIR: join(fixture, "diagnostics"),
+          DEPLOY_LOCK_PATH: join(fixture, "deploy.lock"),
+          DEPLOY_LOCK_FILE: join(fixture, "deploy.lock.flock"),
+          DEPLOY_INTENT_DIR: join(fixture, "attempt-intents"),
           DEPLOY_RESOURCE_ADMISSION_FILE: join(fixture, "resources"),
           CANDIDATE_BUILD_TIMEOUT_SECONDS: "30",
           ARTIFACT_STAGE_TIMEOUT_SECONDS: "5",
@@ -303,7 +324,7 @@ describe("real Docker deployment artifact smoke", () => {
       });
       wrapper.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk.toString()));
       wrapper.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk.toString()));
-      await waitForContainerName(buildContainer, 30_000);
+      await waitForContainerName(buildContainer, 30_000, () => `${stdout.join("")}\n${stderr.join("")}`);
       const degradedAt = Date.now();
       write("degrade", "1\n");
       const status = await new Promise<number | null>((resolve) => {
@@ -311,16 +332,16 @@ describe("real Docker deployment artifact smoke", () => {
         wrapper?.once("error", () => resolve(null));
       });
       const output = `${stdout.join("")}\n${stderr.join("")}`;
-      expect(status).toBe(1);
-      expect(output).toContain("container_abort=health_degradation");
-      expect(output).toContain("candidate_build=failed reason=build_abort_or_cleanup status=125");
-      expect(output).toContain("container_cleanup=verified role=candidate-build");
+      expectWrapperStatus(status, 1, output, "health-abort wrapper");
+      expectWrapperOutput(output, "container_abort=health_degradation", "health-abort wrapper");
+      expectWrapperOutput(output, "candidate_build=failed reason=build_abort_or_cleanup status=125", "health-abort wrapper");
       expect(output).toMatch(new RegExp(`container_cleanup=verified attempt=[^ ]+ role=candidate-build revision=${newSha} name=${buildContainer}`));
-      expect(output).toContain("container_waiter=reaped");
+      expectWrapperOutput(output, "container_waiter=process_group_reaped", "health-abort wrapper");
       expect(Date.now() - degradedAt).toBeLessThan(10_000);
       expect(containerIdsByName(buildContainer)).toHaveLength(0);
       expect(execFileSync("docker", ["inspect", "--format", "{{.State.Running}}", normalContainer], { encoding: "utf8" }).trim()).toBe("true");
       expect(execFileSync("docker", ["inspect", "--format", "{{.State.Running}}", unrelatedContainer], { encoding: "utf8" }).trim()).toBe("true");
+      execFileSync("flock", ["-n", join(fixture, "deploy.lock.flock"), "true"], { timeout: 10_000 });
       expect(Date.now() - startedAt).toBeLessThan(45_000);
     } finally {
       if (wrapper && wrapper.exitCode === null) wrapper.kill("SIGKILL");
@@ -490,7 +511,7 @@ describe("real Docker deployment artifact smoke", () => {
     try {
       execFileSync("docker", ["volume", "create", distVolume], { encoding: "utf8" });
       execFileSync("docker", ["volume", "create", nodeModulesVolume], { encoding: "utf8" });
-      const output = execFileSync(
+      const result = spawnSync(
         bashExecutable(),
         [deployScript, sourceDist, sourceNodeModules, distVolume, nodeModulesVolume, revision],
         {
@@ -500,11 +521,17 @@ describe("real Docker deployment artifact smoke", () => {
           env: {
             ...process.env,
             DEPLOY_PROD_ARTIFACT_TEST_MODE: "1",
+            DEPLOY_INTENT_DIR: join(fixture, "attempt-intents"),
+            DEPLOY_DIAGNOSTIC_DIR: join(fixture, "diagnostics"),
             ARTIFACT_IMAGE: "node:20-bookworm",
           },
+          stdio: ["ignore", "pipe", "pipe"],
         },
       );
-      expect(output).toContain(`artifact_test=success revision=${revision}`);
+      const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+      expect(result.error, `artifact wrapper spawn failed\n${sanitizeWrapperOutput(output)}`).toBeUndefined();
+      expectWrapperStatus(result.status, 0, output, "artifact wrapper");
+      expectWrapperOutput(output, `artifact_test=success revision=${revision}`, "artifact wrapper");
       const marker = execFileSync(
         "docker",
         [

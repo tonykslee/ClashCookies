@@ -412,6 +412,15 @@ terminate_owned_container() {
 
 reap_waiter_after_containment() {
   local waiter_pid="$1"
+  if command -v setsid >/dev/null 2>&1; then
+    # The waiter is started in a private session on Linux.  Kill the whole
+    # process group so timeout/docker descendants cannot retain the wrapper's
+    # inherited flock descriptor after containment.
+    kill -KILL -- "-${waiter_pid}" >/dev/null 2>&1 || kill -KILL "$waiter_pid" >/dev/null 2>&1 || true
+    wait "$waiter_pid" >/dev/null 2>&1 || true
+    log "container_waiter=process_group_reaped pid=${waiter_pid} pgid=${waiter_pid}"
+    return 0
+  fi
   kill -KILL "$waiter_pid" >/dev/null 2>&1 || true
   wait "$waiter_pid" >/dev/null 2>&1 || true
   log "container_waiter=reaped pid=${waiter_pid}"
@@ -605,13 +614,24 @@ run_owned_container() {
   }
   rm -f -- "$CURRENT_CONTAINER_INTENT"
   log "container_started attempt=${DEPLOY_ATTEMPT_ID} role=${role} name=${container_name} id=${container_id} timeout_seconds=${timeout_seconds} memory=${DEPLOY_CANDIDATE_MEMORY_LIMIT} memory_swap=${DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT} cpus=${DEPLOY_CANDIDATE_CPUS} pids=${DEPLOY_CANDIDATE_PIDS_LIMIT}"
-  (
-    trap '' TERM INT HUP
-    set +e
-    wait_output="$(run_with_timeout "$timeout_seconds" docker wait "$container_id" 2>>"$log_file")"
-    wait_status=$?
-    printf 'client_status=%s\ncontainer_exit=%s\n' "$wait_status" "${wait_output##*$'\n'}" >"$wait_file"
-  ) &
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash -c '
+      trap "" TERM INT HUP
+      set +e
+      wait_output="$(timeout --foreground --signal=TERM --kill-after=5s "${4}s" docker wait "$1" 2>>"$2")"
+      wait_status=$?
+      container_exit="$(printf "%s\n" "$wait_output" | tail -n1)"
+      printf "client_status=%s\ncontainer_exit=%s\n" "$wait_status" "$container_exit" >"$3"
+    ' _ "$container_id" "$log_file" "$wait_file" "$timeout_seconds" &
+  else
+    (
+      trap '' TERM INT HUP
+      set +e
+      wait_output="$(run_with_timeout "$timeout_seconds" docker wait "$container_id" 2>>"$log_file")"
+      wait_status=$?
+      printf 'client_status=%s\ncontainer_exit=%s\n' "$wait_status" "${wait_output##*$'\n'}" >"$wait_file"
+    ) &
+  fi
   wait_pid=$!
   start_seconds="$SECONDS"
   elapsed=0
@@ -677,7 +697,11 @@ run_owned_container() {
     return 124
   fi
   wait "$wait_pid" >/dev/null 2>&1 || true
-  log "container_waiter=reaped pid=${wait_pid}"
+  if command -v setsid >/dev/null 2>&1; then
+    log "container_waiter=process_group_reaped pid=${wait_pid} pgid=${wait_pid}"
+  else
+    log "container_waiter=reaped pid=${wait_pid}"
+  fi
   wait_status="$(sed -n 's/^client_status=//p' "$wait_file" | head -n1)"
   exit_status="$(sed -n 's/^container_exit=//p' "$wait_file" | head -n1)"
   wait_status="${wait_status:-125}"
@@ -1491,6 +1515,9 @@ require_command grep
 require_command head
 require_command tail
 require_command getconf
+if [ "$(uname -s 2>/dev/null || true)" = Linux ]; then
+  require_command setsid
+fi
 require_file "$APP_DIR/docker-compose.yml"
 validate_deadline_configuration
 validate_resource_configuration

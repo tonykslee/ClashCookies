@@ -469,6 +469,18 @@ exit "$status"
 EOF
 chmod +x "$bin_dir"/*
 
+start_deploy() {
+  # Bash launches asynchronous children with SIGINT ignored.  Reset that
+  # disposition in the child before exec so Linux signal-int exercises the
+  # wrapper's real INT trap rather than silently continuing.
+  if [ "$DEPLOY_TEST_SCENARIO" = signal-int ]; then
+    bash -c 'trap - INT; exec "$1"' _ "$deploy_script" > "$output_file" 2>&1 &
+  else
+    bash "$deploy_script" > "$output_file" 2>&1 &
+  fi
+  deploy_pid=$!
+}
+
 if [ "$scenario" = concurrent-active ]; then printf '%s\n' two > "$state_file"; fi
 if [ "$scenario" = lock-busy ]; then mkdir -p "${root}/deploy.lock"; fi
 if [ "$scenario" = concurrent-stale-lock ]; then
@@ -564,8 +576,7 @@ elif [ "$scenario" = concurrent-stale-lock ]; then
   status=0
 elif [[ "$scenario" = signal-term || "$scenario" = signal-int || "$scenario" = signal-hup || "$scenario" = signal-rollback-artifact ]]; then
   export DEPLOY_LOCK_WRAPPED=1
-  bash "$deploy_script" > "$output_file" 2>&1 &
-  deploy_pid=$!
+  start_deploy
   found_candidate=0
   poll_attempts=10
   [ "$scenario" != signal-rollback-artifact ] || poll_attempts=60
