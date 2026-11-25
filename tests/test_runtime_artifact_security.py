@@ -156,6 +156,22 @@ class RuntimeArtifactSecurityTests(unittest.TestCase):
         finally:
             validator.cleanup_snapshot(snapshot)
 
+    def test_insecure_destination_parent_is_rejected_before_workspace_creation(self) -> None:
+        if sys.platform != "linux":
+            self.skipTest("Linux destination-parent ownership and mode regression")
+        parent = self.root / "insecure-parent"
+        parent.mkdir()
+        os.chmod(parent, 0o777)
+        output = parent / "runtime"
+        snapshot, entries, hashes = self.snapshot_and_collect()
+        try:
+            with self.assertRaises(validator.ArtifactError) as error:
+                validator.extract_archive(snapshot, entries, hashes, output, self.limits, snapshot.digest)
+            self.assertIn("group/world-writable", str(error.exception))
+            self.assertEqual(list(parent.glob(".runtime-artifact-extract-*")), [])
+        finally:
+            validator.cleanup_snapshot(snapshot)
+
     def test_destination_parent_substitution_is_rejected_before_publication(self) -> None:
         if sys.platform != "linux":
             self.skipTest("descriptor-anchored parent substitution regression is Linux-specific")
@@ -166,8 +182,8 @@ class RuntimeArtifactSecurityTests(unittest.TestCase):
         original_create = validator.create_extraction_workspace
         backup = self.root / "destination-parent-original"
 
-        def create_and_replace(parent_path: Path, parent_fd: int):
-            workspace = original_create(parent_path, parent_fd)
+        def create_and_replace(parent_path: Path, parent_boundary):
+            workspace = original_create(parent_path, parent_boundary)
             parent_path.rename(backup)
             parent_path.mkdir()
             return workspace
@@ -178,11 +194,73 @@ class RuntimeArtifactSecurityTests(unittest.TestCase):
                     validator.extract_archive(snapshot, entries, hashes, output, self.limits, snapshot.digest)
             self.assertIn("destination parent changed", str(error.exception))
             self.assertFalse(output.exists())
+            self.assertEqual(list(backup.glob(".runtime-artifact-extract-*")), [])
         finally:
             if parent.exists():
                 shutil.rmtree(parent)
             if backup.exists():
                 backup.rename(parent)
+            validator.cleanup_snapshot(snapshot)
+
+    def test_workspace_directory_entry_substitution_is_rejected_and_cleaned(self) -> None:
+        if sys.platform != "linux":
+            self.skipTest("descriptor-anchored workspace substitution regression")
+        parent = self.root / "workspace-parent"
+        parent.mkdir()
+        output = parent / "runtime"
+        snapshot, entries, hashes = self.snapshot_and_collect()
+        original_create = validator.create_extraction_workspace
+        moved = {"path": None}
+        replacement = {"path": None}
+
+        def create_and_replace(parent_path: Path, parent_boundary):
+            workspace = original_create(parent_path, parent_boundary)
+            moved_path = parent_path / f"{workspace.name}.moved"
+            entry_path = parent_path / workspace.name
+            entry_path.rename(moved_path)
+            entry_path.mkdir()
+            moved["path"] = moved_path
+            replacement["path"] = entry_path
+            return workspace
+
+        try:
+            with patch.object(validator, "create_extraction_workspace", side_effect=create_and_replace):
+                with self.assertRaises(validator.ArtifactError) as error:
+                    validator.extract_archive(snapshot, entries, hashes, output, self.limits, snapshot.digest)
+            self.assertIn("workspace directory entry changed", str(error.exception))
+            self.assertFalse(output.exists())
+            self.assertIsNotNone(moved["path"])
+            self.assertFalse(moved["path"].exists())
+            self.assertIsNotNone(replacement["path"])
+        finally:
+            if replacement["path"] is not None and replacement["path"].exists():
+                replacement["path"].rmdir()
+            if parent.exists():
+                shutil.rmtree(parent)
+            validator.cleanup_snapshot(snapshot)
+
+    def test_workspace_open_failure_removes_created_directory(self) -> None:
+        if sys.platform != "linux":
+            self.skipTest("descriptor-anchored workspace open regression")
+        parent = self.root / "workspace-open-parent"
+        parent.mkdir()
+        output = parent / "runtime"
+        snapshot, entries, hashes = self.snapshot_and_collect()
+        original_open = validator.os.open
+
+        def fail_workspace_open(path, flags, mode=0o777, *, dir_fd=None):
+            if dir_fd is not None:
+                raise OSError("injected workspace descriptor-open failure")
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        try:
+            with patch.object(validator.os, "open", side_effect=fail_workspace_open):
+                with self.assertRaises(validator.ArtifactError) as error:
+                    validator.extract_archive(snapshot, entries, hashes, output, self.limits, snapshot.digest)
+            self.assertIn("trusted extraction workspace open failed", str(error.exception))
+            self.assertEqual(list(parent.glob(".runtime-artifact-extract-*")), [])
+            self.assertFalse(output.exists())
+        finally:
             validator.cleanup_snapshot(snapshot)
 
     def test_publication_failure_and_destination_appearance_leave_no_runtime(self) -> None:

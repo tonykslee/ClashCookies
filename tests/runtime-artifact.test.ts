@@ -152,7 +152,7 @@ function fixture(options: { unsafe?: boolean; escapingSymlink?: boolean; cyclicS
       else if (entry.type === "symlink") { mkdirSync(join(entryPath, ".."), { recursive: true }); symlinkSync(entry.link ?? "", entryPath); }
       else { mkdirSync(join(entryPath, ".."), { recursive: true }); writeFileSync(entryPath, entry.content ?? "", { mode: entry.mode ?? 0o644 }); chmodSync(entryPath, entry.mode ?? 0o644); }
     }
-    execFileSync("tar", ["--format=posix", "-czf", archivePath, "-C", payload, "dist", "node_modules", "prisma", "package.json", "yarn.lock", "runtime-artifact-manifest.json"], { stdio: "pipe" });
+    execFileSync("tar", ["--format=gnu", "-czf", archivePath, "-C", payload, "dist", "node_modules", "prisma", "package.json", "yarn.lock", "runtime-artifact-manifest.json"], { stdio: "pipe" });
     archive = readFileSync(archivePath);
   } else {
     archive = tar(entries);
@@ -222,7 +222,7 @@ function producerContractFixture() {
   writePayload("yarn.lock", "# fixture\n");
   const env = { ...process.env, SOURCE_SHA: sourceSha, ARTIFACT_NAME: name, BUILD_IMAGE: image, BUILD_PLATFORM: "linux/amd64", BUILD_ARCHITECTURE: "amd64", NODE_VERSION: "v20.0.0", YARN_VERSION: "1.22.22", BUILD_DURATION_MS: "7", BUILD_STARTED_AT: "2026-01-01T00:00:00Z", GITHUB_EVENT_NAME: "pull_request", GITHUB_WORKFLOW: "contract", GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "3", GITHUB_REF: "refs/pull/1/merge", GITHUB_REPOSITORY: "test/test", GITHUB_SERVER_URL: "https://github.com" };
   execFileSync(process.execPath, [join(process.cwd(), "scripts", "runtime-artifact-manifest.js"), "--root", payload, "--output", join(payload, "runtime-artifact-manifest.json")], { cwd: process.cwd(), env, stdio: "pipe" });
-  execFileSync("tar", ["--format=posix", "-czf", archivePath, "-C", payload, "dist", "node_modules", "prisma", "package.json", "yarn.lock", "runtime-artifact-manifest.json"], { stdio: "pipe" });
+  execFileSync("tar", ["--format=gnu", "-czf", archivePath, "-C", payload, "dist", "node_modules", "prisma", "package.json", "yarn.lock", "runtime-artifact-manifest.json"], { stdio: "pipe" });
   const archive = readFileSync(archivePath);
   const digest = createHash("sha256").update(archive).digest("hex");
   execFileSync(process.execPath, [join(process.cwd(), "scripts", "finalize-runtime-artifact.js"), "--root", payload, "--embedded", join(payload, "runtime-artifact-manifest.json"), "--output", `${archivePath}.manifest.json`, "--sha256", digest, "--archive-bytes", String(statSync(archivePath).size)], { cwd: process.cwd(), env, stdio: "pipe" });
@@ -363,28 +363,27 @@ describe("runtime artifact validation", () => {
   });
 
   it.each([
-    ["oversized declared PAX metadata", [{ type: "x", declaredSize: 65 * 1024 }], "extension metadata record exceeds the limit"],
-    ["oversized actual PAX metadata", [{ type: "x", payload: Buffer.alloc(65 * 1024, 97) }], "extension metadata record exceeds the limit"],
-    ["aggregate physical PAX metadata", [{ type: "x", payload: paxRecord("comment", "a") }, { type: "g", payload: paxRecord("comment", "b") }], "aggregate physical metadata"],
-    ["extension recursion", [{ type: "x", payload: paxRecord("comment", "a") }, { type: "g", payload: paxRecord("comment", "b") }], "consecutive extension headers"],
-    ["physical metadata-header count", [{ type: "x", payload: paxRecord("comment", "a") }, { type: "g", payload: paxRecord("comment", "b") }], "physical metadata-header count"],
-    ["malformed PAX record length", [{ type: "x", payload: Buffer.from("99 bad=record\n") }], "truncated local PAX record"],
-    ["unsupported sparse PAX metadata", [{ type: "x", payload: paxRecord("GNU.sparse.map", "0,1") }], "unsupported sparse PAX metadata"],
-    ["oversized GNU long-name metadata", [{ type: "L", declaredSize: 65 * 1024 }], "extension metadata record exceeds the limit"],
+    ["oversized declared GNU long-name metadata", [{ type: "L", declaredSize: 65 * 1024 }], "extension metadata record exceeds the limit"],
+    ["oversized actual GNU long-name metadata", [{ type: "L", payload: Buffer.alloc(65 * 1024, 97) }], "extension metadata record exceeds the limit"],
+    ["aggregate physical GNU metadata", [{ type: "L", payload: Buffer.from("a\0") }, { type: "K", payload: Buffer.from("b\0") }], "aggregate physical metadata"],
+    ["extension recursion", [{ type: "L", payload: Buffer.from("a\0") }, { type: "K", payload: Buffer.from("b\0") }], "consecutive extension headers"],
+    ["physical metadata-header count", [{ type: "L", payload: Buffer.from("a\0") }, { type: "K", payload: Buffer.from("b\0") }], "physical metadata-header count"],
+    ["malformed GNU long-name metadata", [{ type: "L", payload: Buffer.from("bad\0name") }], "malformed GNU long-name metadata"],
   ] as const)("rejects %s before tarfile extension parsing", (_label, extensions, reason) => {
     const value = fixture();
     writeFileSync(value.archivePath, withExtensions(readFileSync(value.archivePath), extensions));
     refreshExternalIntegrity(value.archivePath);
-    const extra = _label === "aggregate physical PAX metadata" ? ["--max-metadata-total-bytes", "1024"] : _label === "extension recursion" ? ["--max-extension-headers", "1"] : _label === "physical metadata-header count" ? ["--max-metadata-headers", "1"] : [];
+    const extra = _label === "aggregate physical GNU metadata" ? ["--max-metadata-total-bytes", "1023"] : _label === "extension recursion" ? ["--max-extension-headers", "1"] : _label === "physical metadata-header count" ? ["--max-metadata-headers", "1"] : [];
     expectValidationFailure(value.archivePath, reason, ...extra);
     rmSync(value.root, { recursive: true, force: true });
   });
 
-  it("rejects a PAX size override before tarfile can admit the expanded entry", () => {
+  it("rejects global PAX amplification before tarfile dispatch", () => {
     const value = fixture();
-    writeFileSync(value.archivePath, withExtensions(readFileSync(value.archivePath), [{ type: "x", payload: paxRecord("size", "99999999999999999999") }]));
+    const records = Buffer.concat(Array.from({ length: 1000 }, (_, index) => paxRecord(`comment${index}`, "amplification")));
+    writeFileSync(value.archivePath, withExtensions(readFileSync(value.archivePath), [{ type: "g", payload: records }]));
     refreshExternalIntegrity(value.archivePath);
-    expectValidationFailure(value.archivePath, "PAX size overrides are unsupported");
+    expectValidationFailure(value.archivePath, "unsupported physical tar header type");
     rmSync(value.root, { recursive: true, force: true });
   });
 
@@ -453,17 +452,18 @@ describe("runtime artifact validation", () => {
 
   it("rejects hidden extension framing instead of honoring a PAX size override", () => {
     const value = fixture();
-    const hiddenExtension = withExtensions(readFileSync(value.archivePath), [{ type: "x", payload: paxRecord("size", "1024") }, { type: "X", payload: Buffer.from("hidden") }]);
+    const declaredComment = paxRecord("comment", "bounded");
+    const hiddenSizeOverride = paxRecord("size", "1024");
+    const hiddenExtension = withExtensions(readFileSync(value.archivePath), [{ type: "x", payload: declaredComment, padding: hiddenSizeOverride }]);
     writeFileSync(value.archivePath, hiddenExtension);
     refreshExternalIntegrity(value.archivePath);
-    expectValidationFailure(value.archivePath, "PAX size overrides are unsupported");
+    expectValidationFailure(value.archivePath, "unsupported physical tar header type");
     rmSync(value.root, { recursive: true, force: true });
   });
 
   it("rejects nonzero extension padding and legacy NUL-type directory framing before parser dispatch", () => {
     const padded = fixture();
-    const hiddenHeader = tarHeader("hidden", "x".charCodeAt(0), 0);
-    writeFileSync(padded.archivePath, withExtensions(readFileSync(padded.archivePath), [{ type: "x", payload: paxRecord("size", "1024"), padding: hiddenHeader }]));
+    writeFileSync(padded.archivePath, withExtensions(readFileSync(padded.archivePath), [{ type: "L", payload: Buffer.from("valid-name\0"), padding: Buffer.from("nonzero") }]));
     refreshExternalIntegrity(padded.archivePath);
     expectValidationFailure(padded.archivePath, "nonzero extension metadata padding");
     rmSync(padded.root, { recursive: true, force: true });

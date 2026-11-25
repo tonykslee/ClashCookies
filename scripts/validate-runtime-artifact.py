@@ -58,7 +58,6 @@ class Limits:
     metadata_headers: int = 32_768
     total_headers: int = 500_000
     extension_headers: int = 256
-    pax_global_bytes: int = 4 * 1024 * 1024
     long_name_bytes: int = 64 * 1024
     manifest_bytes: int = 1024 * 1024
     file_bytes: int = 1024 * 1024 * 1024
@@ -396,35 +395,7 @@ def validate_tar_header_checksum(header: bytes) -> None:
     require(actual == expected, "invalid tar header checksum")
 
 
-SUPPORTED_PHYSICAL_TYPES = frozenset((0, ord("0"), ord("2"), ord("5"), ord("x"), ord("g"), ord("L"), ord("K")))
-
-
-def validate_pax_records(payload: bytes, label: str, limits: Limits) -> None:
-    offset = 0
-    while offset < len(payload):
-        space = payload.find(b" ", offset)
-        require(space > offset, f"malformed {label} PAX record length")
-        length_bytes = payload[offset:space]
-        require(length_bytes.isdigit(), f"malformed {label} PAX record length")
-        record_length = int(length_bytes)
-        require(record_length >= space - offset + 2, f"malformed {label} PAX record length")
-        end = offset + record_length
-        require(end <= len(payload), f"truncated {label} PAX record")
-        record = payload[space + 1:end]
-        equals = record.find(b"=")
-        require(equals > 0 and record.endswith(b"\n"), f"malformed {label} PAX record")
-        key = record[:equals].decode("utf-8", "strict")
-        value = record[equals + 1:-1]
-        require(key and not key.startswith("GNU.sparse."), f"unsupported sparse PAX metadata: {key}")
-        require(len(value) <= limits.metadata_bytes, f"{label} PAX value exceeds the limit: {key}")
-        if key == "size":
-            fail("PAX size overrides are unsupported")
-        elif key == "path":
-            require(len(value) <= limits.path_bytes, f"{label} PAX path exceeds the limit")
-        elif key == "linkpath":
-            require(len(value) <= limits.link_bytes, f"{label} PAX link exceeds the limit")
-        offset = end
-    require(offset == len(payload), f"malformed {label} PAX metadata")
+SUPPORTED_PHYSICAL_TYPES = frozenset((0, ord("0"), ord("2"), ord("5"), ord("L"), ord("K")))
 
 
 def preflight_metadata(snapshot: Snapshot, limits: Limits) -> dict[str, int]:
@@ -436,7 +407,6 @@ def preflight_metadata(snapshot: Snapshot, limits: Limits) -> dict[str, int]:
     total_headers = 0
     metadata_headers = 0
     metadata_total = 0
-    global_pax_total = 0
     consecutive_extensions = 0
 
     def read_exact(size: int, label: str) -> bytes:
@@ -468,7 +438,7 @@ def preflight_metadata(snapshot: Snapshot, limits: Limits) -> dict[str, int]:
                         break
                     require(not any(chunk), "unexpected data follows tar end-of-archive blocks")
                 require(bounded.total == snapshot.size, "gzip stream did not consume the complete archive")
-                return {"totalHeaders": total_headers, "metadataHeaders": metadata_headers, "physicalMetadataBytes": metadata_total, "globalPaxBytes": global_pax_total}
+                return {"totalHeaders": total_headers, "metadataHeaders": metadata_headers, "physicalMetadataBytes": metadata_total}
 
             total_headers += 1
             require(total_headers <= limits.total_headers, "total tar header count exceeds the limit")
@@ -480,13 +450,13 @@ def preflight_metadata(snapshot: Snapshot, limits: Limits) -> dict[str, int]:
             except ArtifactError:
                 fail("invalid tar termination header")
             padded = padded_size(size)
-            extension = typeflag in (ord("x"), ord("g"), ord("L"), ord("K"))
+            extension = typeflag in (ord("L"), ord("K"))
             if extension:
                 consecutive_extensions += 1
                 require(consecutive_extensions <= limits.extension_headers, "consecutive extension headers exceed the limit")
                 metadata_headers += 1
                 require(metadata_headers <= limits.metadata_headers, "physical metadata-header count exceeds the limit")
-                record_limit = limits.metadata_bytes if typeflag in (ord("x"), ord("g")) else limits.long_name_bytes
+                record_limit = min(limits.metadata_bytes, limits.long_name_bytes)
                 require(size <= record_limit, "extension metadata record exceeds the limit")
                 metadata_total += 512 + padded
                 require(metadata_total <= limits.metadata_total_bytes, "aggregate physical metadata exceeds the limit")
@@ -494,13 +464,7 @@ def preflight_metadata(snapshot: Snapshot, limits: Limits) -> dict[str, int]:
                 if padded > size:
                     padding = read_exact(padded - size, "extension metadata padding")
                     require(not any(padding), "nonzero extension metadata padding")
-                if typeflag in (ord("x"), ord("g")):
-                    validate_pax_records(payload, "global" if typeflag == ord("g") else "local", limits)
-                    if typeflag == ord("g"):
-                        global_pax_total += len(payload)
-                        require(global_pax_total <= limits.pax_global_bytes, "cumulative global PAX metadata exceeds the limit")
-                else:
-                    require(b"\0" not in payload.rstrip(b"\0"), "malformed GNU long-name metadata")
+                require(b"\0" not in payload.rstrip(b"\0"), "malformed GNU long-name metadata")
                 continue
 
             consecutive_extensions = 0
@@ -544,6 +508,7 @@ def iter_entries(snapshot: Snapshot, limits: Limits) -> Iterable[tuple[Entry, ta
                     break
                 count += 1
                 require(count <= limits.entry_count, "archive entry count exceeds the limit")
+                require(not info.pax_headers and not tar.pax_headers, "PAX metadata is unsupported")
                 kind = classify(info)
                 require(not getattr(info, "sparse", None), f"sparse archive entries are unsupported: {info.name!r}")
                 name = normalized_name(info.name, kind == "directory", limits)
@@ -551,9 +516,6 @@ def iter_entries(snapshot: Snapshot, limits: Limits) -> Iterable[tuple[Entry, ta
                 link = info.linkname if kind == "symlink" else ""
                 if kind == "symlink":
                     validate_link_text(name, link, limits)
-                metadata_size = sum(len(str(key).encode()) + len(str(value).encode()) for key, value in info.pax_headers.items())
-                metadata_size += sum(len(str(key).encode()) + len(str(value).encode()) for key, value in tar.pax_headers.items())
-                require(metadata_size <= limits.metadata_bytes, f"archive metadata exceeds the limit: {name}")
                 mode = validate_mode(info.mode, name, kind)
                 size = int(info.size)
                 require(size >= 0 and size <= limits.file_bytes, f"archive file exceeds the per-file limit: {name}")
@@ -857,10 +819,17 @@ def safe_destination(destination: Path) -> Path:
     return destination
 
 
+def validate_destination_parent_metadata(metadata: os.stat_result) -> None:
+    require(stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), "extraction destination parent is unsafe")
+    if sys.platform == "linux":
+        require(metadata.st_uid == os.geteuid(), "extraction destination parent is not owned by the effective UID")
+        require(not metadata.st_mode & 0o022, "extraction destination parent is group/world-writable")
+
+
 def open_destination_parent(destination: Path) -> DestinationParent:
     parent = destination.parent
     metadata = os.lstat(parent)
-    require(stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), "extraction destination parent is unsafe")
+    validate_destination_parent_metadata(metadata)
     if os.name == "nt":
         return DestinationParent(parent, None, metadata.st_dev, metadata.st_ino)
     descriptor: int | None = None
@@ -871,22 +840,54 @@ def open_destination_parent(destination: Path) -> DestinationParent:
         if descriptor is not None:
             os.close(descriptor)
         fail(f"extraction destination parent cannot be opened safely: {error}")
-    if not stat.S_ISDIR(opened.st_mode) or stat.S_ISLNK(opened.st_mode):
-        os.close(descriptor)
-        fail("extraction destination parent is unsafe")
-    if opened.st_dev != metadata.st_dev or opened.st_ino != metadata.st_ino:
-        os.close(descriptor)
-        fail("extraction destination parent changed during open")
+    try:
+        validate_destination_parent_metadata(opened)
+        require(opened.st_dev == metadata.st_dev and opened.st_ino == metadata.st_ino, "extraction destination parent changed during open")
+    except Exception:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
     return DestinationParent(parent, descriptor, opened.st_dev, opened.st_ino)
 
 
 def ensure_destination_parent_unchanged(destination: Path, parent: DestinationParent) -> None:
     current = os.lstat(destination.parent)
-    require(stat.S_ISDIR(current.st_mode) and not stat.S_ISLNK(current.st_mode), "extraction destination parent is unsafe")
+    validate_destination_parent_metadata(current)
     require(current.st_dev == parent.device and current.st_ino == parent.inode, "extraction destination parent changed during extraction")
     if parent.fd is not None:
         opened = os.fstat(parent.fd)
         require(opened.st_dev == parent.device and opened.st_ino == parent.inode, "extraction destination parent descriptor changed during extraction")
+
+
+def ensure_workspace_unchanged(workspace: ExtractionWorkspace, parent_boundary: DestinationParent) -> None:
+    if workspace.fd < 0:
+        entry = os.lstat(workspace.path)
+        require(stat.S_ISDIR(entry.st_mode) and not stat.S_ISLNK(entry.st_mode), "trusted extraction workspace is unsafe")
+        return
+    require(parent_boundary.fd is not None, "trusted extraction workspace descriptor is unavailable")
+    descriptor = os.fstat(workspace.fd)
+    require(stat.S_ISDIR(descriptor.st_mode), "trusted extraction workspace is not a directory")
+    entry = os.stat(workspace.name, dir_fd=parent_boundary.fd, follow_symlinks=False)
+    require(stat.S_ISDIR(entry.st_mode) and entry.st_dev == descriptor.st_dev and entry.st_ino == descriptor.st_ino, "extraction workspace directory entry changed during validation")
+
+
+def workspace_entry_name(workspace: ExtractionWorkspace, parent_boundary: DestinationParent) -> str | None:
+    if workspace.fd < 0 or parent_boundary.fd is None:
+        return workspace.name
+    expected = os.fstat(workspace.fd)
+    try:
+        for name in os.listdir(parent_boundary.fd):
+            try:
+                entry = os.stat(name, dir_fd=parent_boundary.fd, follow_symlinks=False)
+            except OSError:
+                continue
+            if entry.st_dev == expected.st_dev and entry.st_ino == expected.st_ino:
+                return name
+    except OSError:
+        return None
+    return None
 
 
 def create_extraction_workspace(parent: Path, parent_boundary: DestinationParent) -> ExtractionWorkspace:
@@ -905,7 +906,14 @@ def create_extraction_workspace(parent: Path, parent_boundary: DestinationParent
                 if ctypes.get_errno() == errno.EEXIST:
                     continue
                 fail(f"trusted extraction workspace creation failed: {os.strerror(ctypes.get_errno())}")
-            workspace_fd = os.open(name, os.O_RDONLY | binary_flag() | cloexec_flag() | nofollow_flag() | directory_flag(), dir_fd=parent_boundary.fd)
+            try:
+                workspace_fd = os.open(name, os.O_RDONLY | binary_flag() | cloexec_flag() | nofollow_flag() | directory_flag(), dir_fd=parent_boundary.fd)
+            except OSError as error:
+                try:
+                    os.rmdir(name, dir_fd=parent_boundary.fd)
+                except OSError as cleanup_error:
+                    fail(f"trusted extraction workspace open failed: {error}; cleanup failed: {cleanup_error}")
+                fail(f"trusted extraction workspace open failed: {error}")
             return ExtractionWorkspace(Path(f"/proc/self/fd/{workspace_fd}"), name, workspace_fd)
         path = parent / name
         try:
@@ -917,19 +925,21 @@ def create_extraction_workspace(parent: Path, parent_boundary: DestinationParent
 
 
 def cleanup_extraction_workspace(workspace: ExtractionWorkspace, parent_boundary: DestinationParent) -> None:
-    if workspace.fd >= 0:
-        try:
-            os.close(workspace.fd)
-        except OSError:
-            pass
     try:
         if os.name == "nt":
             shutil.rmtree(workspace.path, ignore_errors=True)
         else:
-            require(parent_boundary.fd is not None, "trusted extraction workspace cleanup is unavailable")
-            shutil.rmtree(workspace.name, dir_fd=parent_boundary.fd, ignore_errors=True)
+            entry_name = workspace_entry_name(workspace, parent_boundary)
+            if entry_name is not None and parent_boundary.fd is not None:
+                shutil.rmtree(entry_name, dir_fd=parent_boundary.fd, ignore_errors=True)
     except OSError:
         pass
+    finally:
+        if workspace.fd >= 0:
+            try:
+                os.close(workspace.fd)
+            except OSError:
+                pass
 
 
 def publish_without_replacement(workspace: ExtractionWorkspace, destination: Path, parent_boundary: DestinationParent) -> None:
@@ -1010,11 +1020,10 @@ def extract_archive(snapshot: Snapshot, entries: list[Entry], file_hashes: dict[
         require(seen == set(by_name), "archive entry set changed between validation and extraction")
         snapshot.verify(validated_digest)
         ensure_destination_parent_unchanged(destination, parent_boundary)
+        ensure_workspace_unchanged(workspace, parent_boundary)
         require(not os.path.lexists(destination), "extraction destination appeared during validation")
         publish_without_replacement(workspace, destination, parent_boundary)
         published = True
-    except Exception:
-        raise
     finally:
         if workspace is not None and not published:
             cleanup_extraction_workspace(workspace, parent_boundary)
@@ -1054,7 +1063,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-metadata-headers", type=int, default=Limits.metadata_headers)
     parser.add_argument("--max-total-headers", type=int, default=Limits.total_headers)
     parser.add_argument("--max-extension-headers", type=int, default=Limits.extension_headers)
-    parser.add_argument("--max-global-pax-bytes", type=int, default=Limits.pax_global_bytes)
     parser.add_argument("--max-long-name-bytes", type=int, default=Limits.long_name_bytes)
     parser.add_argument("--max-retained-metadata-bytes", type=int, default=Limits.retained_metadata_bytes)
     return parser.parse_args()
@@ -1080,11 +1088,10 @@ def main() -> int:
         metadata_headers=args.max_metadata_headers,
         total_headers=args.max_total_headers,
         extension_headers=args.max_extension_headers,
-        pax_global_bytes=args.max_global_pax_bytes,
         long_name_bytes=args.max_long_name_bytes,
         retained_metadata_bytes=args.max_retained_metadata_bytes,
     )
-    for value, label in ((limits.compressed_bytes, "compressed"), (limits.expanded_bytes, "expanded"), (limits.entry_count, "entry"), (limits.metadata_bytes, "metadata"), (limits.metadata_total_bytes, "aggregate metadata"), (limits.metadata_headers, "metadata header"), (limits.total_headers, "total header"), (limits.extension_headers, "extension header"), (limits.pax_global_bytes, "global PAX"), (limits.long_name_bytes, "long-name"), (limits.retained_metadata_bytes, "retained metadata")):
+    for value, label in ((limits.compressed_bytes, "compressed"), (limits.expanded_bytes, "expanded"), (limits.entry_count, "entry"), (limits.metadata_bytes, "metadata"), (limits.metadata_total_bytes, "aggregate metadata"), (limits.metadata_headers, "metadata header"), (limits.total_headers, "total header"), (limits.extension_headers, "extension header"), (limits.long_name_bytes, "long-name"), (limits.retained_metadata_bytes, "retained metadata")):
         require(value > 0, f"{label} limit must be positive")
     archive_path = Path(args.archive)
     checksum_path = Path(args.checksum or f"{archive_path}.sha256")
