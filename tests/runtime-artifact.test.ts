@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 
@@ -38,13 +38,13 @@ function tar(entries: Entry[]): Buffer {
   return gzipSync(Buffer.concat(blocks));
 }
 
-function fixture(options: { unsafe?: boolean; escapingSymlink?: boolean; missingManifest?: boolean; missingRuntime?: boolean; realTar?: boolean } = {}) {
+function fixture(options: { unsafe?: boolean; escapingSymlink?: boolean; cyclicSymlink?: boolean; unsafeMode?: boolean; missingManifest?: boolean; missingRuntime?: boolean; realTar?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "clashcookies-runtime-artifact-test-"));
   const name = `clashcookies-runtime-${sourceSha}.tar.gz`;
   const archivePath = join(root, name);
   const entries: Entry[] = [
     { name: "dist", type: "directory" },
-    ...(options.missingRuntime ? [] : [{ name: "dist/ClashCookies.js", content: "#!/usr/bin/env node\n", mode: 0o755 }]),
+    ...(options.missingRuntime ? [] : [{ name: "dist/ClashCookies.js", content: "#!/usr/bin/env node\n", mode: options.unsafeMode ? 0o4755 : 0o755 }]),
     { name: "node_modules", type: "directory" },
     { name: "node_modules/@prisma", type: "directory" },
     { name: "node_modules/@prisma/client", type: "directory" },
@@ -66,6 +66,10 @@ function fixture(options: { unsafe?: boolean; escapingSymlink?: boolean; missing
   if (!options.missingManifest) entries.push({ name: "runtime-artifact-manifest.json", content: "PLACEHOLDER\n" });
   if (options.unsafe) entries.push({ name: "../escape.txt", content: "nope" });
   if (options.escapingSymlink) entries.push({ name: "node_modules/escape", type: "symlink", link: "../../outside" });
+  if (options.cyclicSymlink) {
+    entries.push({ name: "node_modules/cycle-a", type: "symlink", link: "cycle-b" });
+    entries.push({ name: "node_modules/cycle-b", type: "symlink", link: "cycle-a" });
+  }
   if (options.realTar) {
     entries.push({ name: "node_modules/long-package", type: "directory" });
     entries.push({ name: `node_modules/long-package/${"x".repeat(150)}.js`, content: "long path\n" });
@@ -107,7 +111,7 @@ function fixture(options: { unsafe?: boolean; escapingSymlink?: boolean; missing
   }
   const digest = createHash("sha256").update(archive).digest("hex");
   writeFileSync(`${archivePath}.sha256`, `${digest}  ${name}\n`);
-  const footprint = entries.filter((entry) => entry.type !== "directory" && entry.type !== "symlink" && (entry.name === "package.json" || entry.name.startsWith("dist/") || entry.name.startsWith("node_modules/") || entry.name === "prisma" || entry.name.startsWith("prisma/"))).reduce((total, entry) => total + Buffer.byteLength(entry.content ?? "", "utf8"), 0);
+  const footprint = entries.filter((entry) => entry.type !== "directory" && entry.type !== "symlink" && (entry.name === "package.json" || entry.name === "yarn.lock" || entry.name === "runtime-artifact-manifest.json" || entry.name.startsWith("dist/") || entry.name.startsWith("node_modules/") || entry.name.startsWith("prisma/"))).reduce((total, entry) => total + Buffer.byteLength(entry.content ?? "", "utf8"), 0);
   writeFileSync(`${archivePath}.manifest.json`, `${JSON.stringify({ ...manifest, artifact: { ...manifest.artifact, archiveSha256: digest, archiveBytes: archive.length }, integrity: { ...manifest.integrity, sha256: digest }, measurements: { archiveBytes: archive.length, extractedFootprintBytes: footprint } }, null, 2)}\n`);
   return { root, archivePath };
 }
@@ -118,6 +122,39 @@ function runValidation(archivePath: string, ...extra: string[]) {
     ? [join(process.cwd(), "scripts", "validate-runtime-artifact.py")]
     : [join(process.cwd(), "scripts", "validate-runtime-artifact.sh")];
   return execFileSync(command, [...commandArgs, "--archive", archivePath, "--checksum", `${archivePath}.sha256`, "--manifest", `${archivePath}.manifest.json`, "--expected-sha", sourceSha, ...extra], { cwd: process.cwd(), encoding: "utf8", stdio: "pipe" });
+}
+
+function producerContractFixture() {
+  const root = mkdtempSync(join(tmpdir(), "clashcookies-runtime-producer-contract-"));
+  const payload = join(root, "payload");
+  const name = `clashcookies-runtime-${sourceSha}.tar.gz`;
+  const archivePath = join(root, name);
+  const image = "node:20-bookworm@sha256:" + "a".repeat(64);
+  const writePayload = (name: string, content: string, mode = 0o644) => {
+    const path = join(payload, ...name.split("/"));
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+    chmodSync(path, mode);
+  };
+  for (const path of ["dist", "node_modules", "node_modules/@prisma", "node_modules/@prisma/client", "node_modules/.prisma", "node_modules/.prisma/client", "node_modules/prisma", "node_modules/prisma/build", "node_modules/.bin", "prisma", "prisma/migrations", "prisma/migrations/20260101000000_fixture"]) mkdirSync(join(payload, ...path.split("/")), { recursive: true });
+  writePayload("dist/ClashCookies.js", "compiled\n", 0o755);
+  writePayload("node_modules/@prisma/client/default.js", "module.exports = {};\n");
+  writePayload("node_modules/.prisma/client/index.js", "module.exports = {};\n");
+  writePayload("node_modules/.prisma/client/libquery_engine-debian-openssl-3.0.x.so.node", "engine\n");
+  writePayload("node_modules/prisma/build/index.js", "#!/usr/bin/env node\n", 0o755);
+  symlinkSync("../prisma/build/index.js", join(payload, "node_modules/.bin/prisma"));
+  writePayload("prisma/schema.prisma", "generator client { provider = \"prisma-client-js\" }\n");
+  writePayload("prisma/migrations/20260101000000_fixture/migration.sql", "-- fixture\n");
+  writePayload("package.json", "{}\n");
+  writePayload("yarn.lock", "# fixture\n");
+  const env = { ...process.env, SOURCE_SHA: sourceSha, ARTIFACT_NAME: name, BUILD_IMAGE: image, BUILD_PLATFORM: "linux/amd64", BUILD_ARCHITECTURE: "amd64", NODE_VERSION: "v20.0.0", YARN_VERSION: "1.22.22", BUILD_DURATION_MS: "7", BUILD_STARTED_AT: "2026-01-01T00:00:00Z", GITHUB_EVENT_NAME: "pull_request", GITHUB_WORKFLOW: "contract", GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "3", GITHUB_REF: "refs/pull/1/merge", GITHUB_REPOSITORY: "test/test", GITHUB_SERVER_URL: "https://github.com" };
+  execFileSync(process.execPath, [join(process.cwd(), "scripts", "runtime-artifact-manifest.js"), "--root", payload, "--output", join(payload, "runtime-artifact-manifest.json")], { cwd: process.cwd(), env, stdio: "pipe" });
+  execFileSync("tar", ["--format=posix", "-czf", archivePath, "-C", payload, "dist", "node_modules", "prisma", "package.json", "yarn.lock", "runtime-artifact-manifest.json"], { stdio: "pipe" });
+  const archive = readFileSync(archivePath);
+  const digest = createHash("sha256").update(archive).digest("hex");
+  execFileSync(process.execPath, [join(process.cwd(), "scripts", "finalize-runtime-artifact.js"), "--root", payload, "--embedded", join(payload, "runtime-artifact-manifest.json"), "--output", `${archivePath}.manifest.json`, "--sha256", digest, "--archive-bytes", String(statSync(archivePath).size)], { cwd: process.cwd(), env, stdio: "pipe" });
+  writeFileSync(`${archivePath}.sha256`, `${digest}  ${name}\n`);
+  return { root, archivePath, image };
 }
 
 describe("runtime artifact validation", () => {
@@ -159,10 +196,20 @@ describe("runtime artifact validation", () => {
     rmSync(value.root, { recursive: true, force: true });
   });
 
+  it("validates the actual manifest generator/finalizer producer contract", () => {
+    if (process.platform === "win32") return;
+    if (!execFileSync("tar", ["--version"], { encoding: "utf8" }).startsWith("tar (GNU tar)")) return;
+    const value = producerContractFixture();
+    expect(runValidation(value.archivePath, "--expected-repository", "test/test", "--expected-workflow", "contract", "--expected-run-id", "42", "--expected-run-attempt", "3", "--expected-base-image", value.image, "--expected-base-image-digest", "sha256:" + "a".repeat(64))).toContain(sourceSha);
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
   it.each([
     ["missing embedded manifest", { missingManifest: true }],
     ["unsafe path", { unsafe: true }],
     ["escaping symlink", { escapingSymlink: true }],
+    ["cyclic symlink", { cyclicSymlink: true }],
+    ["unsafe permissions", { unsafeMode: true }],
     ["missing runtime file", { missingRuntime: true }],
   ])("rejects %s", (_label, options) => {
     const value = fixture(options);
@@ -191,6 +238,19 @@ describe("runtime artifact validation", () => {
     const value = fixture();
     const corrupted = Buffer.from(readFileSync(value.archivePath));
     corrupted[Math.min(40, corrupted.length - 1)] ^= 0xff;
+    writeFileSync(value.archivePath, corrupted);
+    const digest = createHash("sha256").update(corrupted).digest("hex");
+    writeFileSync(`${value.archivePath}.sha256`, `${digest}  ${value.archivePath.split(/[\\/]/).pop()}\n`);
+    expect(() => runValidation(value.archivePath)).toThrow();
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it.each(["truncated gzip", "trailing bytes", "invalid tar termination"])("rejects %s", (kind) => {
+    const value = fixture();
+    let corrupted = readFileSync(value.archivePath);
+    if (kind === "truncated gzip") corrupted = corrupted.subarray(0, corrupted.length - 1);
+    if (kind === "trailing bytes") corrupted = Buffer.concat([corrupted, Buffer.from("unexpected trailing data")]);
+    if (kind === "invalid tar termination") corrupted = corrupted.subarray(0, corrupted.length - 20);
     writeFileSync(value.archivePath, corrupted);
     const digest = createHash("sha256").update(corrupted).digest("hex");
     writeFileSync(`${value.archivePath}.sha256`, `${digest}  ${value.archivePath.split(/[\\/]/).pop()}\n`);

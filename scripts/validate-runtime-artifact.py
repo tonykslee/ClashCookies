@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
@@ -62,9 +63,10 @@ class Entry:
 
 
 class BoundedReader:
-    def __init__(self, raw: BinaryIO, limit: int):
+    def __init__(self, raw: BinaryIO, limit: int, chunk_limit: int = 64 * 1024):
         self.raw = raw
         self.limit = limit
+        self.chunk_limit = chunk_limit
         self.total = 0
 
     def read(self, size: int = -1) -> bytes:
@@ -73,12 +75,62 @@ class BoundedReader:
             return b""
         if size < 0 or size > remaining:
             size = remaining
+        size = min(size, self.chunk_limit)
         chunk = self.raw.read(size)
         self.total += len(chunk)
         return chunk
 
     def readable(self) -> bool:
         return True
+
+
+class TrackedReader:
+    def __init__(self, source: BinaryIO, limit: int):
+        self.source = source
+        self.limit = limit
+        self.total = 0
+        self.tail = bytearray()
+        self.marked = False
+        self.nonzero_after_mark = False
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            size = 64 * 1024
+        chunk = self.source.read(min(size, 64 * 1024))
+        if not chunk:
+            return b""
+        self.total += len(chunk)
+        require(self.total <= self.limit, "decompressed stream exceeds the size limit")
+        if self.marked and any(chunk):
+            self.nonzero_after_mark = True
+        self.tail.extend(chunk)
+        if len(self.tail) > 1024:
+            del self.tail[:-1024]
+        return chunk
+
+    def readable(self) -> bool:
+        return True
+
+
+@dataclass(frozen=True)
+class ArchiveIdentity:
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+
+
+def archive_identity(path: Path, limits: Limits) -> ArchiveIdentity:
+    metadata = path.lstat()
+    require(stat.S_ISREG(metadata.st_mode), f"archive is not a regular file: {path}")
+    require(metadata.st_size <= limits.compressed_bytes, "compressed archive exceeds the size limit")
+    return ArchiveIdentity(metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
+
+
+def ensure_archive_stable(path: Path, identity: ArchiveIdentity) -> None:
+    current = path.lstat()
+    require(stat.S_ISREG(current.st_mode), "archive changed into a non-regular file")
+    require(ArchiveIdentity(current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns) == identity, "archive changed during validation or extraction")
 
 
 def fail(message: str) -> None:
@@ -152,13 +204,14 @@ def validate_mode(mode: int, name: str, kind: str) -> int:
     return mode
 
 
-def iter_entries(archive_path: Path, limits: Limits) -> Iterable[tuple[Entry, tarfile.TarInfo, tarfile.TarFile]]:
-    require(stat.S_ISREG(archive_path.stat().st_mode), f"archive is not a regular file: {archive_path}")
-    require(archive_path.stat().st_size <= limits.compressed_bytes, "compressed archive exceeds the size limit")
+def iter_entries(archive_path: Path, limits: Limits, identity: ArchiveIdentity) -> Iterable[tuple[Entry, tarfile.TarInfo, tarfile.TarFile]]:
+    ensure_archive_stable(archive_path, identity)
     raw = archive_path.open("rb")
     bounded = BoundedReader(raw, limits.compressed_bytes)
+    gzip_stream = gzip.GzipFile(fileobj=bounded, mode="rb")
+    stream = TrackedReader(gzip_stream, limits.expanded_bytes + limits.entry_count * 1024 + limits.metadata_bytes + 1024)
     try:
-        with tarfile.open(fileobj=bounded, mode="r|gz", errorlevel=2) as tar:
+        with tarfile.open(fileobj=stream, mode="r|", bufsize=512, errorlevel=2) as tar:
             count = 0
             expanded = 0
             while True:
@@ -167,16 +220,24 @@ def iter_entries(archive_path: Path, limits: Limits) -> Iterable[tuple[Entry, ta
                 except (tarfile.TarError, EOFError, OSError) as error:
                     fail(f"malformed archive: {error}")
                 if info is None:
+                    stream.marked = True
+                    while stream.read(64 * 1024):
+                        pass
+                    require(not stream.nonzero_after_mark, "unexpected data follows tar end-of-archive blocks")
+                    require(stream.total >= 1024 and bytes(stream.tail[-1024:]) == b"\0" * 1024, "invalid tar end-of-archive termination")
+                    require(bounded.total == identity.size, "gzip stream did not consume the complete archive")
                     break
                 count += 1
                 require(count <= limits.entry_count, "archive entry count exceeds the limit")
                 kind = classify(info)
+                require(not getattr(info, "sparse", None), f"sparse archive entries are unsupported: {info.name!r}")
                 name = normalized_name(info.name, kind == "directory", limits)
                 require(info.name == name or (kind == "directory" and info.name.rstrip("/") == name), f"archive path normalization mismatch: {info.name!r}")
                 link = info.linkname if kind == "symlink" else ""
                 if kind == "symlink":
                     safe_link(name, link, limits)
                 metadata_size = sum(len(str(key).encode()) + len(str(value).encode()) for key, value in info.pax_headers.items())
+                metadata_size += sum(len(str(key).encode()) + len(str(value).encode()) for key, value in tar.pax_headers.items())
                 require(metadata_size <= limits.metadata_bytes, f"archive metadata exceeds the limit: {name}")
                 mode = validate_mode(info.mode, name, kind)
                 size = int(info.size)
@@ -185,9 +246,11 @@ def iter_entries(archive_path: Path, limits: Limits) -> Iterable[tuple[Entry, ta
                     expanded += size
                     require(expanded <= limits.expanded_bytes, "expanded archive exceeds the size limit")
                 yield Entry(name, kind, size, mode, link), info, tar
+                tar.members.clear()
     except (tarfile.TarError, EOFError, OSError) as error:
         fail(f"malformed archive: {error}")
     finally:
+        gzip_stream.close()
         raw.close()
 
 
@@ -370,11 +433,11 @@ def compare_manifests(embedded: dict, external: dict) -> None:
     require(comparable(embedded) == comparable(external), "published manifest does not match embedded manifest")
 
 
-def collect_entries(archive_path: Path, limits: Limits) -> tuple[list[Entry], dict[str, bytes]]:
+def collect_entries(archive_path: Path, limits: Limits, identity: ArchiveIdentity) -> tuple[list[Entry], dict[str, bytes]]:
     entries: list[Entry] = []
     metadata_files: dict[str, bytes] = {}
     seen: set[str] = set()
-    for entry, info, tar in iter_entries(archive_path, limits):
+    for entry, info, tar in iter_entries(archive_path, limits, identity):
         require(entry.name not in seen, f"duplicate archive path: {entry.name}")
         seen.add(entry.name)
         require(entry.name in ALLOWED_ROOTS or entry.name.startswith(tuple(root + "/" for root in ALLOWED_ROOTS)) or entry.name in ("package.json", "yarn.lock", "runtime-artifact-manifest.json"), f"unexpected archive root: {entry.name}")
@@ -450,16 +513,7 @@ def source_input_hashes(source_root: Path) -> dict[str, object]:
     return {"packageJsonSha256": digest(source_root / "package.json"), "yarnLockSha256": digest(source_root / "yarn.lock"), "prismaSchemaSha256": digest(source_root / "prisma" / "schema.prisma"), "prismaMigrations": [{"path": path, "sha256": digest(source_root / path)} for path in migration_paths]}
 
 
-def collect_input_files(archive_path: Path, limits: Limits) -> dict[str, bytes]:
-    values: dict[str, bytes] = {}
-    wanted = {"package.json", "yarn.lock", "prisma/schema.prisma"}
-    for entry, info, tar in iter_entries(archive_path, limits):
-        if entry.kind == "file" and (entry.name in wanted or (entry.name.startswith("prisma/migrations/") and entry.name.endswith("/migration.sql"))):
-            values[entry.name] = read_entry(tar, info, limits.manifest_bytes)
-    return values
-
-
-def extract_archive(archive_path: Path, entries: list[Entry], destination: Path, limits: Limits) -> None:
+def extract_archive(archive_path: Path, entries: list[Entry], destination: Path, limits: Limits, identity: ArchiveIdentity) -> None:
     require(not os.path.lexists(destination), "extraction destination already exists")
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=".runtime-artifact-extract-", dir=destination.parent))
@@ -467,7 +521,7 @@ def extract_archive(archive_path: Path, entries: list[Entry], destination: Path,
         by_name = {entry.name: entry for entry in entries}
         directory_modes = {entry.name: entry.mode for entry in entries if entry.kind == "directory"}
         symlinks: list[Entry] = []
-        for entry, info, tar in iter_entries(archive_path, limits):
+        for entry, info, tar in iter_entries(archive_path, limits, identity):
             target = temporary / Path(*entry.name.split("/"))
             if entry.kind == "directory":
                 target.mkdir(parents=True, exist_ok=True)
@@ -533,6 +587,7 @@ def main() -> int:
     args = parse_args()
     limits = Limits(compressed_bytes=args.max_compressed_bytes, expanded_bytes=args.max_expanded_bytes, entry_count=args.max_entries)
     archive_path = Path(args.archive).resolve()
+    identity = archive_identity(archive_path, limits)
     checksum_path = Path(args.checksum or f"{archive_path}.sha256")
     manifest_path = Path(args.manifest or f"{archive_path}.manifest.json")
     digest_hasher = hashlib.sha256()
@@ -541,15 +596,15 @@ def main() -> int:
             digest_hasher.update(chunk)
     digest = digest_hasher.hexdigest()
     validate_checksum(archive_path, checksum_path, digest)
-    entries, metadata_files = collect_entries(archive_path, limits)
+    entries, metadata_files = collect_entries(archive_path, limits, identity)
+    ensure_archive_stable(archive_path, identity)
     embedded = read_json_bytes(metadata_files["runtime-artifact-manifest.json"], "embedded manifest")
     external = read_sidecar_json(manifest_path, limits, "published manifest")
     validate_manifest(embedded, archive_path.name, archive_path.stat().st_size, digest, args, embedded=True)
     validate_manifest(external, archive_path.name, archive_path.stat().st_size, digest, args, embedded=False)
     compare_manifests(embedded, external)
-    packaged_inputs = collect_input_files(archive_path, limits)
     manifest_inputs = external["inputs"]
-    require(archive_input_hashes(packaged_inputs, entries) == manifest_inputs, "packaged input hashes or migration inventory do not match manifest")
+    require(archive_input_hashes(metadata_files, entries) == manifest_inputs, "packaged input hashes or migration inventory do not match manifest")
     if args.source_root:
         source_root = Path(args.source_root).resolve()
         try:
@@ -558,10 +613,12 @@ def main() -> int:
             fail(f"source revision cannot be verified: {error}")
         require(source_revision.lower() == args.expected_sha.lower(), "source checkout does not match expected revision")
         require(source_input_hashes(source_root) == manifest_inputs, "manifest inputs do not match the exact source revision")
-    footprint = sum(entry.size for entry in entries if entry.kind == "file" and (entry.name == "package.json" or entry.name == "dist" or entry.name.startswith("dist/") or entry.name.startswith("node_modules/") or entry.name == "prisma" or entry.name.startswith("prisma/")))
+    footprint = sum(entry.size for entry in entries if entry.kind == "file" and (entry.name in ("package.json", "yarn.lock", "runtime-artifact-manifest.json") or entry.name.startswith("dist/") or entry.name.startswith("node_modules/") or entry.name.startswith("prisma/")))
     require(external["measurements"]["extractedFootprintBytes"] == footprint, "manifest extracted footprint does not match archive")
     if args.extract:
-        extract_archive(archive_path, entries, Path(args.extract).resolve(), limits)
+        ensure_archive_stable(archive_path, identity)
+        extract_archive(archive_path, entries, Path(args.extract).resolve(), limits, identity)
+        ensure_archive_stable(archive_path, identity)
     print(json.dumps({"archive": str(archive_path), "sha256": digest, "entries": len(entries), "sourceSha": external["source"]["gitSha"], "archiveBytes": archive_path.stat().st_size, "extractedFootprintBytes": footprint}, indent=2))
     return 0
 

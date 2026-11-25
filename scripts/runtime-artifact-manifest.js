@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const { createHash } = require("node:crypto");
-const { readFileSync, readdirSync, statSync, writeFileSync } = require("node:fs");
+const { lstatSync, readFileSync, readdirSync, writeFileSync } = require("node:fs");
 const { join, relative } = require("node:path");
 
 function sha256File(path) {
@@ -22,11 +22,12 @@ function hashMigrations(root) {
 function footprint(root) {
   let bytes = 0;
   const visit = (path) => {
-    const stat = statSync(path);
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink()) return;
     if (stat.isFile()) { bytes += stat.size; return; }
     if (stat.isDirectory()) for (const entry of readdirSync(path)) visit(join(path, entry));
   };
-  for (const path of ["dist", "node_modules", "prisma", "package.json"]) visit(join(root, path));
+  for (const path of ["dist", "node_modules", "prisma", "package.json", "yarn.lock", "runtime-artifact-manifest.json"]) visit(join(root, path));
   return bytes;
 }
 
@@ -102,7 +103,7 @@ function buildManifest(root) {
     integrity: { checksumFile: `${process.env.ARTIFACT_NAME}.sha256`, sha256: null },
     measurements: { archiveBytes: null, extractedFootprintBytes: null },
     runtimeValidation: {
-      requiredFiles: ["dist/ClashCookies.js", "node_modules/@prisma/client/default.js", "node_modules/.prisma/client/index.js", "node_modules/.prisma/client/libquery_engine-debian-openssl-3.0.x.so.node", "node_modules/prisma/build/index.js", "node_modules/.bin/prisma", "prisma/schema.prisma", "package.json"],
+      requiredFiles: ["dist/ClashCookies.js", "node_modules/@prisma/client/default.js", "node_modules/.prisma/client/index.js", "node_modules/.prisma/client/libquery_engine-debian-openssl-3.0.x.so.node", "node_modules/prisma/build/index.js", "node_modules/.bin/prisma", "prisma/schema.prisma", "package.json", "yarn.lock", "runtime-artifact-manifest.json"],
       prohibitedActions: ["source compilation", "dependency installation", "prisma generate", "production runtime startup"],
     },
   };
