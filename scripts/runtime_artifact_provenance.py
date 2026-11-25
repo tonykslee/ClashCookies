@@ -909,7 +909,7 @@ def _preflight_zip_snapshot(snapshot: ZipSnapshot) -> None:
     require(central_size <= MAX_ZIP_CENTRAL_DIRECTORY_BYTES, "artifact service ZIP central directory exceeds the limit")
     require(comment_size <= MAX_ZIP_COMMENT_BYTES, "artifact service ZIP comment exceeds the limit")
     require(entries_total != 0xFFFF and central_size != 0xFFFFFFFF and central_offset != 0xFFFFFFFF, "ZIP64 metadata is unsupported")
-    require(central_offset + central_size <= eocd_offset, "artifact service ZIP central directory is outside the snapshot")
+    require(central_offset + central_size == eocd_offset, "artifact service ZIP central directory placement is unsupported")
     central = _read_snapshot_bytes(snapshot, central_offset, central_size)
     position = 0
     for _ in range(entries_total):

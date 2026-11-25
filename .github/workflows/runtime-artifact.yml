@@ -245,7 +245,8 @@ jobs:
 
           wrong_run = copy.deepcopy(run_metadata)
           wrong_run["head_sha"] = "0" * 40
-          expect_rejection("wrong real run head SHA", "exact PR run head mismatch", lambda: provenance.validate_exact_run_attempt_request_metadata(wrong_run, request, now=captured_now))
+          expected_source_reason = "exact PR run head mismatch" if request.event == "pull_request" else "main/development push source SHA mismatch"
+          expect_rejection("wrong real run head SHA", expected_source_reason, lambda: provenance.validate_exact_run_attempt_request_metadata(wrong_run, request, now=captured_now))
 
           exact_artifacts = [item for item in artifact_response["artifacts"] if item.get("name") == request.artifact_name]
           assert len(exact_artifacts) == 1, "real exact artifact is missing or ambiguous"

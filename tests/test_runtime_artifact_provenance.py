@@ -544,6 +544,22 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
                         provenance.inspect_artifact_service_zip_snapshot(contradictory_snapshot, identity.archive_name)
             finally:
                 provenance.close_zip_snapshot(contradictory_snapshot)
+            displaced_path = Path(directory) / "displaced-central-directory.zip"
+            displaced_path.write_bytes(valid[:-provenance.ZIP_EOCD_BYTES] + b"gap" + valid[-provenance.ZIP_EOCD_BYTES:])
+            displaced_snapshot = provenance.open_zip_snapshot(displaced_path)
+            try:
+                with patch.object(provenance, "ZipFile", side_effect=AssertionError("ZipFile parser must not be reached")):
+                    with self.assertRaisesRegex(provenance.ProvenanceError, "placement"):
+                        provenance.inspect_artifact_service_zip_snapshot(displaced_snapshot, identity.archive_name)
+            finally:
+                provenance.close_zip_snapshot(displaced_snapshot)
+
+    def test_attempt_source_sha_rejection_reason_is_event_aware(self) -> None:
+        for request, reason in ((selection_request(), "exact PR run head mismatch"), (main_selection_request(), "main/development push source SHA mismatch")):
+            candidate = selection_run_metadata(request)
+            candidate["head_sha"] = "0" * 40
+            with self.subTest(event=request.event), self.assertRaisesRegex(provenance.ProvenanceError, reason):
+                provenance.validate_exact_run_attempt_request_metadata(candidate, request, now=datetime(2026, 11, 25, 20, tzinfo=timezone.utc))
 
     def test_authorization_lifecycle_is_deterministic_and_recovery_is_not_forward_authority(self) -> None:
         identity = trusted_identity()
