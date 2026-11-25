@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { tmpdir } from "node:os";
@@ -22,6 +22,57 @@ function bashExecutable(): string {
 }
 
 describe("real Docker deployment artifact smoke", () => {
+  it("removes a daemon-managed candidate after the handled client deadline", async () => {
+    if (!dockerAvailable()) {
+      console.warn("Skipping real Docker lifecycle integration: Docker daemon is unavailable");
+      return;
+    }
+
+    const name = `clashcookies-test-candidate-${process.pid}-${Date.now()}`;
+    const image = process.env.DEPLOY_TEST_IMAGE ?? "node:20-bookworm";
+    const labels = [
+      "com.clashcookies.deploy=candidate-build-only",
+      "com.clashcookies.deploy.owner=clashcookies-deploy",
+      "com.clashcookies.deploy.environment=prod",
+      "com.clashcookies.deploy.role=candidate-build",
+      `com.clashcookies.deploy.attempt=${name}`,
+    ];
+    const waitClient = (container: string) => {
+      const child = spawn("docker", ["wait", container], { stdio: ["ignore", "pipe", "pipe"] });
+      const done = new Promise<number | null>((resolve) => {
+        child.on("close", (code) => resolve(code));
+        child.on("error", () => resolve(null));
+      });
+      return { child, done };
+    };
+
+    try {
+      execFileSync("docker", [
+        "run", "-d", "--name", name,
+        ...labels.flatMap((label) => ["--label", label]),
+        "--memory", "256m", "--memory-swap", "256m", "--cpus", "0.25", "--pids-limit", "64",
+        image, "bash", "-lc", "sleep 30",
+      ], { encoding: "utf8", timeout: 30_000 });
+
+      const waiter = waitClient(name);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      waiter.child.kill();
+      await waiter.done;
+      execFileSync("docker", ["stop", "--time", "1", name], { encoding: "utf8", timeout: 15_000 });
+
+      const running = execFileSync("docker", ["inspect", "--format", "{{.State.Running}}", name], { encoding: "utf8" }).trim();
+      expect(running).toBe("false");
+      execFileSync("docker", ["rm", name], { encoding: "utf8", timeout: 15_000 });
+      expect(() => execFileSync("docker", ["inspect", name], { stdio: "ignore" })).toThrow();
+    } finally {
+      try {
+        execFileSync("docker", ["rm", "-f", name], { stdio: "ignore", timeout: 15_000 });
+      } catch {
+        // The explicit verification above is authoritative; cleanup is best effort.
+      }
+    }
+  }, 90_000);
+
   it("builds with the artifact volume mounted outside /app/dist", () => {
     if (!dockerAvailable()) {
       console.warn("Skipping real Docker smoke: Docker daemon is unavailable");

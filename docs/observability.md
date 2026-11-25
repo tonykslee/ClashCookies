@@ -174,6 +174,26 @@ CWL camping logs should stay to one bounded invocation summary: `[cwl-camping] e
 
 ## External Droplet Observability
 
+### Deployment-candidate diagnostics (FB-027)
+
+The deployment procedure emits bounded `[deploy-prod]` records for attempt
+identity, lock/reconciliation, resource admission, health admission and
+monitoring, candidate/artifact phase status, timeout versus container exit,
+and verified cleanup. Candidate and artifact logs are kept under the private
+deployment diagnostics directory with bounded tails; they do not include
+production env-file contents or credentials. A cleanup failure is an
+operator-intervention condition, not a successful cleanup, and the next
+deployment must reconcile or refuse the owned resource before preparation.
+
+Resource admission records observed available memory, swap pressure, load per
+CPU, and free PID headroom plus the configured policy decision. These records
+are evidence about the host at admission time only; they do not establish that
+the host can safely compile, and they must not be replaced by a claim that
+additional timeout or swap is safe. Repeated production readiness failures
+during preparation are recorded as a resource/health abort after the configured
+consecutive-failure threshold. Exit status 137 is retained as an observed
+container exit unless the wrapper itself observed its deadline.
+
 **Observed deployment snapshot (2026-11-14):** Uptime Kuma and Dozzle are **running/preserved**; Netdata's container, image and named volumes were **removed** with operator authorization to reclaim disk. The staging app/database were also decommissioned. The configuration and instructions below describe the **repository's available/legacy stack**, not a guarantee that every service is currently deployed. In particular, `ops/observability/docker-compose.yml` may recreate Netdata if run without review. See [backup/droplet preflight](diagnostics/backup-operator-preflight-2026-11-14.md). Host/container metrics coverage must be reviewed before production release.
 
 The repository's observability design includes:

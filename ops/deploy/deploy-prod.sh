@@ -33,12 +33,40 @@ DIAGNOSTIC_DIR="${DEPLOY_DIAGNOSTIC_DIR:-${APP_DIR}-deploy-diagnostics}"
 ARTIFACT_VOLUME_PREFIX="${ARTIFACT_VOLUME_PREFIX:-clashcookies-prod-artifact}"
 ARTIFACT_IMAGE="${ARTIFACT_IMAGE:-node:20-bookworm}"
 
+# Candidate preparation is deliberately isolated from the production runtime.
+# These defaults are conservative policy, not a claim that every production
+# host can safely compile on-host. Admission below must prove the host has the
+# configured headroom before any candidate work starts.
+DEPLOY_ATTEMPT_ID="${DEPLOY_ATTEMPT_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}}"
+DEPLOY_RESOURCE_ADMISSION_FILE="${DEPLOY_RESOURCE_ADMISSION_FILE:-}"
+DEPLOY_RESERVED_MEMORY_MIB="${DEPLOY_RESERVED_MEMORY_MIB:-1536}"
+DEPLOY_CANDIDATE_MEMORY_LIMIT="${DEPLOY_CANDIDATE_MEMORY_LIMIT:-1024m}"
+DEPLOY_CANDIDATE_MEMORY_RESERVATION="${DEPLOY_CANDIDATE_MEMORY_RESERVATION:-768m}"
+DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT="${DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT:-1024m}"
+DEPLOY_CANDIDATE_CPUS="${DEPLOY_CANDIDATE_CPUS:-1.0}"
+DEPLOY_CANDIDATE_PIDS_LIMIT="${DEPLOY_CANDIDATE_PIDS_LIMIT:-512}"
+DEPLOY_MIN_FREE_PIDS="${DEPLOY_MIN_FREE_PIDS:-1024}"
+DEPLOY_MAX_HOST_SWAP_USED_PERCENT="${DEPLOY_MAX_HOST_SWAP_USED_PERCENT:-25}"
+DEPLOY_MAX_HOST_LOAD_PER_CPU_PERCENT="${DEPLOY_MAX_HOST_LOAD_PER_CPU_PERCENT:-75}"
+DEPLOY_HEALTH_DEGRADATION_FAILURES="${DEPLOY_HEALTH_DEGRADATION_FAILURES:-3}"
+DEPLOY_CONTAINER_STOP_TIMEOUT_SECONDS="${DEPLOY_CONTAINER_STOP_TIMEOUT_SECONDS:-10}"
+DEPLOY_CONTAINER_OPERATION_TIMEOUT_SECONDS="${DEPLOY_CONTAINER_OPERATION_TIMEOUT_SECONDS:-15}"
+DEPLOY_CONTAINER_POLL_INTERVAL_SECONDS="${DEPLOY_CONTAINER_POLL_INTERVAL_SECONDS:-1}"
+DEPLOY_OWNER_LABEL="clashcookies-deploy"
+DEPLOY_ENVIRONMENT_LABEL="prod"
+
 TEMP_WORKTREE_CREATED="0"
 BUILD_VOLUMES_IN_USE="0"
 BUILD_WORKSPACE_CREATED="0"
 BUILD_NODE_MODULES_CREATED="0"
 BUILD_DIST_CREATED="0"
 ACTIVE_CONTAINER_ID=""
+CANDIDATE_CONTAINER_ID=""
+ARTIFACT_CONTAINER_ID=""
+ARTIFACT_STAGE_COUNTER="0"
+CURRENT_CONTAINER_ROLE=""
+CURRENT_CONTAINER_LOG=""
+CURRENT_CONTAINER_WAIT_FILE=""
 OLD_SHA=""
 NEW_SHA=""
 BUILD_NODE_MODULES_VOLUME=""
@@ -47,6 +75,9 @@ ROLLBACK_NODE_MODULES_VOLUME=""
 ROLLBACK_DIST_VOLUME=""
 LOCK_HELD="0"
 ARTIFACT_STAGE_DEADLINE="0"
+INTERRUPTION_SIGNAL=""
+EXIT_CLEANUP_FAILED="0"
+PRODUCTION_RUNTIME_MONITOR="1"
 
 log() {
   printf '%s\n' "[deploy-prod] $*"
@@ -68,6 +99,13 @@ require_file() {
 is_positive_integer() {
   case "$1" in
     ''|*[!0-9]*|0) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+is_nonnegative_integer() {
+  case "$1" in
+    ''|*[!0-9]*) return 1 ;;
     *) return 0 ;;
   esac
 }
@@ -112,10 +150,301 @@ begin_artifact_stage() {
   ARTIFACT_STAGE_DEADLINE=$((SECONDS + ARTIFACT_STAGE_TIMEOUT_SECONDS))
 }
 
-run_artifact_command() {
-  local remaining=$((ARTIFACT_STAGE_DEADLINE - SECONDS))
-  [ "$remaining" -gt 0 ] || return 124
-  run_with_timeout "$remaining" "$@"
+resource_value() {
+  local key="$1" cpu_count
+  if [ -n "$DEPLOY_RESOURCE_ADMISSION_FILE" ]; then
+    sed -n "s/^${key}=//p" "$DEPLOY_RESOURCE_ADMISSION_FILE" | head -n1
+    return 0
+  fi
+  case "$key" in
+    mem_available_mib)
+      awk '/^MemAvailable:/ { printf "%d\n", $2 / 1024; exit }' /proc/meminfo
+      ;;
+    swap_total_mib)
+      awk '/^SwapTotal:/ { printf "%d\n", $2 / 1024; exit }' /proc/meminfo
+      ;;
+    swap_free_mib)
+      awk '/^SwapFree:/ { printf "%d\n", $2 / 1024; exit }' /proc/meminfo
+      ;;
+    load_per_cpu_percent)
+      cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')"
+      awk -v cpu="$cpu_count" 'NR == 1 { if (NF < 1) exit 1; if (cpu < 1) cpu = 1; printf "%d\n", ($1 * 100) / cpu; exit }' /proc/loadavg
+      ;;
+    free_pids)
+      awk 'NR == 1 { split($4, p, "/"); if (p[2] == "") exit 1; printf "%d\n", p[2] - p[1]; exit }' /proc/loadavg
+      ;;
+  esac
+}
+
+memory_limit_mib() {
+  case "$1" in
+    *g|*G) awk -v value="${1%[gG]}" 'BEGIN { printf "%d\n", value * 1024 }' ;;
+    *m|*M) printf '%s\n' "${1%[mM]}" ;;
+    *k|*K) awk -v value="${1%[kK]}" 'BEGIN { printf "%d\n", value / 1024 }' ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+validate_resource_configuration() {
+  local name value
+  for name in DEPLOY_RESERVED_MEMORY_MIB DEPLOY_MIN_FREE_PIDS DEPLOY_MAX_HOST_SWAP_USED_PERCENT DEPLOY_MAX_HOST_LOAD_PER_CPU_PERCENT DEPLOY_HEALTH_DEGRADATION_FAILURES DEPLOY_CONTAINER_STOP_TIMEOUT_SECONDS DEPLOY_CONTAINER_OPERATION_TIMEOUT_SECONDS DEPLOY_CANDIDATE_PIDS_LIMIT; do
+    value="${!name}"
+    is_positive_integer "$value" || fatal "invalid_resource_configuration name=${name} value=${value:-empty}"
+  done
+  is_nonnegative_integer "$DEPLOY_CONTAINER_POLL_INTERVAL_SECONDS" || fatal "invalid_resource_configuration name=DEPLOY_CONTAINER_POLL_INTERVAL_SECONDS value=${DEPLOY_CONTAINER_POLL_INTERVAL_SECONDS:-empty}"
+  memory_limit_mib "$DEPLOY_CANDIDATE_MEMORY_LIMIT" | grep -Eq '^[1-9][0-9]*$' || fatal "invalid_resource_configuration name=DEPLOY_CANDIDATE_MEMORY_LIMIT value=${DEPLOY_CANDIDATE_MEMORY_LIMIT}"
+  memory_limit_mib "$DEPLOY_CANDIDATE_MEMORY_RESERVATION" | grep -Eq '^[1-9][0-9]*$' || fatal "invalid_resource_configuration name=DEPLOY_CANDIDATE_MEMORY_RESERVATION value=${DEPLOY_CANDIDATE_MEMORY_RESERVATION}"
+  memory_limit_mib "$DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT" | grep -Eq '^[1-9][0-9]*$' || fatal "invalid_resource_configuration name=DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT value=${DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT}"
+  [ "$(memory_limit_mib "$DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT")" -ge "$(memory_limit_mib "$DEPLOY_CANDIDATE_MEMORY_LIMIT")" ] || fatal "invalid_resource_configuration swap_limit_below_memory_limit"
+}
+
+assert_host_resource_admission() {
+  local available swap_total swap_free swap_used_percent load_percent free_pids candidate_mib required_mib
+  available="$(resource_value mem_available_mib)"
+  swap_total="$(resource_value swap_total_mib)"
+  swap_free="$(resource_value swap_free_mib)"
+  load_percent="$(resource_value load_per_cpu_percent)"
+  free_pids="$(resource_value free_pids)"
+  candidate_mib="$(memory_limit_mib "$DEPLOY_CANDIDATE_MEMORY_LIMIT")"
+  required_mib=$((DEPLOY_RESERVED_MEMORY_MIB + candidate_mib))
+
+  is_nonnegative_integer "${available:-}" || fatal "resource_admission=denied reason=unavailable_meminfo"
+  is_nonnegative_integer "${load_percent:-}" || fatal "resource_admission=denied reason=unavailable_loadavg"
+  is_nonnegative_integer "${free_pids:-}" || fatal "resource_admission=denied reason=unavailable_pid_headroom"
+  if [ "${swap_total:-0}" -gt 0 ]; then
+    is_nonnegative_integer "${swap_free:-}" || fatal "resource_admission=denied reason=unavailable_swapinfo"
+    swap_used_percent=$(( (swap_total - swap_free) * 100 / swap_total ))
+  else
+    swap_used_percent=0
+  fi
+
+  log "resource_admission=observed attempt=${DEPLOY_ATTEMPT_ID} available_memory_mib=${available} reserved_memory_mib=${DEPLOY_RESERVED_MEMORY_MIB} candidate_memory_limit=${DEPLOY_CANDIDATE_MEMORY_LIMIT} swap_used_percent=${swap_used_percent} load_per_cpu_percent=${load_percent} free_pids=${free_pids}"
+  if [ "$available" -lt "$required_mib" ]; then
+    fatal "resource_admission=denied reason=insufficient_memory available_mib=${available} required_mib=${required_mib} reserved_mib=${DEPLOY_RESERVED_MEMORY_MIB} candidate_limit_mib=${candidate_mib}"
+  fi
+  if [ "$swap_used_percent" -gt "$DEPLOY_MAX_HOST_SWAP_USED_PERCENT" ]; then
+    fatal "resource_admission=denied reason=swap_pressure used_percent=${swap_used_percent} max_percent=${DEPLOY_MAX_HOST_SWAP_USED_PERCENT}"
+  fi
+  if [ "$load_percent" -gt "$DEPLOY_MAX_HOST_LOAD_PER_CPU_PERCENT" ]; then
+    fatal "resource_admission=denied reason=host_load load_per_cpu_percent=${load_percent} max_percent=${DEPLOY_MAX_HOST_LOAD_PER_CPU_PERCENT}"
+  fi
+  if [ "$free_pids" -lt "$DEPLOY_MIN_FREE_PIDS" ]; then
+    fatal "resource_admission=denied reason=pid_pressure free_pids=${free_pids} min_free_pids=${DEPLOY_MIN_FREE_PIDS}"
+  fi
+  log "resource_admission=approved attempt=${DEPLOY_ATTEMPT_ID} policy=reserved_memory_${DEPLOY_RESERVED_MEMORY_MIB}m_candidate_memory_${candidate_mib}m_no_candidate_swap_cpus_${DEPLOY_CANDIDATE_CPUS}_pids_${DEPLOY_CANDIDATE_PIDS_LIMIT}"
+}
+
+reconcile_abandoned_owned_containers() {
+  local record container_id name deploy owner environment role attempt
+  while IFS='|' read -r container_id name deploy owner environment role attempt; do
+    [ -n "$container_id" ] || continue
+    if [ "$owner" != "$DEPLOY_OWNER_LABEL" ] || [ "$environment" != "$DEPLOY_ENVIRONMENT_LABEL" ] || { [ "$role" != "candidate-build" ] && [ "$role" != "artifact-stage" ]; }; then
+      fatal "owned_resource_reconciliation=denied reason=ambiguous_container container=${container_id} name=${name}"
+    fi
+    log "owned_resource_reconciliation=abandoned_container attempt=${attempt:-unknown} role=${role} name=${name} id=${container_id}"
+    terminate_owned_container "$container_id" "$role" abandoned || fatal "owned_resource_reconciliation=failed reason=container_cleanup container=${container_id} operator_intervention_required"
+  done < <(docker ps -a --filter "label=com.clashcookies.deploy.owner=${DEPLOY_OWNER_LABEL}" --filter "label=com.clashcookies.deploy.environment=${DEPLOY_ENVIRONMENT_LABEL}" --format '{{.ID}}|{{.Names}}|{{.Label "com.clashcookies.deploy"}}|{{.Label "com.clashcookies.deploy.owner"}}|{{.Label "com.clashcookies.deploy.environment"}}|{{.Label "com.clashcookies.deploy.role"}}|{{.Label "com.clashcookies.deploy.attempt"}}')
+  if docker ps -aq --filter "label=com.clashcookies.deploy.owner=${DEPLOY_OWNER_LABEL}" --filter "label=com.clashcookies.deploy.environment=${DEPLOY_ENVIRONMENT_LABEL}" | grep -q .; then
+    fatal "owned_resource_reconciliation=failed reason=owned_container_remains operator_intervention_required"
+  fi
+}
+
+reconcile_abandoned_owned_volumes() {
+  local volume labels deploy owner environment revision role attached
+  while IFS= read -r volume; do
+    [ -n "$volume" ] || continue
+    labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.deploy.owner"}}|{{index .Labels "com.clashcookies.deploy.environment"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$volume" 2>/dev/null || true)"
+    IFS='|' read -r deploy owner environment revision role <<< "$labels"
+    [ "$owner" = "$DEPLOY_OWNER_LABEL" ] && [ "$environment" = "$DEPLOY_ENVIRONMENT_LABEL" ] || fatal "owned_resource_reconciliation=denied reason=ambiguous_volume volume=${volume}"
+    attached="$(docker ps -a --filter "volume=${volume}" --format '{{.Names}}')" || fatal "owned_resource_reconciliation=failed reason=volume_reference_check volume=${volume}"
+    if [ -n "$attached" ]; then
+      if [ "$attached" = "$NORMAL_CONTAINER" ]; then
+        log "owned_resource_reconciliation=preserved_active_volume volume=${volume} revision=${revision} role=${role}"
+        continue
+      fi
+      fatal "owned_resource_reconciliation=denied reason=volume_attached_unknown volume=${volume} containers=${attached} operator_intervention_required"
+    fi
+    case "$role" in
+      rollback-dist|rollback-node-modules)
+        log "owned_resource_reconciliation=preserved_rollback_volume volume=${volume} revision=${revision} role=${role}"
+        ;;
+      build-workspace|release-dist|release-node-modules|artifact-stage)
+        if ! docker volume rm "$volume" >/dev/null 2>&1; then
+          fatal "owned_resource_reconciliation=failed reason=volume_cleanup volume=${volume} revision=${revision} role=${role} operator_intervention_required"
+        fi
+        log "owned_resource_reconciliation=removed_volume volume=${volume} revision=${revision} role=${role}"
+        ;;
+      *)
+        fatal "owned_resource_reconciliation=denied reason=ambiguous_volume_role volume=${volume} role=${role}"
+        ;;
+    esac
+  done < <(docker volume ls -q --filter "label=com.clashcookies.deploy.owner=${DEPLOY_OWNER_LABEL}")
+}
+
+reconcile_abandoned_resources() {
+  reconcile_abandoned_owned_containers
+  reconcile_abandoned_owned_volumes
+  log "owned_resource_reconciliation=complete attempt=${DEPLOY_ATTEMPT_ID}"
+}
+
+probe_production_health() {
+  curl --fail --silent --show-error --max-time "$HEALTH_REQUEST_TIMEOUT_SECONDS" \
+    "http://127.0.0.1:${NORMAL_PORT}/healthz" >/dev/null 2>&1
+}
+
+assert_production_health_ready() {
+  probe_production_health || fatal "resource_admission=denied reason=production_health_unavailable"
+  log "resource_admission=health_approved container=${NORMAL_CONTAINER} port=${NORMAL_PORT}"
+}
+
+candidate_container_name() {
+  printf '%s-%s' "$BUILD_CONTAINER" "$DEPLOY_ATTEMPT_ID"
+}
+
+artifact_container_name() {
+  printf '%s-artifact-%s-%s' "$BUILD_CONTAINER" "$DEPLOY_ATTEMPT_ID" "$ARTIFACT_STAGE_COUNTER"
+}
+
+container_labels_match() {
+  local container_id="$1"
+  local expected_role="$2"
+  local expected_attempt="${3:-}"
+  local metadata owner environment role attempt
+  metadata="$(docker inspect --format '{{index .Config.Labels "com.clashcookies.deploy.owner"}}|{{index .Config.Labels "com.clashcookies.deploy.environment"}}|{{index .Config.Labels "com.clashcookies.deploy.role"}}|{{index .Config.Labels "com.clashcookies.deploy.attempt"}}' "$container_id" 2>/dev/null)" || return 1
+  IFS='|' read -r owner environment role attempt <<< "$metadata"
+  [ "$owner" = "$DEPLOY_OWNER_LABEL" ] || return 1
+  [ "$environment" = "$DEPLOY_ENVIRONMENT_LABEL" ] || return 1
+  [ "$role" = "$expected_role" ] || return 1
+  [ -z "$expected_attempt" ] || [ "$attempt" = "$expected_attempt" ] || return 1
+}
+
+container_is_running() {
+  [ "$(docker inspect --format '{{.State.Running}}' "$1" 2>/dev/null || true)" = "true" ]
+}
+
+terminate_owned_container() {
+  local container_id="$1"
+  local role="$2"
+  local reason="${3:-cleanup}"
+  local operation_status=0
+  container_labels_match "$container_id" "$role" || {
+    log "container_cleanup=refused reason=ownership_verification_failed role=${role} container=${container_id} cleanup_reason=${reason}" >&2
+    return 1
+  }
+  log "container_cleanup=start attempt=${DEPLOY_ATTEMPT_ID} role=${role} container=${container_id} reason=${reason}"
+  if container_is_running "$container_id"; then
+    run_with_timeout "$DEPLOY_CONTAINER_OPERATION_TIMEOUT_SECONDS" docker stop --time "$DEPLOY_CONTAINER_STOP_TIMEOUT_SECONDS" "$container_id" >/dev/null 2>&1 || operation_status=$?
+    if container_is_running "$container_id"; then
+      run_with_timeout "$DEPLOY_CONTAINER_OPERATION_TIMEOUT_SECONDS" docker kill "$container_id" >/dev/null 2>&1 || operation_status=$?
+    fi
+  fi
+  if container_is_running "$container_id"; then
+    log "container_cleanup=failed reason=container_still_running role=${role} container=${container_id}" >&2
+    return 1
+  fi
+  run_with_timeout "$DEPLOY_CONTAINER_OPERATION_TIMEOUT_SECONDS" docker rm "$container_id" >/dev/null 2>&1 || operation_status=$?
+  if docker inspect "$container_id" >/dev/null 2>&1; then
+    log "container_cleanup=failed reason=container_remains role=${role} container=${container_id}" >&2
+    return 1
+  fi
+  if [ "$operation_status" -ne 0 ]; then
+    log "container_cleanup=failed reason=bounded_operation_status status=${operation_status} role=${role} container=${container_id}" >&2
+    return 1
+  fi
+  log "container_cleanup=verified role=${role} container=${container_id} reason=${reason}"
+  return 0
+}
+
+run_owned_container() {
+  local timeout_seconds="$1"
+  local role="$2"
+  local log_file="$3"
+  local monitor_health="$4"
+  shift 4
+  local container_name container_id wait_file wait_pid wait_status exit_status elapsed start_seconds health_failures=0 timed_out=0 health_abort=0 deploy_kind
+  local -a run_args=("$@")
+  if [ "$role" = "candidate-build" ]; then
+    container_name="$(candidate_container_name)"
+  else
+    ARTIFACT_STAGE_COUNTER=$((ARTIFACT_STAGE_COUNTER + 1))
+    container_name="$(artifact_container_name)"
+  fi
+  deploy_kind="$( [ "$role" = "candidate-build" ] && printf '%s' candidate-build-only || printf '%s' artifact-stage )"
+  wait_file="${log_file}.wait"
+  CURRENT_CONTAINER_ROLE="$role"
+  CURRENT_CONTAINER_LOG="$log_file"
+  CURRENT_CONTAINER_WAIT_FILE="$wait_file"
+  : > "$wait_file"
+  container_id="$(docker run -d \
+    --name "$container_name" \
+    --label "com.clashcookies.deploy=${deploy_kind}" \
+    --label "com.clashcookies.deploy.owner=${DEPLOY_OWNER_LABEL}" \
+    --label "com.clashcookies.deploy.environment=${DEPLOY_ENVIRONMENT_LABEL}" \
+    --label "com.clashcookies.deploy.role=${role}" \
+    --label "com.clashcookies.deploy.attempt=${DEPLOY_ATTEMPT_ID}" \
+    --label "com.clashcookies.deploy.revision=${NEW_SHA}" \
+    --init \
+    --memory "$DEPLOY_CANDIDATE_MEMORY_LIMIT" \
+    --memory-reservation "$DEPLOY_CANDIDATE_MEMORY_RESERVATION" \
+    --memory-swap "$DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT" \
+    --cpus "$DEPLOY_CANDIDATE_CPUS" \
+    --pids-limit "$DEPLOY_CANDIDATE_PIDS_LIMIT" \
+    "${run_args[@]}")" || return $?
+  [ -n "$container_id" ] || return 1
+  if [ "$role" = "candidate-build" ]; then CANDIDATE_CONTAINER_ID="$container_id"; else ARTIFACT_CONTAINER_ID="$container_id"; fi
+  log "container_started attempt=${DEPLOY_ATTEMPT_ID} role=${role} name=${container_name} id=${container_id} timeout_seconds=${timeout_seconds} memory=${DEPLOY_CANDIDATE_MEMORY_LIMIT} memory_swap=${DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT} cpus=${DEPLOY_CANDIDATE_CPUS} pids=${DEPLOY_CANDIDATE_PIDS_LIMIT}"
+  (
+    set +e
+    wait_output="$(docker wait "$container_id" 2>>"$log_file")"
+    wait_status=$?
+    printf 'client_status=%s\ncontainer_exit=%s\n' "$wait_status" "${wait_output##*$'\n'}" >"$wait_file"
+  ) &
+  wait_pid=$!
+  start_seconds="$SECONDS"
+  elapsed=0
+  while [ ! -s "$wait_file" ] && kill -0 "$wait_pid" 2>/dev/null; do
+    if [ "$elapsed" -ge "$timeout_seconds" ]; then timed_out=1; break; fi
+    if [ "$monitor_health" = "1" ] && [ "$PRODUCTION_RUNTIME_MONITOR" = "1" ]; then
+      if probe_production_health; then
+        health_failures=0
+      else
+        health_failures=$((health_failures + 1))
+        log "production_health_monitor=failed attempt=${DEPLOY_ATTEMPT_ID} role=${role} consecutive_failures=${health_failures}"
+        if [ "$health_failures" -ge "$DEPLOY_HEALTH_DEGRADATION_FAILURES" ]; then
+          health_abort=1
+          break
+        fi
+      fi
+    fi
+    sleep "$DEPLOY_CONTAINER_POLL_INTERVAL_SECONDS"
+    elapsed=$((SECONDS - start_seconds))
+  done
+  if [ "$timed_out" = "1" ] || [ "$health_abort" = "1" ]; then
+    kill "$wait_pid" >/dev/null 2>&1 || true
+    wait "$wait_pid" >/dev/null 2>&1 || true
+    if [ "$health_abort" = "1" ]; then
+      log "container_abort=health_degradation attempt=${DEPLOY_ATTEMPT_ID} role=${role} container=${container_id}" >&2
+      terminate_owned_container "$container_id" "$role" health_degradation || return 125
+      [ "$role" = "candidate-build" ] && CANDIDATE_CONTAINER_ID="" || ARTIFACT_CONTAINER_ID=""
+      return 125
+    fi
+    log "container_abort=deadline attempt=${DEPLOY_ATTEMPT_ID} role=${role} container=${container_id} timeout_seconds=${timeout_seconds}" >&2
+    terminate_owned_container "$container_id" "$role" deadline || return 125
+    [ "$role" = "candidate-build" ] && CANDIDATE_CONTAINER_ID="" || ARTIFACT_CONTAINER_ID=""
+    return 124
+  fi
+  wait "$wait_pid" >/dev/null 2>&1 || true
+  wait_status="$(sed -n 's/^client_status=//p' "$wait_file" | head -n1)"
+  exit_status="$(sed -n 's/^container_exit=//p' "$wait_file" | head -n1)"
+  wait_status="${wait_status:-125}"
+  [ -n "$exit_status" ] || exit_status=125
+  docker inspect --format 'status={{.State.Status}} exit_status={{.State.ExitCode}}' "$container_id" >>"$log_file" 2>&1 || true
+  docker logs --tail 400 "$container_id" >>"$log_file" 2>&1 || true
+  if ! terminate_owned_container "$container_id" "$role" completed; then return 125; fi
+  if [ "$role" = "candidate-build" ]; then CANDIDATE_CONTAINER_ID=""; else ARTIFACT_CONTAINER_ID=""; fi
+  [ "$wait_status" -eq 0 ] || return "$wait_status"
+  [ "$exit_status" = "0" ] || return "$exit_status"
+  return 0
 }
 
 git_safe() {
@@ -187,6 +516,7 @@ prepare_diagnostic_directory() {
   prepare_private_file "${DIAGNOSTIC_DIR}/rollback.log"
   prepare_private_file "${DIAGNOSTIC_DIR}/downtime.state"
   prepare_private_file "${DIAGNOSTIC_DIR}/downtime.log"
+  prepare_private_file "${DIAGNOSTIC_DIR}/attempt.state"
 }
 
 list_active_runtime_names() {
@@ -243,8 +573,8 @@ artifact_volume_has_labels() {
   local revision="$2"
   local role="$3"
   local labels
-  labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$volume" 2>/dev/null || true)"
-  [ "$labels" = "artifact|${revision}|${role}" ]
+  labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.deploy.owner"}}|{{index .Labels "com.clashcookies.deploy.environment"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$volume" 2>/dev/null || true)"
+  [ "$labels" = "artifact|${DEPLOY_OWNER_LABEL}|${DEPLOY_ENVIRONMENT_LABEL}|${revision}|${role}" ]
 }
 
 artifact_volume_attached_to_live_runtime() {
@@ -261,8 +591,8 @@ ensure_owned_artifact_volume() {
   local existing_labels
 
   if docker volume inspect "$volume" >/dev/null 2>&1; then
-    existing_labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$volume")"
-    [ "$existing_labels" = "artifact|${revision}|${role}" ] || \
+    existing_labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.deploy.owner"}}|{{index .Labels "com.clashcookies.deploy.environment"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$volume")"
+    [ "$existing_labels" = "artifact|${DEPLOY_OWNER_LABEL}|${DEPLOY_ENVIRONMENT_LABEL}|${revision}|${role}" ] || \
       fatal "artifact_volume_ownership_mismatch volume=${volume} labels=${existing_labels}"
     assert_volume_detached "$volume"
     docker volume rm "$volume" >/dev/null
@@ -270,6 +600,9 @@ ensure_owned_artifact_volume() {
 
   docker volume create \
     --label com.clashcookies.deploy=artifact \
+    --label "com.clashcookies.deploy.owner=${DEPLOY_OWNER_LABEL}" \
+    --label "com.clashcookies.deploy.environment=${DEPLOY_ENVIRONMENT_LABEL}" \
+    --label "com.clashcookies.deploy.attempt=${DEPLOY_ATTEMPT_ID}" \
     --label "com.clashcookies.revision=${revision}" \
     --label "com.clashcookies.role=${role}" \
     "$volume" >/dev/null
@@ -282,8 +615,11 @@ copy_artifacts_to_volumes() {
   local target_node_modules="$4"
   local revision="$5"
 
+  local stage_log="${DIAGNOSTIC_DIR}/artifact-copy-${DEPLOY_ATTEMPT_ID}-${ARTIFACT_STAGE_COUNTER}.log"
+  prepare_private_file "$stage_log"
   begin_artifact_stage
-  run_artifact_command docker run --rm --network bridge \
+  run_owned_container "$((ARTIFACT_STAGE_DEADLINE - SECONDS))" artifact-stage "$stage_log" 1 \
+    --network bridge \
     -e "BUILD_SHA=${revision}" \
     -v "${source_dist}:/source-dist:ro" \
     -v "${source_node_modules}:/source-node-modules:ro" \
@@ -304,8 +640,11 @@ stamp_artifact_volumes() {
   local node_modules_volume="$2"
   local revision="$3"
 
+  local stage_log="${DIAGNOSTIC_DIR}/artifact-stamp-${DEPLOY_ATTEMPT_ID}-${ARTIFACT_STAGE_COUNTER}.log"
+  prepare_private_file "$stage_log"
   begin_artifact_stage
-  run_artifact_command docker run --rm --network bridge \
+  run_owned_container "$((ARTIFACT_STAGE_DEADLINE - SECONDS))" artifact-stage "$stage_log" 1 \
+    --network bridge \
     -e "EXPECTED_BUILD_SHA=${revision}" \
     -v "${dist_volume}:/dist" \
     -v "${node_modules_volume}:/node_modules" \
@@ -334,8 +673,11 @@ verify_artifact_volumes() {
   local node_modules_volume="$2"
   local revision="$3"
 
+  local stage_log="${DIAGNOSTIC_DIR}/artifact-verify-${DEPLOY_ATTEMPT_ID}-${ARTIFACT_STAGE_COUNTER}.log"
+  prepare_private_file "$stage_log"
   begin_artifact_stage
-  run_artifact_command docker run --rm --network bridge \
+  run_owned_container "$((ARTIFACT_STAGE_DEADLINE - SECONDS))" artifact-stage "$stage_log" 1 \
+    --network bridge \
     -e "EXPECTED_BUILD_SHA=${revision}" \
     -v "${dist_volume}:/dist:ro" \
     -v "${node_modules_volume}:/node_modules:ro" \
@@ -420,14 +762,21 @@ prepare_rollback_artifact() {
 }
 
 cleanup_owned_detached_artifacts() {
-  local volume labels role revision attached
+  local volume labels role revision attached cleanup_status=0 deploy owner environment
   while IFS= read -r volume; do
     [ -n "$volume" ] || continue
-    labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$volume" 2>/dev/null || true)"
-    [ "$labels" != "artifact||" ] || continue
-    IFS='|' read -r _ revision role <<< "$labels"
+    labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.deploy.owner"}}|{{index .Labels "com.clashcookies.deploy.environment"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$volume" 2>/dev/null || true)"
+    IFS='|' read -r deploy owner environment revision role <<< "$labels"
+    [ "$deploy" = artifact ] && [ "$owner" = "$DEPLOY_OWNER_LABEL" ] && [ "$environment" = "$DEPLOY_ENVIRONMENT_LABEL" ] || continue
     attached="$(docker ps -a --filter "volume=${volume}" --format '{{.Names}}')"
-    [ -z "$attached" ] || continue
+    if [ -n "$attached" ]; then
+      if [ "$attached" = "$NORMAL_CONTAINER" ]; then
+        continue
+      fi
+      log "artifact_cleanup=deferred reason=ambiguous_attachment volume=${volume} containers=${attached}" >&2
+      cleanup_status=1
+      continue
+    fi
     if [ "$role" = "rollback-dist" ] || [ "$role" = "rollback-node-modules" ]; then
       [ "$revision" = "$OLD_SHA" ] && continue
     fi
@@ -435,8 +784,10 @@ cleanup_owned_detached_artifacts() {
       log "artifact_cleanup=removed volume=${volume} revision=${revision} role=${role}"
     else
       log "artifact_cleanup=deferred volume=${volume} revision=${revision} role=${role}"
+      cleanup_status=1
     fi
   done < <(docker volume ls -q --filter label=com.clashcookies.deploy=artifact)
+  return "$cleanup_status"
 }
 
 wait_for_health() {
@@ -475,11 +826,11 @@ cleanup_candidate_workspace() {
   local labels attached
   [ "$BUILD_WORKSPACE_CREATED" = "1" ] || return 0
 
-  if ! labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$BUILD_WORKSPACE_VOLUME" 2>/dev/null)"; then
+  if ! labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.deploy.owner"}}|{{index .Labels "com.clashcookies.deploy.environment"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$BUILD_WORKSPACE_VOLUME" 2>/dev/null)"; then
     log "workspace_cleanup=failed reason=ownership_check volume=${BUILD_WORKSPACE_VOLUME}" >&2
     return 1
   fi
-  if [ "$labels" != "artifact|${NEW_SHA}|build-workspace" ]; then
+  if [ "$labels" != "artifact|${DEPLOY_OWNER_LABEL}|${DEPLOY_ENVIRONMENT_LABEL}|${NEW_SHA}|build-workspace" ]; then
     log "workspace_cleanup=failed reason=ownership_mismatch volume=${BUILD_WORKSPACE_VOLUME}" >&2
     return 1
   fi
@@ -502,26 +853,50 @@ cleanup_candidate_workspace() {
 }
 
 cleanup_build_volumes() {
+  local cleanup_status=0
   [ "$BUILD_VOLUMES_IN_USE" = "0" ] || return 0
   if [ "$BUILD_WORKSPACE_CREATED" = "1" ]; then
     cleanup_candidate_workspace || \
-      log "build_artifacts_cleanup=deferred workspace=${BUILD_WORKSPACE_VOLUME}"
+      { log "build_artifacts_cleanup=deferred workspace=${BUILD_WORKSPACE_VOLUME}"; cleanup_status=1; }
   fi
   if [ "$BUILD_NODE_MODULES_CREATED" = "1" ]; then
     docker volume rm "$BUILD_NODE_MODULES_VOLUME" >/dev/null 2>&1 || \
-      log "build_artifacts_cleanup=deferred node_modules=${BUILD_NODE_MODULES_VOLUME}"
+      { log "build_artifacts_cleanup=deferred node_modules=${BUILD_NODE_MODULES_VOLUME}"; cleanup_status=1; }
   fi
   if [ "$BUILD_DIST_CREATED" = "1" ]; then
     docker volume rm "$BUILD_DIST_VOLUME" >/dev/null 2>&1 || \
-      log "build_artifacts_cleanup=deferred dist=${BUILD_DIST_VOLUME}"
+      { log "build_artifacts_cleanup=deferred dist=${BUILD_DIST_VOLUME}"; cleanup_status=1; }
   fi
+  return "$cleanup_status"
+}
+
+cleanup_owned_containers_on_exit() {
+  local cleanup_status=0
+  if [ -n "$CANDIDATE_CONTAINER_ID" ]; then
+    terminate_owned_container "$CANDIDATE_CONTAINER_ID" candidate-build interruption || cleanup_status=1
+    [ "$cleanup_status" -eq 0 ] && CANDIDATE_CONTAINER_ID=""
+  fi
+  if [ -n "$ARTIFACT_CONTAINER_ID" ]; then
+    terminate_owned_container "$ARTIFACT_CONTAINER_ID" artifact-stage interruption || cleanup_status=1
+    [ "$cleanup_status" -eq 0 ] && ARTIFACT_CONTAINER_ID=""
+  fi
+  return "$cleanup_status"
 }
 
 cleanup_on_exit() {
   local status="$?"
-  trap - EXIT
+  trap - EXIT TERM INT HUP
+  cleanup_owned_containers_on_exit || {
+    log "cleanup_result=failed reason=owned_container_remains operator_intervention_required" >&2
+    status=1
+    EXIT_CLEANUP_FAILED="1"
+  }
   cleanup_candidate_worktree || [ "$status" -ne 0 ] || status=1
-  cleanup_build_volumes
+  cleanup_build_volumes || {
+    log "cleanup_result=failed reason=owned_volume_cleanup operator_intervention_required" >&2
+    status=1
+    EXIT_CLEANUP_FAILED="1"
+  }
   if [ "$LOCK_HELD" = "1" ]; then
     rm -f -- "${DEPLOY_LOCK_PATH}/owner"
     rmdir "$DEPLOY_LOCK_PATH" >/dev/null 2>&1 || {
@@ -533,13 +908,34 @@ cleanup_on_exit() {
   exit "$status"
 }
 
+handle_interruption() {
+  INTERRUPTION_SIGNAL="$1"
+  log "interruption=received signal=${INTERRUPTION_SIGNAL} attempt=${DEPLOY_ATTEMPT_ID} cleanup=bounded" >&2
+  case "$INTERRUPTION_SIGNAL" in
+    TERM) exit 143 ;;
+    INT) exit 130 ;;
+    HUP) exit 129 ;;
+    *) exit 1 ;;
+  esac
+}
+
 acquire_lock() {
   if ! mkdir "$DEPLOY_LOCK_PATH" 2>/dev/null; then
-    fatal "another_deployment_is_running"
+    local owner_pid stale_lock
+    owner_pid="$(sed -n 's/^pid=//p' "${DEPLOY_LOCK_PATH}/owner" 2>/dev/null | head -n1 || true)"
+    if ! is_positive_integer "${owner_pid:-}" || kill -0 "$owner_pid" 2>/dev/null; then
+      fatal "another_deployment_is_running lock=${DEPLOY_LOCK_PATH} owner_pid=${owner_pid:-unknown}"
+    fi
+    stale_lock="${DEPLOY_LOCK_PATH}.stale.${owner_pid}"
+    mv -- "$DEPLOY_LOCK_PATH" "$stale_lock" 2>/dev/null || fatal "deployment_lock_recovery_race path=${DEPLOY_LOCK_PATH}"
+    mkdir "$DEPLOY_LOCK_PATH" 2>/dev/null || fatal "deployment_lock_recovery_failed path=${DEPLOY_LOCK_PATH}"
+    rm -f -- "${stale_lock}/owner"
+    rmdir "$stale_lock" >/dev/null 2>&1 || log "deployment_lock_stale_evidence=${stale_lock}"
+    log "deploy_lock=recovered_stale owner_pid=${owner_pid}"
   fi
   LOCK_HELD="1"
-  printf 'pid=%s\n' "$$" > "${DEPLOY_LOCK_PATH}/owner"
-  log "deploy_lock=acquired"
+  printf 'pid=%s\nattempt=%s\n' "$$" "$DEPLOY_ATTEMPT_ID" > "${DEPLOY_LOCK_PATH}/owner"
+  log "deploy_lock=acquired attempt=${DEPLOY_ATTEMPT_ID}"
 }
 
 extract_database_url() {
@@ -558,9 +954,7 @@ build_candidate_only() {
   BUILD_NODE_MODULES_CREATED="1"
   ensure_owned_artifact_volume "$BUILD_DIST_VOLUME" "$NEW_SHA" release-dist
   BUILD_DIST_CREATED="1"
-  if run_with_timeout "$CANDIDATE_BUILD_TIMEOUT_SECONDS" docker run --rm \
-      --name "$BUILD_CONTAINER" \
-      --label com.clashcookies.deploy=candidate-build-only \
+  if run_owned_container "$CANDIDATE_BUILD_TIMEOUT_SECONDS" candidate-build "$log_file" 1 \
       --network bridge \
       -w /app \
       -v "$TEMP_WORKTREE:/source:ro" \
@@ -577,7 +971,8 @@ build_candidate_only() {
   fi
   if [ "$build_status" -ne 0 ]; then
     reason="build"
-    { [ "$build_status" -eq 124 ] || [ "$build_status" -eq 137 ]; } && reason="build_deadline"
+    [ "$build_status" -eq 124 ] && reason="build_deadline"
+    [ "$build_status" -eq 125 ] && reason="build_abort_or_cleanup"
     log "candidate_build=failed reason=${reason} status=${build_status} revision=${NEW_SHA} diagnostics=${log_file}" >&2
     return 1
   fi
@@ -589,7 +984,8 @@ build_candidate_only() {
   fi
   if [ "$artifact_status" -ne 0 ]; then
     reason="artifact_stamp"
-    { [ "$artifact_status" -eq 124 ] || [ "$artifact_status" -eq 137 ]; } && reason="artifact_stamp_deadline"
+    [ "$artifact_status" -eq 124 ] && reason="artifact_stamp_deadline"
+    [ "$artifact_status" -eq 125 ] && reason="artifact_stamp_abort_or_cleanup"
     log "candidate_build=failed reason=${reason} status=${artifact_status} revision=${NEW_SHA} diagnostics=${log_file}" >&2
     return 1
   fi
@@ -601,7 +997,8 @@ build_candidate_only() {
   fi
   if [ "$artifact_status" -ne 0 ]; then
     reason="artifact_verification"
-    { [ "$artifact_status" -eq 124 ] || [ "$artifact_status" -eq 137 ]; } && reason="artifact_verification_deadline"
+    [ "$artifact_status" -eq 124 ] && reason="artifact_verification_deadline"
+    [ "$artifact_status" -eq 125 ] && reason="artifact_verification_abort_or_cleanup"
     log "candidate_build=failed reason=${reason} status=${artifact_status} revision=${NEW_SHA} diagnostics=${log_file}" >&2
     return 1
   fi
@@ -699,7 +1096,10 @@ rollback_to_old_revision() {
   fi
   if wait_for_health "$NORMAL_PORT" rollback "$ROLLBACK_HEALTH_TIMEOUT_SECONDS"; then
     BUILD_VOLUMES_IN_USE="0"
-    cleanup_owned_detached_artifacts
+    cleanup_owned_detached_artifacts || {
+      log "rollback_result=failed reason=artifact_cleanup final_state=unknown" >&2
+      return 1
+    }
     log "rollback_result=success final_state=old_sha:${OLD_SHA}"
     return 0
   fi
@@ -710,6 +1110,9 @@ rollback_to_old_revision() {
 
 if [ "${DEPLOY_PROD_ARTIFACT_TEST_MODE:-0}" = "1" ]; then
   [ "$#" -eq 5 ] || fatal "artifact_test_requires_source_dist_source_node_modules_target_dist_target_node_modules_revision"
+  NEW_SHA="$5"
+  DIAGNOSTIC_DIR="${DEPLOY_DIAGNOSTIC_DIR:-${TMPDIR:-/tmp}/clashcookies-artifact-test-$$}"
+  validate_private_directory "$DIAGNOSTIC_DIR"
   copy_artifacts_to_volumes "$@"
   verify_artifact_volumes "$3" "$4" "$5"
   log "artifact_test=success revision=$5"
@@ -728,16 +1131,29 @@ require_command wc
 require_command id
 require_command stat
 require_command chmod
+require_command awk
+require_command grep
+require_command head
+require_command tail
+require_command getconf
 require_file "$APP_DIR/docker-compose.yml"
 validate_deadline_configuration
+validate_resource_configuration
+[ -z "$DEPLOY_RESOURCE_ADMISSION_FILE" ] || require_file "$DEPLOY_RESOURCE_ADMISSION_FILE"
 assert_runtime_environment_source
 assert_safe_temp_worktree_path
 assert_checkout_safe
 acquire_lock
 trap cleanup_on_exit EXIT
+trap 'handle_interruption TERM' TERM
+trap 'handle_interruption INT' INT
+trap 'handle_interruption HUP' HUP
+reconcile_abandoned_resources
 assert_single_active_runtime || fatal "active_runtime_singleton_required_before_deploy"
 
 prepare_diagnostic_directory
+assert_host_resource_admission
+assert_production_health_ready
 log "fetch=origin"
 git_safe fetch origin
 OLD_SHA="$(git_safe rev-parse HEAD)"
@@ -747,6 +1163,7 @@ BUILD_DIST_VOLUME="${BUILD_DIST_VOLUME:-clashcookies-prod-build-dist-${NEW_SHA}}
 BUILD_WORKSPACE_VOLUME="${BUILD_WORKSPACE_VOLUME:-clashcookies-prod-build-workspace-${NEW_SHA}}"
 log "old_sha=${OLD_SHA}"
 log "new_sha=${NEW_SHA}"
+printf 'attempt_id=%s\nold_sha=%s\nnew_sha=%s\nlock_path=%s\n' "$DEPLOY_ATTEMPT_ID" "$OLD_SHA" "$NEW_SHA" "$DEPLOY_LOCK_PATH" > "${DIAGNOSTIC_DIR}/attempt.state"
 log "promotion_readiness_budget_seconds=${PROMOTION_HEALTH_TIMEOUT_SECONDS} rollback_readiness_budget_seconds=${ROLLBACK_HEALTH_TIMEOUT_SECONDS} candidate_build_timeout_seconds=${CANDIDATE_BUILD_TIMEOUT_SECONDS} artifact_stage_timeout_seconds=${ARTIFACT_STAGE_TIMEOUT_SECONDS} request_timeout_seconds=${HEALTH_REQUEST_TIMEOUT_SECONDS}"
 
 changed_prisma_files="$(git_safe diff --name-only "$OLD_SHA" "$NEW_SHA" -- prisma/migrations prisma/schema.prisma || true)"
@@ -756,6 +1173,7 @@ prod_database_url="$(extract_database_url "$APP_DIR/docker-compose.yml")"
 if [ -n "$changed_prisma_files" ]; then
   log "mode=downtime reason=prisma_changes"
   prepare_rollback_artifact || fatal "rollback_artifact_prepare_failed final_state=old_runtime_still_active"
+  PRODUCTION_RUNTIME_MONITOR="0"
   docker rm -f "$NORMAL_CONTAINER" >/dev/null 2>&1 || true
   assert_no_active_runtime || fatal "active_runtime_did_not_stop"
   if ! git_safe reset --hard "$NEW_SHA"; then
@@ -774,7 +1192,7 @@ if [ -n "$changed_prisma_files" ]; then
     "$NORMAL_NODE_MODULES_VOLUME" "$NORMAL_YARN_CACHE_VOLUME" "$prod_database_url" restart \
     "$NEW_SHA" 0; then
     if wait_for_health "$NORMAL_PORT" downtime "$PROMOTION_HEALTH_TIMEOUT_SECONDS"; then
-      cleanup_owned_detached_artifacts
+      cleanup_owned_detached_artifacts || fatal "artifact_cleanup_failed final_state=new_runtime_healthy"
       log "promotion_result=success mode=downtime final_state=new_sha:${NEW_SHA}"
       exit 0
     fi
@@ -795,6 +1213,7 @@ assert_single_active_runtime || fatal "active_runtime_changed_during_candidate_b
 prepare_rollback_artifact || fatal "rollback_artifact_prepare_failed final_state=old_runtime_still_active"
 
 log "promotion_step=stop_old_app"
+PRODUCTION_RUNTIME_MONITOR="0"
 docker rm -f "$NORMAL_CONTAINER" >/dev/null 2>&1 || true
 assert_no_active_runtime || fatal "active_runtime_did_not_stop"
 if ! git_safe reset --hard "$NEW_SHA"; then
@@ -816,7 +1235,7 @@ if start_app_container "$NORMAL_CONTAINER" "$APP_DIR" "$NORMAL_PORT" "$RUNTIME_E
   BUILD_VOLUMES_IN_USE="1"
   if wait_for_health "$NORMAL_PORT" promotion "$PROMOTION_HEALTH_TIMEOUT_SECONDS"; then
     assert_single_active_runtime || fatal "active_runtime_singleton_failed_after_promotion"
-    cleanup_owned_detached_artifacts
+    cleanup_owned_detached_artifacts || fatal "artifact_cleanup_failed final_state=new_runtime_healthy"
     log "promotion_result=success mode=build-only final_state=new_sha:${NEW_SHA}"
     exit 0
   fi

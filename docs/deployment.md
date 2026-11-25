@@ -63,6 +63,57 @@ No pre-promotion application container is started. This is intentional:
 canonical production runtime, while the build-only validation cannot be
 mistaken for application readiness.
 
+### Candidate lifecycle safety (FB-027 / issue #2177)
+
+The version-controlled procedure now treats each invocation as a distinct
+deployment attempt. Candidate-build and artifact-processing containers receive
+attempt-scoped names and labels, do not use `--rm`, and are waited on as
+daemon-managed containers. A timeout, nonzero exit, `TERM`, `INT`, `HUP`, or
+cleanup path runs bounded `stop`, verifies the container is no longer running,
+uses bounded `kill` if needed, removes the exact owned container, and verifies
+that Docker no longer reports it. Docker CLI timeout status alone is never
+treated as proof of termination; exit status 137 is reported as an exit status
+unless the wrapper itself observed its deadline.
+
+The lock is acquired before reconciliation. A dead owner may be recovered
+atomically; live or ambiguous lock ownership remains a hard failure. Startup
+reconciliation only considers containers and volumes carrying the exact
+deployment-owner and production labels. Active production containers, rollback
+artifacts, unrelated resources, and resources with ambiguous ownership are
+preserved or cause a fail-closed refusal. A later deployment cannot proceed
+while an owned candidate/artifact container or an unsafe cleanup condition
+remains. The lock and reconciliation paths are intended to recover bounded
+cleanup after an untrappable interruption such as SIGKILL; they do not claim
+that SIGKILL itself can be handled.
+
+Before candidate preparation, the procedure records an attempt identity,
+requires one active production runtime, checks production `/healthz`, and
+performs host admission. The conservative default policy reserves 1,536 MiB
+for the production application, database, and essential host services; admits
+the candidate only with at least that reservation plus its 1,024 MiB memory
+limit; disallows candidate swap by setting the memory-swap limit equal to the
+memory limit; limits the candidate to 1 CPU and 512 processes; and refuses
+hosts over 25% swap use, over 75% load per online CPU, or below 1,024 free
+process IDs. These are admission policy thresholds, not evidence that the
+current droplet can safely compile. If the current host cannot demonstrate
+the configured headroom, deployment preparation is refused without stopping
+production. Increasing timeouts or swap is not a recovery strategy.
+
+During candidate and artifact preparation, repeated failed health probes are
+treated as confirmed production degradation after three consecutive failures;
+the owned preparation container is aborted and production remains untouched.
+Diagnostics record the attempt, owned container IDs, admission observations,
+phase, timeout versus container exit classification, health-abort reason, and
+cleanup verification. Logs are bounded and written under the existing private
+diagnostics directory; credentials, env-file contents, and production
+environment contents are not collected.
+
+These protections are implemented in the repository procedure only. The live
+`~/deploy-prod.sh` wrapper still requires the separately approved operator
+update described above. Off-host compilation and restart-safe deployment are
+not implemented by this change; production host resizing, wrapper installation,
+promotion, and deployment remain out of scope.
+
 ### Prisma migration deploy
 
 If the `OLD_SHA..NEW_SHA` diff includes `prisma/migrations/**` or `prisma/schema.prisma`, deploy uses the intentional downtime path.
