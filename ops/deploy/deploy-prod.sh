@@ -29,6 +29,8 @@ DEPLOY_OUTER_TIMEOUT_SECONDS="${DEPLOY_OUTER_TIMEOUT_SECONDS:-10800}"
 HEALTH_POLL_INTERVAL_SECONDS="${HEALTH_POLL_INTERVAL_SECONDS:-2}"
 HEALTH_REQUEST_TIMEOUT_SECONDS="${HEALTH_REQUEST_TIMEOUT_SECONDS:-5}"
 DEPLOY_LOCK_PATH="${DEPLOY_LOCK_PATH:-${APP_DIR}-deploy.lock}"
+DEPLOY_LOCK_FILE="${DEPLOY_LOCK_FILE:-${DEPLOY_LOCK_PATH}.flock}"
+DEPLOY_INTENT_DIR="${DEPLOY_INTENT_DIR:-${DEPLOY_LOCK_PATH}.attempts}"
 DIAGNOSTIC_DIR="${DEPLOY_DIAGNOSTIC_DIR:-${APP_DIR}-deploy-diagnostics}"
 ARTIFACT_VOLUME_PREFIX="${ARTIFACT_VOLUME_PREFIX:-clashcookies-prod-artifact}"
 ARTIFACT_IMAGE="${ARTIFACT_IMAGE:-node:20-bookworm}"
@@ -67,6 +69,8 @@ ARTIFACT_STAGE_COUNTER="0"
 CURRENT_CONTAINER_ROLE=""
 CURRENT_CONTAINER_LOG=""
 CURRENT_CONTAINER_WAIT_FILE=""
+CURRENT_CONTAINER_NAME=""
+CURRENT_CONTAINER_INTENT=""
 OLD_SHA=""
 NEW_SHA=""
 BUILD_NODE_MODULES_VOLUME=""
@@ -77,6 +81,7 @@ LOCK_HELD="0"
 ARTIFACT_STAGE_DEADLINE="0"
 INTERRUPTION_SIGNAL=""
 EXIT_CLEANUP_FAILED="0"
+LAST_CONTAINER_STATUS_KIND="success"
 PRODUCTION_RUNTIME_MONITOR="1"
 
 log() {
@@ -146,14 +151,20 @@ run_with_timeout() {
   timeout --foreground --signal=TERM --kill-after=5s "${timeout_seconds}s" "$@"
 }
 
+docker_bounded() {
+  run_with_timeout "$DEPLOY_CONTAINER_OPERATION_TIMEOUT_SECONDS" docker "$@"
+}
+
 begin_artifact_stage() {
   ARTIFACT_STAGE_DEADLINE=$((SECONDS + ARTIFACT_STAGE_TIMEOUT_SECONDS))
 }
 
 resource_value() {
-  local key="$1" cpu_count
+  local key="$1" cpu_count value path
   if [ -n "$DEPLOY_RESOURCE_ADMISSION_FILE" ]; then
-    sed -n "s/^${key}=//p" "$DEPLOY_RESOURCE_ADMISSION_FILE" | head -n1
+    value="$(sed -n "s/^${key}=//p" "$DEPLOY_RESOURCE_ADMISSION_FILE" | head -n1)"
+    [ -n "$value" ] || return 1
+    printf '%s\n' "$value"
     return 0
   fi
   case "$key" in
@@ -170,52 +181,138 @@ resource_value() {
       cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')"
       awk -v cpu="$cpu_count" 'NR == 1 { if (NF < 1) exit 1; if (cpu < 1) cpu = 1; printf "%d\n", ($1 * 100) / cpu; exit }' /proc/loadavg
       ;;
-    free_pids)
-      awk 'NR == 1 { split($4, p, "/"); if (p[2] == "") exit 1; printf "%d\n", p[2] - p[1]; exit }' /proc/loadavg
+    host_pid_max)
+      cat /proc/sys/kernel/pid_max
       ;;
+    host_pid_count)
+      find /proc -maxdepth 1 -type d -regextype posix-extended -regex '/proc/[0-9]+' | wc -l
+      ;;
+    cgroup_pids_max)
+      for path in /sys/fs/cgroup/pids.max /sys/fs/cgroup/pids/pids.max; do
+        if [ -r "$path" ]; then cat "$path"; return 0; fi
+      done
+      return 1
+      ;;
+    cgroup_pids_current)
+      for path in /sys/fs/cgroup/pids.current /sys/fs/cgroup/pids/pids.current; do
+        if [ -r "$path" ]; then cat "$path"; return 0; fi
+      done
+      return 1
+      ;;
+    cgroup_memory_max_mib)
+      for path in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory/memory.limit_in_bytes; do
+        if [ -r "$path" ]; then
+          value="$(cat "$path")"
+          [ "$value" = max ] && { printf 'max\n'; return 0; }
+          is_nonnegative_integer "$value" || return 1
+          awk -v bytes="$value" 'BEGIN { printf "%d\n", bytes / 1048576 }'
+          return 0
+        fi
+      done
+      return 1
+      ;;
+    cgroup_memory_current_mib)
+      for path in /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory/memory.usage_in_bytes; do
+        if [ -r "$path" ]; then
+          value="$(cat "$path")"
+          is_nonnegative_integer "$value" || return 1
+          awk -v bytes="$value" 'BEGIN { printf "%d\n", bytes / 1048576 }'
+          return 0
+        fi
+      done
+      return 1
+      ;;
+    *) return 1 ;;
   esac
+}
+
+memory_limit_bytes() {
+  local value="$1" quantity suffix multiplier
+  quantity="$value"
+  suffix=""
+  case "$value" in
+    *[bBkKmMgGtT]) suffix="${value: -1}"; quantity="${value::-1}" ;;
+  esac
+  is_positive_integer "$quantity" || return 1
+  case "${suffix,,}" in
+    b) multiplier=1 ;;
+    k) multiplier=1024 ;;
+    m) multiplier=1048576 ;;
+    g) multiplier=1073741824 ;;
+    t) multiplier=1099511627776 ;;
+    '') return 1 ;;
+    *) return 1 ;;
+  esac
+  printf '%s\n' "$((quantity * multiplier))"
 }
 
 memory_limit_mib() {
-  case "$1" in
-    *g|*G) awk -v value="${1%[gG]}" 'BEGIN { printf "%d\n", value * 1024 }' ;;
-    *m|*M) printf '%s\n' "${1%[mM]}" ;;
-    *k|*K) awk -v value="${1%[kK]}" 'BEGIN { printf "%d\n", value / 1024 }' ;;
-    *) printf '%s\n' "$1" ;;
-  esac
+  local bytes
+  bytes="$(memory_limit_bytes "$1")" || return 1
+  [ $((bytes % 1048576)) -eq 0 ] || return 1
+  printf '%s\n' "$((bytes / 1048576))"
 }
 
 validate_resource_configuration() {
-  local name value
+  local name value memory_mib
   for name in DEPLOY_RESERVED_MEMORY_MIB DEPLOY_MIN_FREE_PIDS DEPLOY_MAX_HOST_SWAP_USED_PERCENT DEPLOY_MAX_HOST_LOAD_PER_CPU_PERCENT DEPLOY_HEALTH_DEGRADATION_FAILURES DEPLOY_CONTAINER_STOP_TIMEOUT_SECONDS DEPLOY_CONTAINER_OPERATION_TIMEOUT_SECONDS DEPLOY_CANDIDATE_PIDS_LIMIT; do
     value="${!name}"
     is_positive_integer "$value" || fatal "invalid_resource_configuration name=${name} value=${value:-empty}"
   done
   is_nonnegative_integer "$DEPLOY_CONTAINER_POLL_INTERVAL_SECONDS" || fatal "invalid_resource_configuration name=DEPLOY_CONTAINER_POLL_INTERVAL_SECONDS value=${DEPLOY_CONTAINER_POLL_INTERVAL_SECONDS:-empty}"
-  memory_limit_mib "$DEPLOY_CANDIDATE_MEMORY_LIMIT" | grep -Eq '^[1-9][0-9]*$' || fatal "invalid_resource_configuration name=DEPLOY_CANDIDATE_MEMORY_LIMIT value=${DEPLOY_CANDIDATE_MEMORY_LIMIT}"
-  memory_limit_mib "$DEPLOY_CANDIDATE_MEMORY_RESERVATION" | grep -Eq '^[1-9][0-9]*$' || fatal "invalid_resource_configuration name=DEPLOY_CANDIDATE_MEMORY_RESERVATION value=${DEPLOY_CANDIDATE_MEMORY_RESERVATION}"
-  memory_limit_mib "$DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT" | grep -Eq '^[1-9][0-9]*$' || fatal "invalid_resource_configuration name=DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT value=${DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT}"
+  for name in DEPLOY_CANDIDATE_MEMORY_LIMIT DEPLOY_CANDIDATE_MEMORY_RESERVATION DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT; do
+    memory_mib="$(memory_limit_mib "${!name}")" || fatal "invalid_resource_configuration name=${name} value=${!name}"
+    [ "$memory_mib" -gt 0 ] || fatal "invalid_resource_configuration name=${name} value=${!name}"
+  done
+  [ "$(memory_limit_mib "$DEPLOY_CANDIDATE_MEMORY_RESERVATION")" -le "$(memory_limit_mib "$DEPLOY_CANDIDATE_MEMORY_LIMIT")" ] || fatal "invalid_resource_configuration reservation_above_memory_limit"
   [ "$(memory_limit_mib "$DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT")" -ge "$(memory_limit_mib "$DEPLOY_CANDIDATE_MEMORY_LIMIT")" ] || fatal "invalid_resource_configuration swap_limit_below_memory_limit"
+  awk -v cpus="$DEPLOY_CANDIDATE_CPUS" 'BEGIN { exit !(cpus ~ /^[0-9]+(\.[0-9]+)?$/ && cpus > 0) }' || fatal "invalid_resource_configuration name=DEPLOY_CANDIDATE_CPUS value=${DEPLOY_CANDIDATE_CPUS}"
 }
 
 assert_host_resource_admission() {
-  local available swap_total swap_free swap_used_percent load_percent free_pids candidate_mib required_mib
-  available="$(resource_value mem_available_mib)"
-  swap_total="$(resource_value swap_total_mib)"
-  swap_free="$(resource_value swap_free_mib)"
-  load_percent="$(resource_value load_per_cpu_percent)"
-  free_pids="$(resource_value free_pids)"
+  local available swap_total swap_free swap_used_percent load_percent host_pid_max host_pid_count free_pids
+  local cgroup_pids_max cgroup_pids_current cgroup_memory_max cgroup_memory_current candidate_mib required_mib
+  available="$(resource_value mem_available_mib)" || fatal "resource_admission=denied reason=unavailable_meminfo"
+  swap_total="$(resource_value swap_total_mib)" || fatal "resource_admission=denied reason=unavailable_swapinfo"
+  swap_free="$(resource_value swap_free_mib)" || fatal "resource_admission=denied reason=unavailable_swapinfo"
+  load_percent="$(resource_value load_per_cpu_percent)" || fatal "resource_admission=denied reason=unavailable_loadavg"
+  host_pid_max="$(resource_value host_pid_max)" || fatal "resource_admission=denied reason=unavailable_pid_limit"
+  host_pid_count="$(resource_value host_pid_count)" || fatal "resource_admission=denied reason=unavailable_pid_count"
   candidate_mib="$(memory_limit_mib "$DEPLOY_CANDIDATE_MEMORY_LIMIT")"
   required_mib=$((DEPLOY_RESERVED_MEMORY_MIB + candidate_mib))
 
   is_nonnegative_integer "${available:-}" || fatal "resource_admission=denied reason=unavailable_meminfo"
   is_nonnegative_integer "${load_percent:-}" || fatal "resource_admission=denied reason=unavailable_loadavg"
-  is_nonnegative_integer "${free_pids:-}" || fatal "resource_admission=denied reason=unavailable_pid_headroom"
-  if [ "${swap_total:-0}" -gt 0 ]; then
+  is_positive_integer "${host_pid_max:-}" || fatal "resource_admission=denied reason=invalid_pid_limit"
+  is_nonnegative_integer "${host_pid_count:-}" || fatal "resource_admission=denied reason=invalid_pid_count"
+  [ "$host_pid_count" -le "$host_pid_max" ] || fatal "resource_admission=denied reason=contradictory_pid_measurements"
+  free_pids=$((host_pid_max - host_pid_count))
+  if [ "$swap_total" -gt 0 ]; then
     is_nonnegative_integer "${swap_free:-}" || fatal "resource_admission=denied reason=unavailable_swapinfo"
+    [ "$swap_free" -le "$swap_total" ] || fatal "resource_admission=denied reason=contradictory_swap_measurements"
     swap_used_percent=$(( (swap_total - swap_free) * 100 / swap_total ))
   else
+    [ "$swap_free" -eq 0 ] || fatal "resource_admission=denied reason=contradictory_swap_measurements"
     swap_used_percent=0
+  fi
+
+  if cgroup_pids_max="$(resource_value cgroup_pids_max 2>/dev/null)"; then
+    [ "$cgroup_pids_max" = max ] || is_positive_integer "$cgroup_pids_max" || fatal "resource_admission=denied reason=invalid_cgroup_pid_limit"
+    cgroup_pids_current="$(resource_value cgroup_pids_current)" || fatal "resource_admission=denied reason=unavailable_cgroup_pid_count"
+    is_nonnegative_integer "$cgroup_pids_current" || fatal "resource_admission=denied reason=invalid_cgroup_pid_count"
+    if [ "$cgroup_pids_max" != max ]; then
+      [ "$cgroup_pids_current" -le "$cgroup_pids_max" ] || fatal "resource_admission=denied reason=contradictory_cgroup_pid_measurements"
+      [ $((cgroup_pids_max - cgroup_pids_current)) -lt "$free_pids" ] && free_pids=$((cgroup_pids_max - cgroup_pids_current))
+    fi
+  fi
+  if cgroup_memory_max="$(resource_value cgroup_memory_max_mib 2>/dev/null)"; then
+    [ "$cgroup_memory_max" = max ] || is_nonnegative_integer "$cgroup_memory_max" || fatal "resource_admission=denied reason=invalid_cgroup_memory_limit"
+    cgroup_memory_current="$(resource_value cgroup_memory_current_mib)" || fatal "resource_admission=denied reason=unavailable_cgroup_memory_current"
+    is_nonnegative_integer "$cgroup_memory_current" || fatal "resource_admission=denied reason=invalid_cgroup_memory_current"
+    if [ "$cgroup_memory_max" != max ]; then
+      [ "$cgroup_memory_current" -le "$cgroup_memory_max" ] || fatal "resource_admission=denied reason=contradictory_cgroup_memory_measurements"
+      [ "$cgroup_memory_max" - $cgroup_memory_current -lt "$required_mib" ] && fatal "resource_admission=denied reason=insufficient_cgroup_memory available_mib=$((cgroup_memory_max - cgroup_memory_current)) required_mib=${required_mib}"
+    fi
   fi
 
   log "resource_admission=observed attempt=${DEPLOY_ATTEMPT_ID} available_memory_mib=${available} reserved_memory_mib=${DEPLOY_RESERVED_MEMORY_MIB} candidate_memory_limit=${DEPLOY_CANDIDATE_MEMORY_LIMIT} swap_used_percent=${swap_used_percent} load_per_cpu_percent=${load_percent} free_pids=${free_pids}"
@@ -234,54 +331,159 @@ assert_host_resource_admission() {
   log "resource_admission=approved attempt=${DEPLOY_ATTEMPT_ID} policy=reserved_memory_${DEPLOY_RESERVED_MEMORY_MIB}m_candidate_memory_${candidate_mib}m_no_candidate_swap_cpus_${DEPLOY_CANDIDATE_CPUS}_pids_${DEPLOY_CANDIDATE_PIDS_LIMIT}"
 }
 
-reconcile_abandoned_owned_containers() {
-  local record container_id name deploy owner environment role attempt
-  while IFS='|' read -r container_id name deploy owner environment role attempt; do
-    [ -n "$container_id" ] || continue
-    if [ "$owner" != "$DEPLOY_OWNER_LABEL" ] || [ "$environment" != "$DEPLOY_ENVIRONMENT_LABEL" ] || { [ "$role" != "candidate-build" ] && [ "$role" != "artifact-stage" ]; }; then
-      fatal "owned_resource_reconciliation=denied reason=ambiguous_container container=${container_id} name=${name}"
-    fi
-    log "owned_resource_reconciliation=abandoned_container attempt=${attempt:-unknown} role=${role} name=${name} id=${container_id}"
-    terminate_owned_container "$container_id" "$role" abandoned || fatal "owned_resource_reconciliation=failed reason=container_cleanup container=${container_id} operator_intervention_required"
-  done < <(docker ps -a --filter "label=com.clashcookies.deploy.owner=${DEPLOY_OWNER_LABEL}" --filter "label=com.clashcookies.deploy.environment=${DEPLOY_ENVIRONMENT_LABEL}" --format '{{.ID}}|{{.Names}}|{{.Label "com.clashcookies.deploy"}}|{{.Label "com.clashcookies.deploy.owner"}}|{{.Label "com.clashcookies.deploy.environment"}}|{{.Label "com.clashcookies.deploy.role"}}|{{.Label "com.clashcookies.deploy.attempt"}}')
-  if docker ps -aq --filter "label=com.clashcookies.deploy.owner=${DEPLOY_OWNER_LABEL}" --filter "label=com.clashcookies.deploy.environment=${DEPLOY_ENVIRONMENT_LABEL}" | grep -q .; then
-    fatal "owned_resource_reconciliation=failed reason=owned_container_remains operator_intervention_required"
+container_identity() {
+  local container_id="$1" metadata
+  metadata="$(docker_bounded inspect --format '{{.Name}}|{{index .Config.Labels "com.clashcookies.deploy"}}|{{index .Config.Labels "com.clashcookies.deploy.owner"}}|{{index .Config.Labels "com.clashcookies.deploy.environment"}}|{{index .Config.Labels "com.clashcookies.deploy.role"}}|{{index .Config.Labels "com.clashcookies.deploy.attempt"}}|{{index .Config.Labels "com.clashcookies.deploy.revision"}}' "$container_id" 2>/dev/null)" || return 2
+  printf '%s\n' "${metadata#/}"
+}
+
+container_identity_matches() {
+  local container_id="$1" expected_role="$2" expected_attempt="$3" expected_revision="$4" expected_name="$5"
+  local name deploy owner environment role attempt revision metadata
+  metadata="$(container_identity "$container_id")" || return 2
+  IFS='|' read -r name deploy owner environment role attempt revision <<< "$metadata"
+  [ -z "$expected_name" ] || [ "$name" = "$expected_name" ] || return 1
+  [ "$deploy" = "$([ "$expected_role" = candidate-build ] && printf candidate-build-only || printf artifact-stage)" ] || return 1
+  [ "$owner" = "$DEPLOY_OWNER_LABEL" ] || return 1
+  [ "$environment" = "$DEPLOY_ENVIRONMENT_LABEL" ] || return 1
+  [ "$role" = "$expected_role" ] || return 1
+  [ "$attempt" = "$expected_attempt" ] || return 1
+  [ "$revision" = "$expected_revision" ] || return 1
+}
+
+container_is_running() {
+  local state
+  state="$(docker_bounded inspect --format '{{.State.Running}}' "$1" 2>/dev/null)" || return 2
+  [ "$state" = true ]
+}
+
+assert_container_limits() {
+  local container_id="$1" observed expected_memory expected_reservation expected_swap expected_cpu expected_pids
+  expected_memory="$(memory_limit_bytes "$DEPLOY_CANDIDATE_MEMORY_LIMIT")"
+  expected_reservation="$(memory_limit_bytes "$DEPLOY_CANDIDATE_MEMORY_RESERVATION")"
+  expected_swap="$(memory_limit_bytes "$DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT")"
+  expected_cpu="$(awk -v cpus="$DEPLOY_CANDIDATE_CPUS" 'BEGIN { printf "%.0f", cpus * 1000000000 }')"
+  observed="$(docker_bounded inspect --format '{{.HostConfig.Memory}}|{{.HostConfig.MemoryReservation}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.PidsLimit}}' "$container_id" 2>/dev/null)" || {
+    log "container_limits=failed reason=inspection_unknown container=${container_id}" >&2
+    return 1
+  }
+  [ "$observed" = "${expected_memory}|${expected_reservation}|${expected_swap}|${expected_cpu}|${DEPLOY_CANDIDATE_PIDS_LIMIT}" ] || {
+    log "container_limits=failed reason=restriction_not_enforced container=${container_id} observed=${observed} expected=${expected_memory}|${expected_reservation}|${expected_swap}|${expected_cpu}|${DEPLOY_CANDIDATE_PIDS_LIMIT}" >&2
+    return 1
+  }
+}
+
+terminate_owned_container() {
+  local container_id="$1" role="$2" reason="${3:-cleanup}" expected_attempt="${4:-}" expected_revision="${5:-}" expected_name="${6:-}"
+  local operation_status=0 running_status records
+  expected_attempt="${expected_attempt:-$DEPLOY_ATTEMPT_ID}"
+  expected_revision="${expected_revision:-$NEW_SHA}"
+  expected_name="${expected_name:-}"
+  if ! container_identity_matches "$container_id" "$role" "$expected_attempt" "$expected_revision" "$expected_name"; then
+    log "container_cleanup=refused reason=ownership_verification_failed role=${role} container=${container_id} cleanup_reason=${reason}" >&2
+    return 1
   fi
+  log "container_cleanup=start attempt=${expected_attempt} role=${role} container=${container_id} reason=${reason}"
+  if container_is_running "$container_id"; then running_status=0; else running_status=$?; fi
+  [ "$running_status" -ne 2 ] || { log "container_cleanup=failed reason=inspection_unknown role=${role} container=${container_id}" >&2; return 1; }
+  if [ "$running_status" -eq 0 ]; then
+    docker_bounded stop --time "$DEPLOY_CONTAINER_STOP_TIMEOUT_SECONDS" "$container_id" >/dev/null 2>&1 || operation_status=$?
+    if container_is_running "$container_id"; then running_status=0; else running_status=$?; fi
+    [ "$running_status" -ne 2 ] || { log "container_cleanup=failed reason=inspection_unknown_after_stop role=${role} container=${container_id}" >&2; return 1; }
+    if [ "$running_status" -eq 0 ]; then
+      docker_bounded kill "$container_id" >/dev/null 2>&1 || operation_status=$?
+    fi
+  fi
+  if container_is_running "$container_id"; then running_status=0; else running_status=$?; fi
+  [ "$running_status" -ne 2 ] || { log "container_cleanup=failed reason=inspection_unknown_before_remove role=${role} container=${container_id}" >&2; return 1; }
+  [ "$running_status" -ne 0 ] || { log "container_cleanup=failed reason=container_still_running role=${role} container=${container_id}" >&2; return 1; }
+  docker_bounded rm "$container_id" >/dev/null 2>&1 || operation_status=$?
+  records="$(docker_bounded ps -aq --filter "id=${container_id}" 2>/dev/null)" || { log "container_cleanup=failed reason=removal_verification_unknown role=${role} container=${container_id}" >&2; return 1; }
+  [ -z "$records" ] || { log "container_cleanup=failed reason=container_remains role=${role} container=${container_id}" >&2; return 1; }
+  [ "$operation_status" -eq 0 ] || { log "container_cleanup=failed reason=bounded_operation_status status=${operation_status} role=${role} container=${container_id}" >&2; return 1; }
+  log "container_cleanup=verified role=${role} container=${container_id} reason=${reason}"
+}
+
+intent_field() { sed -n "s/^$2=//p" "$1" | head -n1; }
+
+write_container_intent() {
+  local file="$1" name="$2" role="$3" revision="$4" tmp
+  tmp="${file}.tmp.$$"
+  printf 'name=%s\nrole=%s\nattempt=%s\nrevision=%s\nowner=%s\nenvironment=%s\ndeploy=%s\n' \
+    "$name" "$role" "$DEPLOY_ATTEMPT_ID" "$revision" "$DEPLOY_OWNER_LABEL" "$DEPLOY_ENVIRONMENT_LABEL" \
+    "$([ "$role" = candidate-build ] && printf candidate-build-only || printf artifact-stage)" > "$tmp"
+  mv -- "$tmp" "$file"
+}
+
+reconcile_container_intent() {
+  local intent="$1" name role attempt revision container_ids container_id count
+  name="$(intent_field "$intent" name)"; role="$(intent_field "$intent" role)"; attempt="$(intent_field "$intent" attempt)"; revision="$(intent_field "$intent" revision)"
+  [ -n "$name" ] && [ -n "$role" ] && [ -n "$attempt" ] && [ -n "$revision" ] || fatal "owned_resource_reconciliation=denied reason=malformed_container_intent file=${intent}"
+  case "$role" in candidate-build|artifact-stage) ;; *) fatal "owned_resource_reconciliation=denied reason=ambiguous_container_intent file=${intent}" ;; esac
+  container_ids="$(docker_bounded ps -aq --filter "name=^/${name}$" 2>/dev/null)" || fatal "owned_resource_reconciliation=failed reason=container_enumeration_unknown name=${name}"
+  count="$(printf '%s\n' "$container_ids" | sed '/^$/d' | wc -l)"
+  if [ "$count" -eq 0 ]; then rm -f -- "$intent"; return 0; fi
+  [ "$count" -eq 1 ] || fatal "owned_resource_reconciliation=denied reason=ambiguous_container_name name=${name}"
+  container_id="$(printf '%s\n' "$container_ids" | sed -n '1p')"
+  container_identity_matches "$container_id" "$role" "$attempt" "$revision" "$name" || fatal "owned_resource_reconciliation=denied reason=container_identity_mismatch container=${container_id} name=${name}"
+  terminate_owned_container "$container_id" "$role" intent-recovery "$attempt" "$revision" "$name" || fatal "owned_resource_reconciliation=failed reason=container_cleanup container=${container_id} operator_intervention_required"
+  rm -f -- "$intent"
+}
+
+reconcile_container_intents() {
+  local intent
+  for intent in "$DEPLOY_INTENT_DIR"/*.intent; do
+    [ -f "$intent" ] || continue
+    reconcile_container_intent "$intent"
+  done
+}
+
+reconcile_abandoned_owned_containers() {
+  local records record container_id name deploy owner environment role attempt revision
+  records="$(docker_bounded ps -a --format '{{.ID}}|{{.Names}}|{{.Label "com.clashcookies.deploy"}}|{{.Label "com.clashcookies.deploy.owner"}}|{{.Label "com.clashcookies.deploy.environment"}}|{{.Label "com.clashcookies.deploy.role"}}|{{.Label "com.clashcookies.deploy.attempt"}}|{{.Label "com.clashcookies.deploy.revision"}}' 2>/dev/null)" || fatal "owned_resource_reconciliation=failed reason=container_enumeration_unknown"
+  while IFS='|' read -r container_id name deploy owner environment role attempt revision; do
+    [ -n "$container_id" ] || continue
+    if [[ "$name" = "$BUILD_CONTAINER"* ]] && { [ "$owner" != "$DEPLOY_OWNER_LABEL" ] || [ "$environment" != "$DEPLOY_ENVIRONMENT_LABEL" ] || [ "$role" != candidate-build ] || [ "$deploy" != candidate-build-only ] || [ -z "$attempt" ] || [ -z "$revision" ]; }; then
+      fatal "owned_resource_reconciliation=denied reason=legacy_candidate_ambiguous container=${container_id} name=${name}"
+    fi
+    if [ "$owner" = "$DEPLOY_OWNER_LABEL" ] || [[ "$name" = "$BUILD_CONTAINER"* ]]; then
+      [ "$owner" = "$DEPLOY_OWNER_LABEL" ] && [ "$environment" = "$DEPLOY_ENVIRONMENT_LABEL" ] && [ "$role" = candidate-build -o "$role" = artifact-stage ] && [ "$deploy" = candidate-build-only -o "$deploy" = artifact-stage ] && [ -n "$attempt" ] && [ -n "$revision" ] || fatal "owned_resource_reconciliation=denied reason=ambiguous_container container=${container_id} name=${name}"
+      log "owned_resource_reconciliation=abandoned_container attempt=${attempt} role=${role} name=${name} id=${container_id}"
+      terminate_owned_container "$container_id" "$role" abandoned "$attempt" "$revision" "$name" || fatal "owned_resource_reconciliation=failed reason=container_cleanup container=${container_id} operator_intervention_required"
+    fi
+  done <<< "$records"
 }
 
 reconcile_abandoned_owned_volumes() {
-  local volume labels deploy owner environment revision role attached
+  local volumes volume labels deploy owner environment revision role attached
+  volumes="$(docker_bounded volume ls -q 2>/dev/null)" || fatal "owned_resource_reconciliation=failed reason=volume_enumeration_unknown"
   while IFS= read -r volume; do
     [ -n "$volume" ] || continue
-    labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.deploy.owner"}}|{{index .Labels "com.clashcookies.deploy.environment"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$volume" 2>/dev/null || true)"
-    IFS='|' read -r deploy owner environment revision role <<< "$labels"
-    [ "$owner" = "$DEPLOY_OWNER_LABEL" ] && [ "$environment" = "$DEPLOY_ENVIRONMENT_LABEL" ] || fatal "owned_resource_reconciliation=denied reason=ambiguous_volume volume=${volume}"
-    attached="$(docker ps -a --filter "volume=${volume}" --format '{{.Names}}')" || fatal "owned_resource_reconciliation=failed reason=volume_reference_check volume=${volume}"
+    case "$volume" in
+      "$ARTIFACT_VOLUME_PREFIX"-*|clashcookies-prod-build-*) ;;
+      *) continue ;;
+    esac
+    labels="$(docker_bounded volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.deploy.owner"}}|{{index .Labels "com.clashcookies.deploy.environment"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}|{{index .Labels "com.clashcookies.deploy.attempt"}}' "$volume" 2>/dev/null)" || fatal "owned_resource_reconciliation=failed reason=volume_inspection_unknown volume=${volume}"
+    IFS='|' read -r deploy owner environment revision role attempt <<< "$labels"
+    [ "$owner" = "$DEPLOY_OWNER_LABEL" ] && [ "$environment" = "$DEPLOY_ENVIRONMENT_LABEL" ] && [ -n "$deploy" ] && [ -n "$revision" ] && [ -n "$role" ] && [ -n "$attempt" ] || fatal "owned_resource_reconciliation=denied reason=ambiguous_volume volume=${volume}"
+    attached="$(docker_bounded ps -a --filter "volume=${volume}" --format '{{.Names}}')" || fatal "owned_resource_reconciliation=failed reason=volume_reference_check volume=${volume}"
     if [ -n "$attached" ]; then
-      if [ "$attached" = "$NORMAL_CONTAINER" ]; then
-        log "owned_resource_reconciliation=preserved_active_volume volume=${volume} revision=${revision} role=${role}"
-        continue
-      fi
-      fatal "owned_resource_reconciliation=denied reason=volume_attached_unknown volume=${volume} containers=${attached} operator_intervention_required"
+      [ "$attached" = "$NORMAL_CONTAINER" ] || fatal "owned_resource_reconciliation=denied reason=volume_attached_unknown volume=${volume} containers=${attached} operator_intervention_required"
+      log "owned_resource_reconciliation=preserved_active_volume volume=${volume} revision=${revision} role=${role}"
+      continue
     fi
     case "$role" in
-      rollback-dist|rollback-node-modules)
-        log "owned_resource_reconciliation=preserved_rollback_volume volume=${volume} revision=${revision} role=${role}"
-        ;;
+      rollback-dist|rollback-node-modules) log "owned_resource_reconciliation=preserved_rollback_volume volume=${volume} revision=${revision} role=${role}" ;;
       build-workspace|release-dist|release-node-modules|artifact-stage)
-        if ! docker volume rm "$volume" >/dev/null 2>&1; then
-          fatal "owned_resource_reconciliation=failed reason=volume_cleanup volume=${volume} revision=${revision} role=${role} operator_intervention_required"
-        fi
-        log "owned_resource_reconciliation=removed_volume volume=${volume} revision=${revision} role=${role}"
-        ;;
-      *)
-        fatal "owned_resource_reconciliation=denied reason=ambiguous_volume_role volume=${volume} role=${role}"
-        ;;
+        docker_bounded volume rm "$volume" >/dev/null 2>&1 || fatal "owned_resource_reconciliation=failed reason=volume_cleanup volume=${volume} revision=${revision} role=${role} operator_intervention_required"
+        log "owned_resource_reconciliation=removed_volume volume=${volume} revision=${revision} role=${role}" ;;
+      *) fatal "owned_resource_reconciliation=denied reason=ambiguous_volume_role volume=${volume} role=${role}" ;;
     esac
-  done < <(docker volume ls -q --filter "label=com.clashcookies.deploy.owner=${DEPLOY_OWNER_LABEL}")
+  done <<< "$volumes"
 }
 
 reconcile_abandoned_resources() {
+  reconcile_container_intents
   reconcile_abandoned_owned_containers
   reconcile_abandoned_owned_volumes
   log "owned_resource_reconciliation=complete attempt=${DEPLOY_ATTEMPT_ID}"
@@ -305,56 +507,6 @@ artifact_container_name() {
   printf '%s-artifact-%s-%s' "$BUILD_CONTAINER" "$DEPLOY_ATTEMPT_ID" "$ARTIFACT_STAGE_COUNTER"
 }
 
-container_labels_match() {
-  local container_id="$1"
-  local expected_role="$2"
-  local expected_attempt="${3:-}"
-  local metadata owner environment role attempt
-  metadata="$(docker inspect --format '{{index .Config.Labels "com.clashcookies.deploy.owner"}}|{{index .Config.Labels "com.clashcookies.deploy.environment"}}|{{index .Config.Labels "com.clashcookies.deploy.role"}}|{{index .Config.Labels "com.clashcookies.deploy.attempt"}}' "$container_id" 2>/dev/null)" || return 1
-  IFS='|' read -r owner environment role attempt <<< "$metadata"
-  [ "$owner" = "$DEPLOY_OWNER_LABEL" ] || return 1
-  [ "$environment" = "$DEPLOY_ENVIRONMENT_LABEL" ] || return 1
-  [ "$role" = "$expected_role" ] || return 1
-  [ -z "$expected_attempt" ] || [ "$attempt" = "$expected_attempt" ] || return 1
-}
-
-container_is_running() {
-  [ "$(docker inspect --format '{{.State.Running}}' "$1" 2>/dev/null || true)" = "true" ]
-}
-
-terminate_owned_container() {
-  local container_id="$1"
-  local role="$2"
-  local reason="${3:-cleanup}"
-  local operation_status=0
-  container_labels_match "$container_id" "$role" || {
-    log "container_cleanup=refused reason=ownership_verification_failed role=${role} container=${container_id} cleanup_reason=${reason}" >&2
-    return 1
-  }
-  log "container_cleanup=start attempt=${DEPLOY_ATTEMPT_ID} role=${role} container=${container_id} reason=${reason}"
-  if container_is_running "$container_id"; then
-    run_with_timeout "$DEPLOY_CONTAINER_OPERATION_TIMEOUT_SECONDS" docker stop --time "$DEPLOY_CONTAINER_STOP_TIMEOUT_SECONDS" "$container_id" >/dev/null 2>&1 || operation_status=$?
-    if container_is_running "$container_id"; then
-      run_with_timeout "$DEPLOY_CONTAINER_OPERATION_TIMEOUT_SECONDS" docker kill "$container_id" >/dev/null 2>&1 || operation_status=$?
-    fi
-  fi
-  if container_is_running "$container_id"; then
-    log "container_cleanup=failed reason=container_still_running role=${role} container=${container_id}" >&2
-    return 1
-  fi
-  run_with_timeout "$DEPLOY_CONTAINER_OPERATION_TIMEOUT_SECONDS" docker rm "$container_id" >/dev/null 2>&1 || operation_status=$?
-  if docker inspect "$container_id" >/dev/null 2>&1; then
-    log "container_cleanup=failed reason=container_remains role=${role} container=${container_id}" >&2
-    return 1
-  fi
-  if [ "$operation_status" -ne 0 ]; then
-    log "container_cleanup=failed reason=bounded_operation_status status=${operation_status} role=${role} container=${container_id}" >&2
-    return 1
-  fi
-  log "container_cleanup=verified role=${role} container=${container_id} reason=${reason}"
-  return 0
-}
-
 run_owned_container() {
   local timeout_seconds="$1"
   local role="$2"
@@ -362,7 +514,15 @@ run_owned_container() {
   local monitor_health="$4"
   shift 4
   local container_name container_id wait_file wait_pid wait_status exit_status elapsed start_seconds health_failures=0 timed_out=0 health_abort=0 deploy_kind
+  local stage_deadline remaining create_status diagnostics_status container_revision argument
   local -a run_args=("$@")
+  container_revision="$NEW_SHA"
+  for argument in "${run_args[@]}"; do
+    case "$argument" in
+      BUILD_SHA=*) container_revision="${argument#*=}" ;;
+      EXPECTED_BUILD_SHA=*) container_revision="${argument#*=}" ;;
+    esac
+  done
   if [ "$role" = "candidate-build" ]; then
     container_name="$(candidate_container_name)"
   else
@@ -371,31 +531,48 @@ run_owned_container() {
   fi
   deploy_kind="$( [ "$role" = "candidate-build" ] && printf '%s' candidate-build-only || printf '%s' artifact-stage )"
   wait_file="${log_file}.wait"
+  CURRENT_CONTAINER_NAME="$container_name"
+  CURRENT_CONTAINER_INTENT="${DEPLOY_INTENT_DIR}/${DEPLOY_ATTEMPT_ID}.${role}.${ARTIFACT_STAGE_COUNTER}.intent"
   CURRENT_CONTAINER_ROLE="$role"
   CURRENT_CONTAINER_LOG="$log_file"
   CURRENT_CONTAINER_WAIT_FILE="$wait_file"
   : > "$wait_file"
-  container_id="$(docker run -d \
+  write_container_intent "$CURRENT_CONTAINER_INTENT" "$container_name" "$role" "$container_revision"
+  stage_deadline=$((SECONDS + timeout_seconds))
+  remaining="$timeout_seconds"
+  if container_id="$(run_with_timeout "$remaining" docker run -d \
     --name "$container_name" \
     --label "com.clashcookies.deploy=${deploy_kind}" \
     --label "com.clashcookies.deploy.owner=${DEPLOY_OWNER_LABEL}" \
     --label "com.clashcookies.deploy.environment=${DEPLOY_ENVIRONMENT_LABEL}" \
     --label "com.clashcookies.deploy.role=${role}" \
     --label "com.clashcookies.deploy.attempt=${DEPLOY_ATTEMPT_ID}" \
-    --label "com.clashcookies.deploy.revision=${NEW_SHA}" \
+    --label "com.clashcookies.deploy.revision=${container_revision}" \
     --init \
     --memory "$DEPLOY_CANDIDATE_MEMORY_LIMIT" \
     --memory-reservation "$DEPLOY_CANDIDATE_MEMORY_RESERVATION" \
     --memory-swap "$DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT" \
     --cpus "$DEPLOY_CANDIDATE_CPUS" \
     --pids-limit "$DEPLOY_CANDIDATE_PIDS_LIMIT" \
-    "${run_args[@]}")" || return $?
-  [ -n "$container_id" ] || return 1
+    "${run_args[@]}")"; then
+    :
+  else
+    create_status=$?
+    reconcile_container_intent "$CURRENT_CONTAINER_INTENT"
+    return "$create_status"
+  fi
+  [ -n "$container_id" ] || { reconcile_container_intent "$CURRENT_CONTAINER_INTENT"; return 1; }
   if [ "$role" = "candidate-build" ]; then CANDIDATE_CONTAINER_ID="$container_id"; else ARTIFACT_CONTAINER_ID="$container_id"; fi
+  assert_container_limits "$container_id" || {
+    terminate_owned_container "$container_id" "$role" unenforceable_limits "" "$container_revision" "$container_name" || true
+    return 125
+  }
+  rm -f -- "$CURRENT_CONTAINER_INTENT"
   log "container_started attempt=${DEPLOY_ATTEMPT_ID} role=${role} name=${container_name} id=${container_id} timeout_seconds=${timeout_seconds} memory=${DEPLOY_CANDIDATE_MEMORY_LIMIT} memory_swap=${DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT} cpus=${DEPLOY_CANDIDATE_CPUS} pids=${DEPLOY_CANDIDATE_PIDS_LIMIT}"
   (
+    trap '' TERM INT HUP
     set +e
-    wait_output="$(docker wait "$container_id" 2>>"$log_file")"
+    wait_output="$(run_with_timeout "$timeout_seconds" docker wait "$container_id" 2>>"$log_file")"
     wait_status=$?
     printf 'client_status=%s\ncontainer_exit=%s\n' "$wait_status" "${wait_output##*$'\n'}" >"$wait_file"
   ) &
@@ -403,6 +580,8 @@ run_owned_container() {
   start_seconds="$SECONDS"
   elapsed=0
   while [ ! -s "$wait_file" ] && kill -0 "$wait_pid" 2>/dev/null; do
+    remaining=$((stage_deadline - SECONDS))
+    [ "$remaining" -gt 0 ] || { timed_out=1; break; }
     if [ "$elapsed" -ge "$timeout_seconds" ]; then timed_out=1; break; fi
     if [ "$monitor_health" = "1" ] && [ "$PRODUCTION_RUNTIME_MONITOR" = "1" ]; then
       if probe_production_health; then
@@ -431,6 +610,7 @@ run_owned_container() {
     log "container_abort=deadline attempt=${DEPLOY_ATTEMPT_ID} role=${role} container=${container_id} timeout_seconds=${timeout_seconds}" >&2
     terminate_owned_container "$container_id" "$role" deadline || return 125
     [ "$role" = "candidate-build" ] && CANDIDATE_CONTAINER_ID="" || ARTIFACT_CONTAINER_ID=""
+    LAST_CONTAINER_STATUS_KIND="wrapper_deadline"
     return 124
   fi
   wait "$wait_pid" >/dev/null 2>&1 || true
@@ -438,12 +618,16 @@ run_owned_container() {
   exit_status="$(sed -n 's/^container_exit=//p' "$wait_file" | head -n1)"
   wait_status="${wait_status:-125}"
   [ -n "$exit_status" ] || exit_status=125
-  docker inspect --format 'status={{.State.Status}} exit_status={{.State.ExitCode}}' "$container_id" >>"$log_file" 2>&1 || true
-  docker logs --tail 400 "$container_id" >>"$log_file" 2>&1 || true
-  if ! terminate_owned_container "$container_id" "$role" completed; then return 125; fi
+  diagnostics_status=0
+  docker_bounded inspect --format 'status={{.State.Status}} exit_status={{.State.ExitCode}}' "$container_id" >>"$log_file" 2>&1 || diagnostics_status=1
+  docker_bounded logs --tail 400 "$container_id" >>"$log_file" 2>&1 || diagnostics_status=1
+  if ! terminate_owned_container "$container_id" "$role" completed "" "$container_revision" "$container_name"; then return 125; fi
   if [ "$role" = "candidate-build" ]; then CANDIDATE_CONTAINER_ID=""; else ARTIFACT_CONTAINER_ID=""; fi
-  [ "$wait_status" -eq 0 ] || return "$wait_status"
-  [ "$exit_status" = "0" ] || return "$exit_status"
+  rm -f -- "$CURRENT_CONTAINER_INTENT"
+  [ "$diagnostics_status" -eq 0 ] || return 125
+  [ "$wait_status" -eq 0 ] || { LAST_CONTAINER_STATUS_KIND=wrapper_status; return "$wait_status"; }
+  [ "$exit_status" = "0" ] || { LAST_CONTAINER_STATUS_KIND=observed_exit; log "container_exit=observed attempt=${DEPLOY_ATTEMPT_ID} role=${role} container=${container_id} exit=${exit_status}"; return "$exit_status"; }
+  LAST_CONTAINER_STATUS_KIND=success
   return 0
 }
 
@@ -464,9 +648,17 @@ assert_safe_temp_worktree_path() {
       fatal "unsafe_temp_worktree_path=${TEMP_WORKTREE}"
       ;;
   esac
-  if [ -e "$TEMP_WORKTREE" ] || [ -L "$TEMP_WORKTREE" ]; then
-    fatal "refusing_to_clean_existing_temp_worktree=${TEMP_WORKTREE}"
-  fi
+}
+
+reconcile_abandoned_worktree() {
+  local worktrees
+  if [ ! -e "$TEMP_WORKTREE" ] && [ ! -L "$TEMP_WORKTREE" ]; then return 0; fi
+  [ ! -L "$TEMP_WORKTREE" ] || fatal "refusing_symlinked_temp_worktree=${TEMP_WORKTREE}"
+  worktrees="$(git_safe worktree list --porcelain)" || fatal "abandoned_worktree_query_failed=${TEMP_WORKTREE}"
+  printf '%s\n' "$worktrees" | grep -Fqx "worktree ${TEMP_WORKTREE}" || fatal "refusing_unregistered_temp_worktree=${TEMP_WORKTREE}"
+  run_with_timeout "$DEPLOY_CONTAINER_OPERATION_TIMEOUT_SECONDS" git -c "safe.directory=${APP_DIR}" -C "$APP_DIR" worktree remove "$TEMP_WORKTREE" || fatal "abandoned_worktree_cleanup_failed=${TEMP_WORKTREE}"
+  [ ! -e "$TEMP_WORKTREE" ] && [ ! -L "$TEMP_WORKTREE" ] || fatal "abandoned_worktree_remains=${TEMP_WORKTREE}"
+  log "abandoned_worktree=reconciled path=${TEMP_WORKTREE}"
 }
 
 assert_runtime_environment_source() {
@@ -520,20 +712,21 @@ prepare_diagnostic_directory() {
 }
 
 list_active_runtime_names() {
-  docker ps --format '{{.Names}}|{{.Ports}}|{{.Label "com.clashcookies.runtime"}}|{{.Image}}|{{.Command}}' |
-    while IFS='|' read -r name ports runtime_label image command; do
-      [ -n "$name" ] || continue
-      if [ "$runtime_label" = "active" ] \
-        || [[ "$ports" == *":${NORMAL_PORT}->8080"* ]] \
-        || [[ "$image" == *clashcookies* ]] \
-        || [[ "$command" == *container-start.sh* ]] \
-        || [[ "$command" == *start:runtime* ]] \
-        || [[ "$command" == *ClashCookies.js* ]] \
-        || [[ "$command" == *npm*start* ]] \
-        || [[ "$command" == *yarn*start* ]]; then
-        printf '%s\n' "$name"
-      fi
-    done
+  local records
+  records="$(docker_bounded ps --format '{{.Names}}|{{.Ports}}|{{.Label "com.clashcookies.runtime"}}|{{.Image}}|{{.Command}}')" || return 2
+  while IFS='|' read -r name ports runtime_label image command; do
+    [ -n "$name" ] || continue
+    if [ "$runtime_label" = "active" ] \
+      || [[ "$ports" == *":${NORMAL_PORT}->8080"* ]] \
+      || [[ "$image" == *clashcookies* ]] \
+      || [[ "$command" == *container-start.sh* ]] \
+      || [[ "$command" == *start:runtime* ]] \
+      || [[ "$command" == *ClashCookies.js* ]] \
+      || [[ "$command" == *npm*start* ]] \
+      || [[ "$command" == *yarn*start* ]]; then
+      printf '%s\n' "$name"
+    fi
+  done <<< "$records"
 }
 
 assert_single_active_runtime() {
@@ -564,8 +757,20 @@ artifact_volume_name() {
 assert_volume_detached() {
   local volume="$1"
   local attached
-  attached="$(docker ps -a --filter "volume=${volume}" --format '{{.Names}}')"
+  attached="$(docker_bounded ps -a --filter "volume=${volume}" --format '{{.Names}}')"
   [ -z "$attached" ] || fatal "artifact_volume_attached volume=${volume} containers=${attached}"
+}
+
+volume_exists_or_missing() {
+  local volume="$1" inspect_status
+  if docker_bounded volume inspect "$volume" >/dev/null 2>&1; then
+    return 0
+  else
+    inspect_status=$?
+  fi
+  [ "$inspect_status" -eq 1 ] && return 1
+  log "volume_query=unknown volume=${volume} status=${inspect_status}" >&2
+  return 2
 }
 
 artifact_volume_has_labels() {
@@ -573,14 +778,14 @@ artifact_volume_has_labels() {
   local revision="$2"
   local role="$3"
   local labels
-  labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.deploy.owner"}}|{{index .Labels "com.clashcookies.deploy.environment"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$volume" 2>/dev/null || true)"
+  labels="$(docker_bounded volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.deploy.owner"}}|{{index .Labels "com.clashcookies.deploy.environment"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$volume" 2>/dev/null)" || return 2
   [ "$labels" = "artifact|${DEPLOY_OWNER_LABEL}|${DEPLOY_ENVIRONMENT_LABEL}|${revision}|${role}" ]
 }
 
 artifact_volume_attached_to_live_runtime() {
   local volume="$1"
   local attached
-  attached="$(docker ps --filter "volume=${volume}" --format '{{.Names}}')"
+  attached="$(docker_bounded ps --filter "volume=${volume}" --format '{{.Names}}')"
   [ "$attached" = "$NORMAL_CONTAINER" ]
 }
 
@@ -590,15 +795,17 @@ ensure_owned_artifact_volume() {
   local role="$3"
   local existing_labels
 
-  if docker volume inspect "$volume" >/dev/null 2>&1; then
-    existing_labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.deploy.owner"}}|{{index .Labels "com.clashcookies.deploy.environment"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$volume")"
+  if volume_exists_or_missing "$volume"; then
+    existing_labels="$(docker_bounded volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.deploy.owner"}}|{{index .Labels "com.clashcookies.deploy.environment"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$volume")"
     [ "$existing_labels" = "artifact|${DEPLOY_OWNER_LABEL}|${DEPLOY_ENVIRONMENT_LABEL}|${revision}|${role}" ] || \
       fatal "artifact_volume_ownership_mismatch volume=${volume} labels=${existing_labels}"
     assert_volume_detached "$volume"
-    docker volume rm "$volume" >/dev/null
+    docker_bounded volume rm "$volume" >/dev/null
+  else
+    [ "$?" -eq 1 ] || fatal "artifact_volume_query_unknown volume=${volume}"
   fi
 
-  docker volume create \
+  docker_bounded volume create \
     --label com.clashcookies.deploy=artifact \
     --label "com.clashcookies.deploy.owner=${DEPLOY_OWNER_LABEL}" \
     --label "com.clashcookies.deploy.environment=${DEPLOY_ENVIRONMENT_LABEL}" \
@@ -715,9 +922,9 @@ capture_diagnostics() {
   prepare_private_file "${DIAGNOSTIC_DIR}/${safe_label}.log"
   {
     printf 'label=%s\ncontainer=%s\nold_sha=%s\nnew_sha=%s\n' "$label" "$container_name" "$OLD_SHA" "$NEW_SHA"
-    docker inspect --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}|{{.State.StartedAt}}|{{.State.FinishedAt}}|{{.RestartCount}}' "$container_name" 2>/dev/null || true
+    docker_bounded inspect --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}|{{.State.StartedAt}}|{{.State.FinishedAt}}|{{.RestartCount}}' "$container_name" 2>/dev/null || true
   } > "${DIAGNOSTIC_DIR}/${safe_label}.state"
-  docker logs --tail 400 "$container_name" > "${DIAGNOSTIC_DIR}/${safe_label}.log" 2>&1 || true
+  docker_bounded logs --tail 400 "$container_name" > "${DIAGNOSTIC_DIR}/${safe_label}.log" 2>&1 || true
   log "diagnostics_saved label=${label} dir=${DIAGNOSTIC_DIR}"
 }
 
@@ -726,8 +933,8 @@ prepare_rollback_artifact() {
   ROLLBACK_DIST_VOLUME="$(artifact_volume_name "$OLD_SHA" rollback-dist)"
   ROLLBACK_NODE_MODULES_VOLUME="$(artifact_volume_name "$OLD_SHA" rollback-node-modules)"
 
-  if docker volume inspect "$ROLLBACK_DIST_VOLUME" >/dev/null 2>&1 && \
-    docker volume inspect "$ROLLBACK_NODE_MODULES_VOLUME" >/dev/null 2>&1 && \
+  if docker_bounded volume inspect "$ROLLBACK_DIST_VOLUME" >/dev/null 2>&1 && \
+    docker_bounded volume inspect "$ROLLBACK_NODE_MODULES_VOLUME" >/dev/null 2>&1 && \
     artifact_volume_has_labels "$ROLLBACK_DIST_VOLUME" "$OLD_SHA" rollback-dist && \
     artifact_volume_has_labels "$ROLLBACK_NODE_MODULES_VOLUME" "$OLD_SHA" rollback-node-modules && \
     artifact_volume_attached_to_live_runtime "$ROLLBACK_DIST_VOLUME" && \
@@ -738,8 +945,8 @@ prepare_rollback_artifact() {
     return 0
   fi
 
-  source_dist="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/dist"}}{{.Source}}{{end}}{{end}}' "$NORMAL_CONTAINER")"
-  source_node_modules="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/node_modules"}}{{.Source}}{{end}}{{end}}' "$NORMAL_CONTAINER")"
+  source_dist="$(docker_bounded inspect --format '{{range .Mounts}}{{if eq .Destination "/app/dist"}}{{.Source}}{{end}}{{end}}' "$NORMAL_CONTAINER")"
+  source_node_modules="$(docker_bounded inspect --format '{{range .Mounts}}{{if eq .Destination "/app/node_modules"}}{{.Source}}{{end}}{{end}}' "$NORMAL_CONTAINER")"
   if [ -z "$source_dist" ]; then
     source_dist="${APP_DIR}/dist"
     [ -e "$source_dist" ] || fatal "rollback_artifact_source_missing=dist"
@@ -762,13 +969,21 @@ prepare_rollback_artifact() {
 }
 
 cleanup_owned_detached_artifacts() {
-  local volume labels role revision attached cleanup_status=0 deploy owner environment
+  local volumes volume labels role revision attached cleanup_status=0 deploy owner environment
+  volumes="$(docker_bounded volume ls -q --filter label=com.clashcookies.deploy=artifact)" || {
+    log "artifact_cleanup=deferred reason=volume_enumeration_unknown" >&2
+    return 1
+  }
   while IFS= read -r volume; do
     [ -n "$volume" ] || continue
-    labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.deploy.owner"}}|{{index .Labels "com.clashcookies.deploy.environment"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$volume" 2>/dev/null || true)"
+    if ! labels="$(docker_bounded volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.deploy.owner"}}|{{index .Labels "com.clashcookies.deploy.environment"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$volume" 2>/dev/null)"; then
+      log "artifact_cleanup=deferred reason=volume_inspection_unknown volume=${volume}" >&2
+      cleanup_status=1
+      continue
+    fi
     IFS='|' read -r deploy owner environment revision role <<< "$labels"
     [ "$deploy" = artifact ] && [ "$owner" = "$DEPLOY_OWNER_LABEL" ] && [ "$environment" = "$DEPLOY_ENVIRONMENT_LABEL" ] || continue
-    attached="$(docker ps -a --filter "volume=${volume}" --format '{{.Names}}')"
+    attached="$(docker_bounded ps -a --filter "volume=${volume}" --format '{{.Names}}')"
     if [ -n "$attached" ]; then
       if [ "$attached" = "$NORMAL_CONTAINER" ]; then
         continue
@@ -780,13 +995,13 @@ cleanup_owned_detached_artifacts() {
     if [ "$role" = "rollback-dist" ] || [ "$role" = "rollback-node-modules" ]; then
       [ "$revision" = "$OLD_SHA" ] && continue
     fi
-    if docker volume rm "$volume" >/dev/null 2>&1; then
+    if docker_bounded volume rm "$volume" >/dev/null 2>&1; then
       log "artifact_cleanup=removed volume=${volume} revision=${revision} role=${role}"
     else
       log "artifact_cleanup=deferred volume=${volume} revision=${revision} role=${role}"
       cleanup_status=1
     fi
-  done < <(docker volume ls -q --filter label=com.clashcookies.deploy=artifact)
+  done <<< "$volumes"
   return "$cleanup_status"
 }
 
@@ -826,7 +1041,7 @@ cleanup_candidate_workspace() {
   local labels attached
   [ "$BUILD_WORKSPACE_CREATED" = "1" ] || return 0
 
-  if ! labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.deploy.owner"}}|{{index .Labels "com.clashcookies.deploy.environment"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$BUILD_WORKSPACE_VOLUME" 2>/dev/null)"; then
+  if ! labels="$(docker_bounded volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.deploy.owner"}}|{{index .Labels "com.clashcookies.deploy.environment"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$BUILD_WORKSPACE_VOLUME" 2>/dev/null)"; then
     log "workspace_cleanup=failed reason=ownership_check volume=${BUILD_WORKSPACE_VOLUME}" >&2
     return 1
   fi
@@ -834,7 +1049,7 @@ cleanup_candidate_workspace() {
     log "workspace_cleanup=failed reason=ownership_mismatch volume=${BUILD_WORKSPACE_VOLUME}" >&2
     return 1
   fi
-  if ! attached="$(docker ps -a --filter "volume=${BUILD_WORKSPACE_VOLUME}" --format '{{.Names}}')"; then
+  if ! attached="$(docker_bounded ps -a --filter "volume=${BUILD_WORKSPACE_VOLUME}" --format '{{.Names}}')"; then
     log "workspace_cleanup=failed reason=reference_check volume=${BUILD_WORKSPACE_VOLUME}" >&2
     return 1
   fi
@@ -842,7 +1057,7 @@ cleanup_candidate_workspace() {
     log "workspace_cleanup=failed reason=volume_attached volume=${BUILD_WORKSPACE_VOLUME} containers=${attached}" >&2
     return 1
   fi
-  if ! docker volume rm "$BUILD_WORKSPACE_VOLUME" >/dev/null 2>&1; then
+  if ! docker_bounded volume rm "$BUILD_WORKSPACE_VOLUME" >/dev/null 2>&1; then
     log "workspace_cleanup=failed reason=remove volume=${BUILD_WORKSPACE_VOLUME}" >&2
     return 1
   fi
@@ -860,11 +1075,11 @@ cleanup_build_volumes() {
       { log "build_artifacts_cleanup=deferred workspace=${BUILD_WORKSPACE_VOLUME}"; cleanup_status=1; }
   fi
   if [ "$BUILD_NODE_MODULES_CREATED" = "1" ]; then
-    docker volume rm "$BUILD_NODE_MODULES_VOLUME" >/dev/null 2>&1 || \
+    docker_bounded volume rm "$BUILD_NODE_MODULES_VOLUME" >/dev/null 2>&1 || \
       { log "build_artifacts_cleanup=deferred node_modules=${BUILD_NODE_MODULES_VOLUME}"; cleanup_status=1; }
   fi
   if [ "$BUILD_DIST_CREATED" = "1" ]; then
-    docker volume rm "$BUILD_DIST_VOLUME" >/dev/null 2>&1 || \
+    docker_bounded volume rm "$BUILD_DIST_VOLUME" >/dev/null 2>&1 || \
       { log "build_artifacts_cleanup=deferred dist=${BUILD_DIST_VOLUME}"; cleanup_status=1; }
   fi
   return "$cleanup_status"
@@ -872,20 +1087,43 @@ cleanup_build_volumes() {
 
 cleanup_owned_containers_on_exit() {
   local cleanup_status=0
+  log "cleanup_owned_containers=start candidate=${CANDIDATE_CONTAINER_ID:-none} artifact=${ARTIFACT_CONTAINER_ID:-none} intent=${CURRENT_CONTAINER_INTENT:-none}"
   if [ -n "$CANDIDATE_CONTAINER_ID" ]; then
-    terminate_owned_container "$CANDIDATE_CONTAINER_ID" candidate-build interruption || cleanup_status=1
-    [ "$cleanup_status" -eq 0 ] && CANDIDATE_CONTAINER_ID=""
+    log "cleanup_owned_containers=candidate_begin id=${CANDIDATE_CONTAINER_ID}"
+    set +e
+    terminate_owned_container "$CANDIDATE_CONTAINER_ID" candidate-build interruption
+    local terminate_status=$?
+    set -e
+    if [ "$terminate_status" -eq 0 ]; then
+      CANDIDATE_CONTAINER_ID=""
+      [ -z "$CURRENT_CONTAINER_INTENT" ] || rm -f -- "$CURRENT_CONTAINER_INTENT"
+    else
+      cleanup_status=1
+    fi
   fi
   if [ -n "$ARTIFACT_CONTAINER_ID" ]; then
-    terminate_owned_container "$ARTIFACT_CONTAINER_ID" artifact-stage interruption || cleanup_status=1
-    [ "$cleanup_status" -eq 0 ] && ARTIFACT_CONTAINER_ID=""
+    set +e
+    terminate_owned_container "$ARTIFACT_CONTAINER_ID" artifact-stage interruption
+    terminate_status=$?
+    set -e
+    if [ "$terminate_status" -eq 0 ]; then
+      ARTIFACT_CONTAINER_ID=""
+      [ -z "$CURRENT_CONTAINER_INTENT" ] || rm -f -- "$CURRENT_CONTAINER_INTENT"
+    else
+      cleanup_status=1
+    fi
+  fi
+  if [ -n "$CURRENT_CONTAINER_INTENT" ] && [ -f "$CURRENT_CONTAINER_INTENT" ] && [ -z "$CANDIDATE_CONTAINER_ID" ] && [ -z "$ARTIFACT_CONTAINER_ID" ]; then
+    reconcile_container_intent "$CURRENT_CONTAINER_INTENT" || cleanup_status=1
   fi
   return "$cleanup_status"
 }
 
 cleanup_on_exit() {
-  local status="$?"
-  trap - EXIT TERM INT HUP
+  local status="${1:-$?}"
+  log "cleanup_on_exit=start status=${status} attempt=${DEPLOY_ATTEMPT_ID}"
+  trap - EXIT
+  trap '' TERM INT HUP
   cleanup_owned_containers_on_exit || {
     log "cleanup_result=failed reason=owned_container_remains operator_intervention_required" >&2
     status=1
@@ -898,40 +1136,49 @@ cleanup_on_exit() {
     EXIT_CLEANUP_FAILED="1"
   }
   if [ "$LOCK_HELD" = "1" ]; then
-    rm -f -- "${DEPLOY_LOCK_PATH}/owner"
-    rmdir "$DEPLOY_LOCK_PATH" >/dev/null 2>&1 || {
-      log "deploy_lock_release=failed path=${DEPLOY_LOCK_PATH}" >&2
+    local lock_owner
+    lock_owner="$(cat "${DEPLOY_LOCK_PATH}/owner" 2>/dev/null || true)"
+    if [ "$lock_owner" = "pid=$$"$'\n'"attempt=$DEPLOY_ATTEMPT_ID" ]; then
+      rm -f -- "${DEPLOY_LOCK_PATH}/owner"
+      rmdir "$DEPLOY_LOCK_PATH" >/dev/null 2>&1 || {
+        log "deploy_lock_release=failed path=${DEPLOY_LOCK_PATH}" >&2
+        [ "$status" -ne 0 ] || status=1
+      }
+    else
+      log "deploy_lock_release=refused reason=owner_mismatch path=${DEPLOY_LOCK_PATH}" >&2
       [ "$status" -ne 0 ] || status=1
-    }
+    fi
     LOCK_HELD="0"
   fi
   exit "$status"
 }
 
 handle_interruption() {
+  local interruption_status
   INTERRUPTION_SIGNAL="$1"
   log "interruption=received signal=${INTERRUPTION_SIGNAL} attempt=${DEPLOY_ATTEMPT_ID} cleanup=bounded" >&2
   case "$INTERRUPTION_SIGNAL" in
-    TERM) exit 143 ;;
-    INT) exit 130 ;;
-    HUP) exit 129 ;;
-    *) exit 1 ;;
+    TERM) interruption_status=143 ;;
+    INT) interruption_status=130 ;;
+    HUP) interruption_status=129 ;;
+    *) interruption_status=1 ;;
   esac
+  cleanup_on_exit "$interruption_status"
 }
 
 acquire_lock() {
   if ! mkdir "$DEPLOY_LOCK_PATH" 2>/dev/null; then
-    local owner_pid stale_lock
+    local owner_pid stale_lock owner_attempt
     owner_pid="$(sed -n 's/^pid=//p' "${DEPLOY_LOCK_PATH}/owner" 2>/dev/null | head -n1 || true)"
-    if ! is_positive_integer "${owner_pid:-}" || kill -0 "$owner_pid" 2>/dev/null; then
+    owner_attempt="$(sed -n 's/^attempt=//p' "${DEPLOY_LOCK_PATH}/owner" 2>/dev/null | head -n1 || true)"
+    if ! is_positive_integer "${owner_pid:-}" || [ -z "$owner_attempt" ] || kill -0 "$owner_pid" 2>/dev/null; then
       fatal "another_deployment_is_running lock=${DEPLOY_LOCK_PATH} owner_pid=${owner_pid:-unknown}"
     fi
-    stale_lock="${DEPLOY_LOCK_PATH}.stale.${owner_pid}"
+    stale_lock="${DEPLOY_LOCK_PATH}.stale.${DEPLOY_ATTEMPT_ID}"
     mv -- "$DEPLOY_LOCK_PATH" "$stale_lock" 2>/dev/null || fatal "deployment_lock_recovery_race path=${DEPLOY_LOCK_PATH}"
     mkdir "$DEPLOY_LOCK_PATH" 2>/dev/null || fatal "deployment_lock_recovery_failed path=${DEPLOY_LOCK_PATH}"
-    rm -f -- "${stale_lock}/owner"
-    rmdir "$stale_lock" >/dev/null 2>&1 || log "deployment_lock_stale_evidence=${stale_lock}"
-    log "deploy_lock=recovered_stale owner_pid=${owner_pid}"
+    rmdir "$stale_lock" >/dev/null 2>&1 || log "deployment_lock_stale_evidence=${stale_lock} owner_attempt=${owner_attempt}"
+    log "deploy_lock=recovered_stale owner_pid=${owner_pid} owner_attempt=${owner_attempt}"
   fi
   LOCK_HELD="1"
   printf 'pid=%s\nattempt=%s\n' "$$" "$DEPLOY_ATTEMPT_ID" > "${DEPLOY_LOCK_PATH}/owner"
@@ -971,7 +1218,7 @@ build_candidate_only() {
   fi
   if [ "$build_status" -ne 0 ]; then
     reason="build"
-    [ "$build_status" -eq 124 ] && reason="build_deadline"
+    [ "$build_status" -eq 124 ] && { [ "$LAST_CONTAINER_STATUS_KIND" = wrapper_deadline ] && reason="build_deadline" || reason="build_exit_124"; }
     [ "$build_status" -eq 125 ] && reason="build_abort_or_cleanup"
     log "candidate_build=failed reason=${reason} status=${build_status} revision=${NEW_SHA} diagnostics=${log_file}" >&2
     return 1
@@ -984,7 +1231,7 @@ build_candidate_only() {
   fi
   if [ "$artifact_status" -ne 0 ]; then
     reason="artifact_stamp"
-    [ "$artifact_status" -eq 124 ] && reason="artifact_stamp_deadline"
+    [ "$artifact_status" -eq 124 ] && { [ "$LAST_CONTAINER_STATUS_KIND" = wrapper_deadline ] && reason="artifact_stamp_deadline" || reason="artifact_stamp_exit_124"; }
     [ "$artifact_status" -eq 125 ] && reason="artifact_stamp_abort_or_cleanup"
     log "candidate_build=failed reason=${reason} status=${artifact_status} revision=${NEW_SHA} diagnostics=${log_file}" >&2
     return 1
@@ -997,7 +1244,7 @@ build_candidate_only() {
   fi
   if [ "$artifact_status" -ne 0 ]; then
     reason="artifact_verification"
-    [ "$artifact_status" -eq 124 ] && reason="artifact_verification_deadline"
+    [ "$artifact_status" -eq 124 ] && { [ "$LAST_CONTAINER_STATUS_KIND" = wrapper_deadline ] && reason="artifact_verification_deadline" || reason="artifact_verification_exit_124"; }
     [ "$artifact_status" -eq 125 ] && reason="artifact_verification_abort_or_cleanup"
     log "candidate_build=failed reason=${reason} status=${artifact_status} revision=${NEW_SHA} diagnostics=${log_file}" >&2
     return 1
@@ -1043,7 +1290,7 @@ start_app_container() {
     ')
   fi
 
-  ACTIVE_CONTAINER_ID="$(docker run -d \
+  ACTIVE_CONTAINER_ID="$(run_with_timeout "$DEPLOY_CONTAINER_OPERATION_TIMEOUT_SECONDS" docker run -d \
     "${restart_args[@]}" \
     --name "$container_name" \
     --label "com.clashcookies.runtime=active" \
@@ -1069,7 +1316,7 @@ start_app_container() {
 
 remove_started_container() {
   [ -n "$ACTIVE_CONTAINER_ID" ] || return 0
-  docker rm -f "$ACTIVE_CONTAINER_ID" >/dev/null 2>&1 || true
+  docker_bounded rm -f "$ACTIVE_CONTAINER_ID" >/dev/null 2>&1 || true
   ACTIVE_CONTAINER_ID=""
 }
 
@@ -1119,6 +1366,15 @@ if [ "${DEPLOY_PROD_ARTIFACT_TEST_MODE:-0}" = "1" ]; then
   exit 0
 fi
 
+# flock is the primary inter-process lock.  The old directory lock remains
+# below as a transition guard for the already-installed wrapper; a new
+# wrapper never performs stale recovery without first holding this kernel lock.
+if [ "${DEPLOY_LOCK_WRAPPED:-0}" != "1" ]; then
+  require_command flock
+  export DEPLOY_LOCK_WRAPPED=1
+  exec flock -n --no-fork "$DEPLOY_LOCK_FILE" "$0" "$@"
+fi
+
 require_command git
 require_command docker
 require_command curl
@@ -1144,11 +1400,14 @@ assert_runtime_environment_source
 assert_safe_temp_worktree_path
 assert_checkout_safe
 acquire_lock
+mkdir -p "$DEPLOY_INTENT_DIR"
+chmod 700 "$DEPLOY_INTENT_DIR"
 trap cleanup_on_exit EXIT
 trap 'handle_interruption TERM' TERM
 trap 'handle_interruption INT' INT
 trap 'handle_interruption HUP' HUP
 reconcile_abandoned_resources
+reconcile_abandoned_worktree
 assert_single_active_runtime || fatal "active_runtime_singleton_required_before_deploy"
 
 prepare_diagnostic_directory
@@ -1174,7 +1433,7 @@ if [ -n "$changed_prisma_files" ]; then
   log "mode=downtime reason=prisma_changes"
   prepare_rollback_artifact || fatal "rollback_artifact_prepare_failed final_state=old_runtime_still_active"
   PRODUCTION_RUNTIME_MONITOR="0"
-  docker rm -f "$NORMAL_CONTAINER" >/dev/null 2>&1 || true
+docker_bounded rm -f "$NORMAL_CONTAINER" >/dev/null 2>&1 || true
   assert_no_active_runtime || fatal "active_runtime_did_not_stop"
   if ! git_safe reset --hard "$NEW_SHA"; then
     log "promotion_result=failed reason=checkout_new_revision recovery=rollback_attempt" >&2
@@ -1214,7 +1473,7 @@ prepare_rollback_artifact || fatal "rollback_artifact_prepare_failed final_state
 
 log "promotion_step=stop_old_app"
 PRODUCTION_RUNTIME_MONITOR="0"
-docker rm -f "$NORMAL_CONTAINER" >/dev/null 2>&1 || true
+docker_bounded rm -f "$NORMAL_CONTAINER" >/dev/null 2>&1 || true
 assert_no_active_runtime || fatal "active_runtime_did_not_stop"
 if ! git_safe reset --hard "$NEW_SHA"; then
   log "promotion_result=failed reason=checkout_new_revision recovery=rollback_attempt" >&2

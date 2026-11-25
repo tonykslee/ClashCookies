@@ -17,11 +17,142 @@ function dockerAvailable(): boolean {
   }
 }
 
+function requireDockerOrSkip(): void {
+  if (!dockerAvailable()) {
+    if (process.env.REQUIRE_DOCKER_LIFECYCLE === "1") {
+      throw new Error("Docker daemon is required for the lifecycle integration job");
+    }
+    console.warn("Skipping real Docker lifecycle integration: Docker daemon is unavailable");
+  }
+}
+
 function bashExecutable(): string {
   return process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
 }
 
 describe("real Docker deployment artifact smoke", () => {
+  it("invokes the production wrapper and removes its daemon-managed candidate at the deadline", () => {
+    if (!dockerAvailable()) {
+      requireDockerOrSkip();
+      return;
+    }
+
+    const suffix = `${process.pid}-${Date.now()}`;
+    const fixture = mkdtempSync(join(tmpdir(), "clashcookies-wrapper-lifecycle-"));
+    const origin = `${fixture}-origin.git`;
+    const normalContainer = `fb027-production-${suffix}`;
+    const unrelatedContainer = `fb027-unrelated-${suffix}`;
+    const buildContainer = `fb027-candidate-${suffix}`;
+    const port = String(18085 + (process.pid % 100));
+    const deployScript = join(process.cwd(), "ops", "deploy", "deploy-prod.sh");
+    const write = (path: string, content: string) => writeFileSync(join(fixture, path), content);
+    const git = (args: string[]) => execFileSync("git", ["-C", fixture, ...args], { encoding: "utf8" });
+
+    mkdirSync(join(fixture, "dist"), { recursive: true });
+    mkdirSync(join(fixture, "node_modules"), { recursive: true });
+    mkdirSync(join(fixture, "ops", "deploy"), { recursive: true });
+    let oldSha = "";
+    let newSha = "";
+    write("docker-compose.yml", "services:\n  app:\n    environment:\n      DATABASE_URL: postgresql://fixture\n");
+    write(".env", "DISCORD_TOKEN=fixture\n");
+    write("package.json", JSON.stringify({
+      scripts: { build: "sleep 30", start: "node server.js", "start:runtime": "node server.js" },
+    }));
+    write("server.js", "require('http').createServer((req,res)=>{res.writeHead(200);res.end('ok');}).listen(8080,'0.0.0.0');\n");
+    write("dist/ClashCookies.js", "old-build\n");
+    write("node_modules/.fixture", "old-dependency\n");
+    write("ops/deploy/ensure-yarn-deps.sh", "#!/usr/bin/env bash\nset -euo pipefail\n");
+    write("ops/deploy/container-start.sh", "#!/usr/bin/env bash\nset -euo pipefail\nnpm run start\n");
+    write("resources", "mem_available_mib=8192\nswap_total_mib=0\nswap_free_mib=0\nload_per_cpu_percent=0\nhost_pid_max=50000\nhost_pid_count=100\n");
+    execFileSync("chmod", ["+x", join(fixture, "ops/deploy/ensure-yarn-deps.sh"), join(fixture, "ops/deploy/container-start.sh")]);
+
+    try {
+      execFileSync("git", ["init", "-b", "main", fixture], { stdio: "ignore" });
+      git(["config", "user.email", "fb027@example.invalid"]);
+      git(["config", "user.name", "FB-027 test"]);
+      git(["add", "."]);
+      git(["commit", "-m", "old runtime"]);
+      oldSha = git(["rev-parse", "HEAD"]).trim();
+      execFileSync("git", ["init", "--bare", origin], { stdio: "ignore" });
+      git(["remote", "add", "origin", origin]);
+      git(["push", "-u", "origin", "main"]);
+      write("build-marker.txt", "new-build\n");
+      git(["add", "."]);
+      git(["commit", "-m", "new candidate"]);
+      git(["push", "origin", "main"]);
+      newSha = git(["rev-parse", "HEAD"]).trim();
+      git(["reset", "--hard", oldSha]);
+
+      const image = process.env.DEPLOY_TEST_IMAGE ?? "node:20-bookworm";
+      execFileSync("docker", ["pull", image], { stdio: "ignore", timeout: 300_000 });
+      execFileSync("docker", [
+        "run", "-d", "--name", normalContainer,
+        "--label", "com.clashcookies.runtime=active",
+        "--label", "com.clashcookies.environment=prod",
+        "--label", "com.clashcookies.revision=old",
+        "-p", `127.0.0.1:${port}:8080`, "-v", `${fixture}:/app`, image, "node", "/app/server.js",
+      ], { encoding: "utf8", timeout: 30_000 });
+      execFileSync("docker", ["run", "-d", "--name", unrelatedContainer, image, "sleep", "300"], { encoding: "utf8", timeout: 30_000 });
+      execFileSync(bashExecutable(), ["-lc", `for i in $(seq 1 30); do curl --fail --silent http://127.0.0.1:${port}/healthz && exit 0; sleep 1; done; exit 1`], { timeout: 35_000 });
+
+      const output = execFileSync(bashExecutable(), [deployScript], {
+        cwd: fixture,
+        encoding: "utf8",
+        timeout: 120_000,
+        env: {
+          ...process.env,
+          APP_DIR: fixture,
+          NORMAL_CONTAINER: normalContainer,
+          BUILD_CONTAINER: buildContainer,
+          NORMAL_PORT: port,
+          PROD_NETWORK: "bridge",
+          TARGET_REF: "origin/main",
+          DEPLOY_DIAGNOSTIC_DIR: join(fixture, "diagnostics"),
+          DEPLOY_RESOURCE_ADMISSION_FILE: join(fixture, "resources"),
+          CANDIDATE_BUILD_TIMEOUT_SECONDS: "2",
+          ARTIFACT_STAGE_TIMEOUT_SECONDS: "5",
+          PROMOTION_HEALTH_TIMEOUT_SECONDS: "5",
+          ROLLBACK_HEALTH_TIMEOUT_SECONDS: "5",
+          CLEANUP_OVERHEAD_SECONDS: "30",
+          DEPLOYMENT_OVERHEAD_SECONDS: "30",
+          DEPLOY_OUTER_TIMEOUT_SECONDS: "120",
+          DEPLOY_RESERVED_MEMORY_MIB: "128",
+          DEPLOY_CANDIDATE_MEMORY_LIMIT: "256m",
+          DEPLOY_CANDIDATE_MEMORY_RESERVATION: "128m",
+          DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT: "256m",
+          DEPLOY_MIN_FREE_PIDS: "1",
+          DEPLOY_MAX_HOST_SWAP_USED_PERCENT: "100",
+          DEPLOY_MAX_HOST_LOAD_PER_CPU_PERCENT: "100",
+        },
+      });
+      expect(output).toContain("candidate_build=failed reason=build_deadline");
+      expect(output).toContain("container_cleanup=verified");
+      const candidates = execFileSync("docker", [
+        "ps", "-aq",
+        "--filter", "label=com.clashcookies.deploy.owner=clashcookies-deploy",
+        "--filter", "label=com.clashcookies.deploy.environment=prod",
+      ], { encoding: "utf8" }).trim();
+      expect(candidates).toBe("");
+      expect(execFileSync("docker", ["inspect", "--format", "{{.State.Running}}", normalContainer], { encoding: "utf8" }).trim()).toBe("true");
+      expect(execFileSync("docker", ["inspect", "--format", "{{.State.Running}}", unrelatedContainer], { encoding: "utf8" }).trim()).toBe("true");
+    } finally {
+      for (const container of [normalContainer, unrelatedContainer, buildContainer]) {
+        try { execFileSync("docker", ["rm", "-f", container], { stdio: "ignore", timeout: 15_000 }); } catch { /* best effort */ }
+      }
+      for (const volume of [
+        `clashcookies-prod-build-${newSha}`,
+        `clashcookies-prod-build-dist-${newSha}`,
+        `clashcookies-prod-build-workspace-${newSha}`,
+        `clashcookies-prod-artifact-${oldSha}-rollback-dist`,
+        `clashcookies-prod-artifact-${oldSha}-rollback-node-modules`,
+      ]) {
+        try { execFileSync("docker", ["volume", "rm", "-f", volume], { stdio: "ignore", timeout: 15_000 }); } catch { /* best effort */ }
+      }
+      rmSync(fixture, { recursive: true, force: true });
+      rmSync(origin, { recursive: true, force: true });
+    }
+  }, 180_000);
+
   it("removes a daemon-managed candidate after the handled client deadline", async () => {
     if (!dockerAvailable()) {
       console.warn("Skipping real Docker lifecycle integration: Docker daemon is unavailable");

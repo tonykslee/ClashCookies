@@ -75,16 +75,24 @@ that Docker no longer reports it. Docker CLI timeout status alone is never
 treated as proof of termination; exit status 137 is reported as an exit status
 unless the wrapper itself observed its deadline.
 
-The lock is acquired before reconciliation. A dead owner may be recovered
-atomically; live or ambiguous lock ownership remains a hard failure. Startup
-reconciliation only considers containers and volumes carrying the exact
-deployment-owner and production labels. Active production containers, rollback
-artifacts, unrelated resources, and resources with ambiguous ownership are
-preserved or cause a fail-closed refusal. A later deployment cannot proceed
-while an owned candidate/artifact container or an unsafe cleanup condition
-remains. The lock and reconciliation paths are intended to recover bounded
-cleanup after an untrappable interruption such as SIGKILL; they do not claim
-that SIGKILL itself can be handled.
+The version-controlled wrapper first acquires a kernel-backed exclusive
+`flock` lock, which is released by the kernel on process death. It then checks
+the older directory lock used by the live wrapper; that transition guard is
+never recovered concurrently with another version-controlled attempt. The
+already-installed `~/deploy-prod.sh` is not retroactively made race-free until
+the reviewed wrapper is installed. Startup reconciliation enumerates Docker
+resources with bounded queries and distinguishes a successful empty result
+from query failure. Complete owner, environment, deployment kind, role,
+revision, and attempt identity are required before removal; legacy names,
+partial labels, failed inspection, and ambiguous attachments are refused.
+
+Candidate and artifact creation write a durable attempt intent before Docker
+is invoked. Bounded create, wait, inspect, log, stop/kill, remove, and
+post-removal enumeration operations reconcile a container that was created
+before Docker returned its ID. Cleanup failures retain ownership evidence and
+block the next attempt. The lock and intent journal can support recovery after
+an untrappable interruption such as SIGKILL or power loss on the next start;
+they do not claim that SIGKILL itself can be handled.
 
 Before candidate preparation, the procedure records an attempt identity,
 requires one active production runtime, checks production `/healthz`, and
@@ -97,7 +105,10 @@ hosts over 25% swap use, over 75% load per online CPU, or below 1,024 free
 process IDs. These are admission policy thresholds, not evidence that the
 current droplet can safely compile. If the current host cannot demonstrate
 the configured headroom, deployment preparation is refused without stopping
-production. Increasing timeouts or swap is not a recovery strategy.
+production. PID admission uses `pid_max` and the applicable cgroup PID limit,
+not `/proc/loadavg`; cgroup and Docker restriction measurements must be
+valid, consistent, and enforceable. Increasing timeouts or swap is not a
+recovery strategy.
 
 During candidate and artifact preparation, repeated failed health probes are
 treated as confirmed production degradation after three consecutive failures;
@@ -110,7 +121,8 @@ environment contents are not collected.
 
 These protections are implemented in the repository procedure only. The live
 `~/deploy-prod.sh` wrapper still requires the separately approved operator
-update described above. Off-host compilation and restart-safe deployment are
+update described above, so the transition limitation remains until that
+installation occurs. Off-host compilation and restart-safe deployment are
 not implemented by this change; production host resizing, wrapper installation,
 promotion, and deployment remain out of scope.
 

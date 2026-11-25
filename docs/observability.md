@@ -186,13 +186,19 @@ operator-intervention condition, not a successful cleanup, and the next
 deployment must reconcile or refuse the owned resource before preparation.
 
 Resource admission records observed available memory, swap pressure, load per
-CPU, and free PID headroom plus the configured policy decision. These records
-are evidence about the host at admission time only; they do not establish that
-the host can safely compile, and they must not be replaced by a claim that
-additional timeout or swap is safe. Repeated production readiness failures
-during preparation are recorded as a resource/health abort after the configured
-consecutive-failure threshold. Exit status 137 is retained as an observed
-container exit unless the wrapper itself observed its deadline.
+CPU, host/cgroup PID headroom, and the configured policy decision. Missing,
+malformed, contradictory, or unenforceable measurements fail closed. These
+records are evidence about the host at admission time only; they do not
+establish that the host can safely compile, and they must not be replaced by a
+claim that additional timeout or swap is safe. Repeated production readiness
+failures during preparation are recorded as a resource/health abort after the
+configured consecutive-failure threshold. Container exit 124 (like 137) is
+retained as an observed exit unless the wrapper itself recorded a deadline
+status. Docker query failures are recorded as unknown rather than absence;
+cleanup and reconciliation refuse ambiguous resources. SIGKILL and power loss
+remain untrappable; the attempt journal only enables bounded next-start
+reconciliation. The real-Docker lifecycle test is a required CI job; local
+Docker-unavailable runs are not evidence of lifecycle coverage.
 
 **Observed deployment snapshot (2026-11-14):** Uptime Kuma and Dozzle are **running/preserved**; Netdata's container, image and named volumes were **removed** with operator authorization to reclaim disk. The staging app/database were also decommissioned. The configuration and instructions below describe the **repository's available/legacy stack**, not a guarantee that every service is currently deployed. In particular, `ops/observability/docker-compose.yml` may recreate Netdata if run without review. See [backup/droplet preflight](diagnostics/backup-operator-preflight-2026-11-14.md). Host/container metrics coverage must be reviewed before production release.
 

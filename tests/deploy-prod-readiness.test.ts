@@ -33,7 +33,17 @@ type Scenario =
   | "signal-hup"
   | "candidate-container-cleanup-failure"
   | "cleanup-failure-retry"
-  | "candidate-exit-137";
+  | "candidate-exit-137"
+  | "candidate-exit-124"
+  | "interrupted-creation"
+  | "docker-enumeration-failure"
+  | "docker-inspection-failure"
+  | "legacy-candidate"
+  | "partial-labels"
+  | "concurrent-stale-lock"
+  | "malformed-resources"
+  | "contradictory-resources"
+  | "malformed-memory";
 
 function bashExecutable(): string {
   return process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
@@ -114,6 +124,18 @@ describe("version-controlled production deployment readiness", () => {
     expect(output).toContain("candidate_build=failed reason=build status=137");
     expect(output).not.toContain("reason=build_deadline");
     expect(output).toContain("STATE=active:OLD");
+  });
+
+  it("distinguishes an observed candidate exit 124 from the wrapper deadline", () => {
+    const output = runScenario("candidate-exit-124");
+    expect(output).toContain("candidate_build=failed reason=build_exit_124 status=124");
+    expect(output).not.toContain("reason=build_deadline");
+  });
+
+  it("reconciles a failed container create through the pre-Docker intent", () => {
+    const output = runScenario("interrupted-creation");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("CONTAINERS_BEGIN\nCONTAINERS_END");
   });
 
   it("keeps the outer deadline safe through promotion timeout and slow rollback", () => {
@@ -216,6 +238,13 @@ describe("version-controlled production deployment readiness", () => {
     },
   );
 
+  it("serializes concurrent recovery of one stale legacy lock", () => {
+    const output = runScenario("concurrent-stale-lock");
+    expect(output).toContain("deploy_lock=recovered_stale");
+    expect(output).toMatch(/CONCURRENT_FIRST_STATUS=0|CONCURRENT_SECOND_STATUS=0/);
+    expect(output).toMatch(/CONCURRENT_FIRST_STATUS=1|CONCURRENT_SECOND_STATUS=1/);
+  });
+
   it("retains diagnostic evidence after a health timeout", () => {
     const output = runScenario("health-timeout");
     expect(output).toContain("diagnostics_saved label=promotion");
@@ -277,6 +306,15 @@ describe("version-controlled production deployment readiness", () => {
     expect(output).toContain("ambiguous-candidate");
   });
 
+  it.each(["docker-enumeration-failure", "docker-inspection-failure", "legacy-candidate", "partial-labels"] as const)(
+    "fails closed for %s",
+    (scenario) => {
+      const output = runScenario(scenario);
+      expect(output).toContain("STATUS=1");
+      expect(output).not.toContain("promotion_result=success");
+    },
+  );
+
   it("fails closed when owned container removal cannot be verified", () => {
     const output = runScenario("candidate-container-cleanup-failure");
     expect(output).toContain("STATUS=1");
@@ -306,6 +344,15 @@ describe("version-controlled production deployment readiness", () => {
     expect(output).not.toContain("BUILD ");
     expect(output).toContain("STATE=active:OLD");
   });
+
+  it.each(["malformed-resources", "contradictory-resources", "malformed-memory"] as const)(
+    "fails closed for invalid resource measurements/configuration: %s",
+    (scenario) => {
+      const output = runScenario(scenario);
+      expect(output).toContain("STATUS=1");
+      expect(output).not.toContain("BUILD ");
+    },
+  );
 
   it("aborts candidate preparation after confirmed production health degradation", () => {
     const output = runScenario("health-degradation");

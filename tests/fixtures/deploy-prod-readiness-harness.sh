@@ -26,9 +26,15 @@ printf '%s\n' 'active:OLD' > "$state_file"
 : > "$mounts_file"
 : > "$log_file"
 : > "$probe_file"
-printf 'mem_available_mib=8192\nswap_total_mib=2048\nswap_free_mib=2048\nload_per_cpu_percent=0\nfree_pids=5000\n' > "$resource_file"
+printf 'mem_available_mib=8192\nswap_total_mib=2048\nswap_free_mib=2048\nload_per_cpu_percent=0\nhost_pid_max=50000\nhost_pid_count=100\n' > "$resource_file"
 if [ "$scenario" = insufficient-resources ]; then
-  printf 'mem_available_mib=512\nswap_total_mib=2048\nswap_free_mib=0\nload_per_cpu_percent=99\nfree_pids=10\n' > "$resource_file"
+  printf 'mem_available_mib=512\nswap_total_mib=2048\nswap_free_mib=0\nload_per_cpu_percent=99\nhost_pid_max=100\nhost_pid_count=95\n' > "$resource_file"
+fi
+if [ "$scenario" = malformed-resources ]; then
+  printf 'mem_available_mib=8192\nswap_total_mib=2048\nswap_free_mib=2048\nload_per_cpu_percent=0\nhost_pid_max=not-a-number\nhost_pid_count=100\n' > "$resource_file"
+fi
+if [ "$scenario" = contradictory-resources ]; then
+  printf 'mem_available_mib=8192\nswap_total_mib=2048\nswap_free_mib=4096\nload_per_cpu_percent=0\nhost_pid_max=100\nhost_pid_count=101\n' > "$resource_file"
 fi
 
 cat > "$bin_dir/git" <<'EOF'
@@ -134,7 +140,11 @@ case "${1:-}" in
           state="$(cat "$DEPLOY_TEST_STATE")"
           if [[ "$state" == active:* ]] && [ -s "$DEPLOY_TEST_MOUNTS" ]; then cat "$DEPLOY_TEST_MOUNTS"; fi
         elif [[ " $* " == *" .Labels "* ]]; then
-          printf '%s|%s|%s|%s|%s\n' "$(volume_field "$name" deploy)" "$(volume_field "$name" owner)" "$(volume_field "$name" environment)" "$(volume_field "$name" revision)" "$(volume_field "$name" role)"
+          if [[ "$*" == *"deploy.attempt"* ]]; then
+            printf '%s|%s|%s|%s|%s|%s\n' "$(volume_field "$name" deploy)" "$(volume_field "$name" owner)" "$(volume_field "$name" environment)" "$(volume_field "$name" revision)" "$(volume_field "$name" role)" "$(volume_field "$name" attempt)"
+          else
+            printf '%s|%s|%s|%s|%s\n' "$(volume_field "$name" deploy)" "$(volume_field "$name" owner)" "$(volume_field "$name" environment)" "$(volume_field "$name" revision)" "$(volume_field "$name" role)"
+          fi
         else
           printf '[{"Name":"%s"}]\n' "$name"
         fi
@@ -163,7 +173,28 @@ case "${1:-}" in
     esac
     ;;
   ps)
-    if [[ " $* " == *" --filter volume="* ]]; then
+    if [ "$DEPLOY_TEST_SCENARIO" = docker-enumeration-failure ] && [[ " $* " == *" -a "* ]] && [[ " $* " == *" --format "* ]]; then
+      exit 2
+    fi
+    if [[ " $* " == *" --filter name="* ]]; then
+      requested=""
+      for argument in "$@"; do case "$argument" in name=*) requested="${argument#name=}" ;; esac; done
+      for meta in "$DEPLOY_TEST_CONTAINER_DIR"/*.meta; do
+        [ -f "$meta" ] || continue
+        name="$(sed -n 's/^name=//p' "$meta")"
+        if [[ "$requested" = "^/${name}$" ]] || [ "$requested" = "$name" ]; then basename "$meta" .meta; fi
+      done
+    elif [[ " $* " == *" --filter id="* ]]; then
+      requested=""
+      for argument in "$@"; do case "$argument" in id=*) requested="${argument#id=}" ;; esac; done
+      if [ -f "$(container_meta "$requested")" ]; then printf '%s\n' "$requested"; fi
+    elif [[ " $* " == *" -a "* ]] && [[ " $* " == *" --format "* ]] && [[ " $* " != *" --filter volume="* ]]; then
+      for meta in "$DEPLOY_TEST_CONTAINER_DIR"/*.meta; do
+        [ -f "$meta" ] || continue
+        container_id="$(basename "$meta" .meta)"
+        printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$container_id" "$(sed -n 's/^name=//p' "$meta")" "$(sed -n 's/^deploy=//p' "$meta")" "$(sed -n 's/^owner=//p' "$meta")" "$(sed -n 's/^environment=//p' "$meta")" "$(sed -n 's/^role=//p' "$meta")" "$(sed -n 's/^attempt=//p' "$meta")" "$(sed -n 's/^revision=//p' "$meta")"
+      done
+    elif [[ " $* " == *" --filter volume="* ]]; then
       volume=""
       for argument in "$@"; do case "$argument" in volume=*) volume="${argument#volume=}" ;; esac; done
       state="$(cat "$DEPLOY_TEST_STATE")"
@@ -194,31 +225,46 @@ case "${1:-}" in
     ;;
   run)
     if [[ " $* " == *" -d "* ]] && [[ "$*" == *"com.clashcookies.deploy.owner="* ]]; then
-      name=unknown; owner=; environment=; role=; attempt=; revision=unknown; previous=""; dist_volume=""; node_volume=""; target_dist=""; target_node=""; expected=""
+      name=unknown; owner=; environment=; role=; attempt=; revision=unknown; memory=0; reservation=0; swap=0; cpus=0; pids=0; previous=""; dist_volume=""; node_volume=""; target_dist=""; target_node=""; expected=""
       for argument in "$@"; do
         case "$argument" in
           --name) previous=--name; continue ;;
           --label) previous=--label; continue ;;
+          --memory) previous=memory; continue ;;
+          --memory-reservation) previous=reservation; continue ;;
+          --memory-swap) previous=swap; continue ;;
+          --cpus) previous=cpus; continue ;;
+          --pids-limit) previous=pids; continue ;;
           com.clashcookies.deploy.owner=*) owner="${argument#*=}" ;;
           com.clashcookies.deploy.environment=*) environment="${argument#*=}" ;;
           com.clashcookies.deploy.role=*) role="${argument#*=}" ;;
           com.clashcookies.deploy.attempt=*) attempt="${argument#*=}" ;;
           com.clashcookies.revision=*) revision="${argument#*=}" ;;
           BUILD_SHA=*) revision="${argument#*=}" ;;
-          EXPECTED_BUILD_SHA=*) expected="${argument#*=}" ;;
+          EXPECTED_BUILD_SHA=*) expected="${argument#*=}"; [ "$revision" = unknown ] && revision="${argument#*=}" ;;
         esac
         if [ "$previous" = --name ]; then name="$argument"; fi
+        if [ "$previous" = memory ]; then memory="$argument"; fi
+        if [ "$previous" = reservation ]; then reservation="$argument"; fi
+        if [ "$previous" = swap ]; then swap="$argument"; fi
+        if [ "$previous" = cpus ]; then cpus="$argument"; fi
+        if [ "$previous" = pids ]; then pids="$argument"; fi
         if [ "$previous" = -v ]; then
           case "$argument" in *:/build-dist) dist_volume="${argument%%:/build-dist}" ;; *:/app/node_modules) node_volume="${argument%%:/app/node_modules}" ;; *:/target-dist) target_dist="${argument%%:/target-dist}" ;; *:/target-node-modules) target_node="${argument%%:/target-node-modules}" ;; *:/dist) target_dist="${argument%%:/dist}" ;; *:/node_modules) target_node="${argument%%:/node_modules}" ;; esac
         fi
         [ "$argument" = -v ] && previous=-v || { [ "$argument" != --name ] && [ "$argument" != --label ] && [ "$previous" != --name ] && [ "$previous" != --label ] && previous="$argument"; }
       done
       id="container-${name}"
-      printf 'name=%s\nowner=%s\nenvironment=%s\nrole=%s\nattempt=%s\ndeploy=%s\nrevision=%s\nrunning=true\nexit=0\n' "$name" "$owner" "$environment" "$role" "$attempt" "$( [ "$role" = candidate-build ] && printf candidate-build-only || printf artifact-stage )" "$revision" > "$(container_meta "$id")"
+      memory_bytes="$(case "$memory" in *g|*G) printf '%s' "$(( ${memory%?} * 1073741824 ))" ;; *m|*M) printf '%s' "$(( ${memory%?} * 1048576 ))" ;; *) printf '%s' "$memory" ;; esac)"
+      reservation_bytes="$(case "$reservation" in *g|*G) printf '%s' "$(( ${reservation%?} * 1073741824 ))" ;; *m|*M) printf '%s' "$(( ${reservation%?} * 1048576 ))" ;; *) printf '%s' "$reservation" ;; esac)"
+      swap_bytes="$(case "$swap" in *g|*G) printf '%s' "$(( ${swap%?} * 1073741824 ))" ;; *m|*M) printf '%s' "$(( ${swap%?} * 1048576 ))" ;; *) printf '%s' "$swap" ;; esac)"
+      nano_cpus="$(awk -v value="$cpus" 'BEGIN { printf "%.0f", value * 1000000000 }')"
+      printf 'name=%s\nowner=%s\nenvironment=%s\nrole=%s\nattempt=%s\ndeploy=%s\nrevision=%s\nrunning=true\nexit=0\nmemory=%s\nreservation=%s\nswap=%s\nnano_cpus=%s\npids=%s\n' "$name" "$owner" "$environment" "$role" "$attempt" "$( [ "$role" = candidate-build ] && printf candidate-build-only || printf artifact-stage )" "$revision" "$memory_bytes" "$reservation_bytes" "$swap_bytes" "$nano_cpus" "$pids" > "$(container_meta "$id")"
       if [[ "$*" == *" npm run build "* ]]; then
         printf 'BUILD %s\n' "$*" >> "$DEPLOY_TEST_LOG"
         [ "$DEPLOY_TEST_SCENARIO" != build-failure ] || { sed -i 's/^exit=.*/exit=1/' "$(container_meta "$id")"; printf '%s\n' "$id"; exit 0; }
         [ "$DEPLOY_TEST_SCENARIO" != candidate-exit-137 ] || sed -i 's/^exit=.*/exit=137/' "$(container_meta "$id")"
+        [ "$DEPLOY_TEST_SCENARIO" != candidate-exit-124 ] || sed -i 's/^exit=.*/exit=124/' "$(container_meta "$id")"
         set_volume_ready "$dist_volume" "$revision" || true
         set_volume_ready "$node_volume" "$revision" || true
       elif [[ " $* " == *" /target-dist "* ]] && [[ " $* " == *" /source-dist "* ]]; then
@@ -229,6 +275,7 @@ case "${1:-}" in
         set_volume_ready "$target_node" "$expected" || true
       fi
       printf '%s\n' "$id"
+      if [ "$DEPLOY_TEST_SCENARIO" = interrupted-creation ] && [ "$role" = candidate-build ]; then exit 1; fi
       exit 0
     fi
     if [[ " $* " == *" npm run build "* ]]; then
@@ -314,7 +361,7 @@ case "${1:-}" in
   wait)
     id="$2"
     [ -f "$(container_meta "$id")" ] || exit 1
-    if { [ "$DEPLOY_TEST_SCENARIO" = slow-candidate-build ] || [ "$DEPLOY_TEST_SCENARIO" = health-degradation ]; } && [[ "$id" == *candidate* ]]; then /usr/bin/sleep 5; fi
+    if { [ "$DEPLOY_TEST_SCENARIO" = slow-candidate-build ] || [ "$DEPLOY_TEST_SCENARIO" = health-degradation ] || [ "$DEPLOY_TEST_SCENARIO" = signal-term ] || [ "$DEPLOY_TEST_SCENARIO" = signal-int ] || [ "$DEPLOY_TEST_SCENARIO" = signal-hup ]; } && [[ "$id" == *candidate* ]]; then /usr/bin/sleep 5; fi
     sed -i 's/^running=.*/running=false/' "$(container_meta "$id")"
     printf '%s\n' "$(sed -n 's/^exit=//p' "$(container_meta "$id")")"
     ;;
@@ -333,8 +380,15 @@ case "${1:-}" in
     : > "$DEPLOY_TEST_PROBE_FILE" ;;
   inspect)
     name="${@: -1}"
+    if [ "$DEPLOY_TEST_SCENARIO" = docker-inspection-failure ] && [[ "$*" == *"Config.Labels"* || "$*" == *"HostConfig"* || "$*" == *"State.Running"* ]]; then
+      exit 2
+    fi
     if [ ! -f "$(container_meta "$name")" ] && [ "$name" != clashcookies-app ]; then
       exit 1
+    elif [ -f "$(container_meta "$name")" ] && [[ "$*" == *".Name"* ]]; then
+      printf '/%s|%s|%s|%s|%s|%s|%s\n' "$(sed -n 's/^name=//p' "$(container_meta "$name")")" "$(sed -n 's/^deploy=//p' "$(container_meta "$name")")" "$(sed -n 's/^owner=//p' "$(container_meta "$name")")" "$(sed -n 's/^environment=//p' "$(container_meta "$name")")" "$(sed -n 's/^role=//p' "$(container_meta "$name")")" "$(sed -n 's/^attempt=//p' "$(container_meta "$name")")" "$(sed -n 's/^revision=//p' "$(container_meta "$name")")"
+    elif [ -f "$(container_meta "$name")" ] && [[ "$*" == *"HostConfig.Memory"* ]]; then
+      printf '%s|%s|%s|%s|%s\n' "$(sed -n 's/^memory=//p' "$(container_meta "$name")")" "$(sed -n 's/^reservation=//p' "$(container_meta "$name")")" "$(sed -n 's/^swap=//p' "$(container_meta "$name")")" "$(sed -n 's/^nano_cpus=//p' "$(container_meta "$name")")" "$(sed -n 's/^pids=//p' "$(container_meta "$name")")"
     elif [ -f "$(container_meta "$name")" ] && [[ "$*" == *"Config.Labels"* ]]; then
       printf '%s|%s|%s|%s\n' "$(sed -n 's/^owner=//p' "$(container_meta "$name")")" "$(sed -n 's/^environment=//p' "$(container_meta "$name")")" "$(sed -n 's/^role=//p' "$(container_meta "$name")")" "$(sed -n 's/^attempt=//p' "$(container_meta "$name")")"
     elif [ -f "$(container_meta "$name")" ] && [[ "$*" == *"State.Running"* ]]; then
@@ -389,13 +443,46 @@ cat > "$bin_dir/sleep" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
+cat > "$bin_dir/flock" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+mode="$1"; shift
+[ "$1" = --no-fork ] && shift
+lock_file="$1"; shift
+lock_dir="${lock_file}.fixture-lock"
+[ "$mode" = -n ] || exit 2
+mkdir "$lock_dir" 2>/dev/null || exit 1
+cleanup() { rmdir "$lock_dir" >/dev/null 2>&1 || true; }
+forward() { signal="$1"; kill -s "$signal" "$child" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+trap 'forward TERM' TERM
+trap 'forward INT' INT
+trap 'forward HUP' HUP
+set +e
+"$@" &
+child=$!
+wait "$child"
+status=$?
+set -e
+exit "$status"
+EOF
 chmod +x "$bin_dir"/*
 
 if [ "$scenario" = concurrent-active ]; then printf '%s\n' two > "$state_file"; fi
 if [ "$scenario" = lock-busy ]; then mkdir -p "${root}/deploy.lock"; fi
+if [ "$scenario" = concurrent-stale-lock ]; then
+  mkdir -p "${root}/deploy.lock"
+  printf 'pid=999999\nattempt=dead-attempt\n' > "${root}/deploy.lock/owner"
+fi
 if [ "$scenario" = diagnostic-permissions ]; then mkdir -m 755 "${root}/diagnostics"; fi
 if [ "$scenario" = abandoned-attempt ]; then
-  printf 'name=abandoned-candidate\nowner=clashcookies-deploy\nenvironment=prod\nrole=candidate-build\nattempt=abandoned-attempt\ndeploy=candidate-build-only\nrunning=true\nexit=0\n' > "$container_dir/abandoned-candidate.meta"
+  printf 'name=abandoned-candidate\nowner=clashcookies-deploy\nenvironment=prod\nrole=candidate-build\nattempt=abandoned-attempt\ndeploy=candidate-build-only\nrevision=abandoned-revision\nrunning=true\nexit=0\n' > "$container_dir/abandoned-candidate.meta"
+fi
+if [ "$scenario" = legacy-candidate ]; then
+  printf 'name=%s\nowner=\nenvironment=\nrole=\ncandidate=\nrevision=\nrunning=true\nexit=0\n' "${BUILD_CONTAINER:-clashcookies-prod-candidate-build}" > "$container_dir/legacy-candidate.meta"
+fi
+if [ "$scenario" = partial-labels ]; then
+  printf 'name=%s-partial\nowner=clashcookies-deploy\nenvironment=prod\nrole=candidate-build\nattempt=partial-attempt\ndeploy=candidate-build-only\nrunning=true\nexit=0\n' "${BUILD_CONTAINER:-clashcookies-prod-candidate-build}" > "$container_dir/partial-candidate.meta"
 fi
 if [ "$scenario" = ambiguous-owned-resource ]; then
   printf 'name=ambiguous-candidate\nowner=clashcookies-deploy\nenvironment=prod\nrole=unknown\nattempt=ambiguous-attempt\ndeploy=unknown\nrunning=true\nexit=0\n' > "$container_dir/ambiguous-candidate.meta"
@@ -429,7 +516,7 @@ case "$scenario" in
     rollback_timeout=601
     ;;
   promotion-timeout-rollback-slow)
-    candidate_timeout=1
+    candidate_timeout=3
     artifact_timeout=30
     rollback_timeout=601
     cleanup_overhead=1
@@ -438,6 +525,9 @@ case "$scenario" in
     ;;
   unsafe-deadlines)
     outer_timeout=10
+    ;;
+  malformed-memory)
+    export DEPLOY_CANDIDATE_MEMORY_LIMIT=1024mb
     ;;
 esac
 export DEPLOY_TEST_SCENARIO="$scenario" CANDIDATE_BUILD_TIMEOUT_SECONDS="$candidate_timeout" ARTIFACT_STAGE_TIMEOUT_SECONDS="$artifact_timeout"
@@ -459,10 +549,27 @@ elif [ "$scenario" = cleanup-failure-retry ]; then
   printf 'FIRST_STATUS=%s\n' "$first_status" >> "$output_file"
   DEPLOY_TEST_SCENARIO=candidate-container-cleanup-failure bash "$deploy_script" >> "$output_file" 2>&1
   status=$?
+elif [ "$scenario" = concurrent-stale-lock ]; then
+  bash "$deploy_script" > "${output_file}.one" 2>&1 & first_pid=$!
+  bash "$deploy_script" > "${output_file}.two" 2>&1 & second_pid=$!
+  wait "$first_pid"; first_status=$?
+  wait "$second_pid"; second_status=$?
+  printf 'CONCURRENT_FIRST_STATUS=%s\nCONCURRENT_SECOND_STATUS=%s\n' "$first_status" "$second_status" > "$output_file"
+  cat "${output_file}.one" "${output_file}.two" >> "$output_file"
+  status=0
 elif [[ "$scenario" = signal-term || "$scenario" = signal-int || "$scenario" = signal-hup ]]; then
+  export DEPLOY_LOCK_WRAPPED=1
   bash "$deploy_script" > "$output_file" 2>&1 &
   deploy_pid=$!
-  /usr/bin/sleep 2
+  found_candidate=0
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    for candidate_meta in "$container_dir"/*candidate*.meta; do
+      if [ -f "$candidate_meta" ]; then found_candidate=1; break; fi
+    done
+    [ "$found_candidate" -eq 1 ] && break
+    /usr/bin/sleep 1
+  done
+  /usr/bin/sleep 1
   signal=TERM
   [ "$scenario" != signal-int ] || signal=INT
   [ "$scenario" != signal-hup ] || signal=HUP
