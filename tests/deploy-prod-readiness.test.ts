@@ -24,6 +24,7 @@ type Scenario =
   | "cleanup-failure"
   | "workspace-cleanup-failure"
   | "abandoned-attempt"
+  | "abandoned-artifact"
   | "ambiguous-owned-resource"
   | "unrelated-resource"
   | "insufficient-resources"
@@ -31,6 +32,7 @@ type Scenario =
   | "signal-term"
   | "signal-int"
   | "signal-hup"
+  | "signal-rollback-artifact"
   | "candidate-container-cleanup-failure"
   | "cleanup-failure-retry"
   | "candidate-exit-137"
@@ -299,6 +301,15 @@ describe("version-controlled production deployment readiness", () => {
     expect(output).toContain("CONTAINERS_BEGIN\nCONTAINERS_END");
   });
 
+  it("reconciles an owned abandoned artifact container by its exact revision and role", () => {
+    const output = runScenario("abandoned-artifact");
+    expect(output).toContain("STATUS=0");
+    expect(output).toContain("owned_resource_reconciliation=abandoned_container");
+    expect(output).toContain("role=artifact-stage");
+    expect(output).toContain("revision=old-reviewed-sha");
+    expect(output).toContain("CONTAINERS_BEGIN\nCONTAINERS_END");
+  });
+
   it("refuses ambiguous owned resources and leaves them for an operator", () => {
     const output = runScenario("ambiguous-owned-resource");
     expect(output).toContain("STATUS=1");
@@ -372,4 +383,15 @@ describe("version-controlled production deployment readiness", () => {
       expect(output).toContain("STATE=active:OLD");
     },
   );
+
+  it("cleans an interrupted rollback-artifact container using its registered identity", () => {
+    const output = runScenario("signal-rollback-artifact");
+    expect(output).toMatch(/STATUS=(129|130|143)/);
+    expect(output).toContain("interruption=received");
+    expect(output).toContain("role=artifact-stage");
+    expect(output).toContain("revision=old-reviewed-sha");
+    expect(output).toContain("container_cleanup=verified");
+    expect(output).toContain("CONTAINERS_BEGIN\nCONTAINERS_END");
+    expect(output).toContain("STATE=active:OLD");
+  });
 });

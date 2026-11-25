@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { tmpdir } from "node:os";
@@ -30,6 +30,44 @@ function bashExecutable(): string {
   return process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
 }
 
+function containerIdsByName(name: string): string[] {
+  try {
+    return execFileSync("docker", ["ps", "-aq", "--filter", `name=${name}`], {
+      encoding: "utf8",
+      timeout: 10_000,
+    }).split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function removeContainerByName(name: string): void {
+  for (const id of containerIdsByName(name)) {
+    try {
+      execFileSync("docker", ["rm", "-f", id], { stdio: "ignore", timeout: 15_000 });
+    } catch {
+      // Best effort cleanup must not hide the assertion that failed first.
+    }
+  }
+}
+
+async function waitForContainerName(name: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (containerIdsByName(name).length > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for container ${name}`);
+}
+
+function removeVolume(name: string): void {
+  try {
+    execFileSync("docker", ["volume", "rm", "-f", name], { stdio: "ignore", timeout: 15_000 });
+  } catch {
+    // Best effort cleanup must not hide the assertion that failed first.
+  }
+}
+
 describe("real Docker deployment artifact smoke", () => {
   it("invokes the production wrapper and removes its daemon-managed candidate at the deadline", () => {
     if (!dockerAvailable()) {
@@ -58,7 +96,7 @@ describe("real Docker deployment artifact smoke", () => {
     write("package.json", JSON.stringify({
       scripts: { build: "sleep 30", start: "node server.js", "start:runtime": "node server.js" },
     }));
-    write("server.js", "require('http').createServer((req,res)=>{res.writeHead(200);res.end('ok');}).listen(8080,'0.0.0.0');\n");
+    write("server.js", "const fs=require('fs'); require('http').createServer((req,res)=>{const degraded=fs.existsSync('/app/degrade');res.writeHead(degraded?503:200);res.end(degraded?'degraded':'ok');}).listen(8080,'0.0.0.0');\n");
     write("dist/ClashCookies.js", "old-build\n");
     write("node_modules/.fixture", "old-dependency\n");
     write("ops/deploy/ensure-yarn-deps.sh", "#!/usr/bin/env bash\nset -euo pipefail\n");
@@ -95,7 +133,8 @@ describe("real Docker deployment artifact smoke", () => {
       execFileSync("docker", ["run", "-d", "--name", unrelatedContainer, image, "sleep", "300"], { encoding: "utf8", timeout: 30_000 });
       execFileSync(bashExecutable(), ["-lc", `for i in $(seq 1 30); do curl --fail --silent http://127.0.0.1:${port}/healthz && exit 0; sleep 1; done; exit 1`], { timeout: 35_000 });
 
-      const output = execFileSync(bashExecutable(), [deployScript], {
+      const startedAt = Date.now();
+      const result = spawnSync(bashExecutable(), [deployScript], {
         cwd: fixture,
         encoding: "utf8",
         timeout: 120_000,
@@ -125,8 +164,16 @@ describe("real Docker deployment artifact smoke", () => {
           DEPLOY_MAX_HOST_LOAD_PER_CPU_PERCENT: "100",
         },
       });
-      expect(output).toContain("candidate_build=failed reason=build_deadline");
+      const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(output).toContain("candidate_build=failed reason=build_deadline status=124");
+      expect(output).toContain("container_started");
+      expect(output).toContain("role=candidate-build");
       expect(output).toContain("container_cleanup=verified");
+      expect(output).toMatch(new RegExp(`container_cleanup=verified attempt=[^ ]+ role=candidate-build revision=${newSha} name=${buildContainer}`));
+      expect(output).toContain("container_waiter=reaped");
+      expect(Date.now() - startedAt).toBeLessThan(30_000);
       const candidates = execFileSync("docker", [
         "ps", "-aq",
         "--filter", "label=com.clashcookies.deploy.owner=clashcookies-deploy",
@@ -136,9 +183,9 @@ describe("real Docker deployment artifact smoke", () => {
       expect(execFileSync("docker", ["inspect", "--format", "{{.State.Running}}", normalContainer], { encoding: "utf8" }).trim()).toBe("true");
       expect(execFileSync("docker", ["inspect", "--format", "{{.State.Running}}", unrelatedContainer], { encoding: "utf8" }).trim()).toBe("true");
     } finally {
-      for (const container of [normalContainer, unrelatedContainer, buildContainer]) {
-        try { execFileSync("docker", ["rm", "-f", container], { stdio: "ignore", timeout: 15_000 }); } catch { /* best effort */ }
-      }
+      removeContainerByName(normalContainer);
+      removeContainerByName(unrelatedContainer);
+      removeContainerByName(buildContainer);
       for (const volume of [
         `clashcookies-prod-build-${newSha}`,
         `clashcookies-prod-build-dist-${newSha}`,
@@ -146,8 +193,147 @@ describe("real Docker deployment artifact smoke", () => {
         `clashcookies-prod-artifact-${oldSha}-rollback-dist`,
         `clashcookies-prod-artifact-${oldSha}-rollback-node-modules`,
       ]) {
-        try { execFileSync("docker", ["volume", "rm", "-f", volume], { stdio: "ignore", timeout: 15_000 }); } catch { /* best effort */ }
+        removeVolume(volume);
       }
+      rmSync(fixture, { recursive: true, force: true });
+      rmSync(origin, { recursive: true, force: true });
+    }
+  }, 180_000);
+
+  it("contains a health-aborted long-running candidate promptly", async () => {
+    if (!dockerAvailable()) {
+      requireDockerOrSkip();
+      return;
+    }
+
+    const suffix = `${process.pid}-${Date.now()}`;
+    const fixture = mkdtempSync(join(tmpdir(), "clashcookies-wrapper-health-abort-"));
+    const origin = `${fixture}-origin.git`;
+    const normalContainer = `fb027-health-production-${suffix}`;
+    const unrelatedContainer = `fb027-health-unrelated-${suffix}`;
+    const buildContainer = `fb027-health-candidate-${suffix}`;
+    const port = String(18185 + (process.pid % 100));
+    const deployScript = join(process.cwd(), "ops", "deploy", "deploy-prod.sh");
+    const write = (path: string, content: string) => writeFileSync(join(fixture, path), content);
+    const git = (args: string[]) => execFileSync("git", ["-C", fixture, ...args], { encoding: "utf8" });
+    let oldSha = "";
+    let newSha = "";
+    let wrapper: ReturnType<typeof spawn> | undefined;
+
+    mkdirSync(join(fixture, "dist"), { recursive: true });
+    mkdirSync(join(fixture, "node_modules"), { recursive: true });
+    mkdirSync(join(fixture, "ops", "deploy"), { recursive: true });
+    write("docker-compose.yml", "services:\n  app:\n    environment:\n      DATABASE_URL: postgresql://fixture\n");
+    write(".env", "DISCORD_TOKEN=fixture\n");
+    write("package.json", JSON.stringify({
+      scripts: { build: "sleep 30", start: "node server.js", "start:runtime": "node server.js" },
+    }));
+    write("server.js", "const fs=require('fs'); require('http').createServer((req,res)=>{const degraded=fs.existsSync('/app/degrade');res.writeHead(degraded?503:200);res.end(degraded?'degraded':'ok');}).listen(8080,'0.0.0.0');\n");
+    write("dist/ClashCookies.js", "old-build\n");
+    write("node_modules/.fixture", "old-dependency\n");
+    write("ops/deploy/ensure-yarn-deps.sh", "#!/usr/bin/env bash\nset -euo pipefail\n");
+    write("ops/deploy/container-start.sh", "#!/usr/bin/env bash\nset -euo pipefail\nnpm run start\n");
+    write("resources", "mem_available_mib=8192\nswap_total_mib=0\nswap_free_mib=0\nload_per_cpu_percent=0\nhost_pid_max=50000\nhost_pid_count=100\n");
+    execFileSync("chmod", ["+x", join(fixture, "ops/deploy/ensure-yarn-deps.sh"), join(fixture, "ops/deploy/container-start.sh")]);
+
+    try {
+      execFileSync("git", ["init", "-b", "main", fixture], { stdio: "ignore" });
+      git(["config", "user.email", "fb027@example.invalid"]);
+      git(["config", "user.name", "FB-027 test"]);
+      git(["add", "."]);
+      git(["commit", "-m", "old runtime"]);
+      oldSha = git(["rev-parse", "HEAD"]).trim();
+      execFileSync("git", ["init", "--bare", origin], { stdio: "ignore" });
+      git(["remote", "add", "origin", origin]);
+      git(["push", "-u", "origin", "main"]);
+      write("build-marker.txt", "new-build\n");
+      git(["add", "."]);
+      git(["commit", "-m", "new candidate"]);
+      git(["push", "origin", "main"]);
+      newSha = git(["rev-parse", "HEAD"]).trim();
+      git(["reset", "--hard", oldSha]);
+
+      const image = process.env.DEPLOY_TEST_IMAGE ?? "node:20-bookworm";
+      execFileSync("docker", ["pull", image], { stdio: "ignore", timeout: 300_000 });
+      execFileSync("docker", [
+        "run", "-d", "--name", normalContainer,
+        "--label", "com.clashcookies.runtime=active",
+        "--label", "com.clashcookies.environment=prod",
+        "--label", "com.clashcookies.revision=old",
+        "-p", `127.0.0.1:${port}:8080`, "-v", `${fixture}:/app`, image, "node", "/app/server.js",
+      ], { encoding: "utf8", timeout: 30_000 });
+      execFileSync("docker", ["run", "-d", "--name", unrelatedContainer, image, "sleep", "300"], { encoding: "utf8", timeout: 30_000 });
+      execFileSync(bashExecutable(), ["-lc", `for i in $(seq 1 30); do curl --fail --silent http://127.0.0.1:${port}/healthz && exit 0; sleep 1; done; exit 1`], { timeout: 35_000 });
+
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const startedAt = Date.now();
+      wrapper = spawn(bashExecutable(), [deployScript], {
+        cwd: fixture,
+        env: {
+          ...process.env,
+          APP_DIR: fixture,
+          NORMAL_CONTAINER: normalContainer,
+          BUILD_CONTAINER: buildContainer,
+          NORMAL_PORT: port,
+          PROD_NETWORK: "bridge",
+          TARGET_REF: "origin/main",
+          DEPLOY_DIAGNOSTIC_DIR: join(fixture, "diagnostics"),
+          DEPLOY_RESOURCE_ADMISSION_FILE: join(fixture, "resources"),
+          CANDIDATE_BUILD_TIMEOUT_SECONDS: "30",
+          ARTIFACT_STAGE_TIMEOUT_SECONDS: "5",
+          PROMOTION_HEALTH_TIMEOUT_SECONDS: "5",
+          ROLLBACK_HEALTH_TIMEOUT_SECONDS: "5",
+          CLEANUP_OVERHEAD_SECONDS: "30",
+          DEPLOYMENT_OVERHEAD_SECONDS: "30",
+          DEPLOY_OUTER_TIMEOUT_SECONDS: "120",
+          DEPLOY_RESERVED_MEMORY_MIB: "128",
+          DEPLOY_CANDIDATE_MEMORY_LIMIT: "256m",
+          DEPLOY_CANDIDATE_MEMORY_RESERVATION: "128m",
+          DEPLOY_CANDIDATE_MEMORY_SWAP_LIMIT: "256m",
+          DEPLOY_MIN_FREE_PIDS: "1",
+          DEPLOY_MAX_HOST_SWAP_USED_PERCENT: "100",
+          DEPLOY_MAX_HOST_LOAD_PER_CPU_PERCENT: "100",
+          DEPLOY_HEALTH_DEGRADATION_FAILURES: "1",
+          HEALTH_POLL_INTERVAL_SECONDS: "1",
+          DEPLOY_CONTAINER_OPERATION_TIMEOUT_SECONDS: "3",
+          DEPLOY_CONTAINER_STOP_TIMEOUT_SECONDS: "1",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      wrapper.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk.toString()));
+      wrapper.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk.toString()));
+      await waitForContainerName(buildContainer, 30_000);
+      const degradedAt = Date.now();
+      write("degrade", "1\n");
+      const status = await new Promise<number | null>((resolve) => {
+        wrapper?.once("close", (code) => resolve(code));
+        wrapper?.once("error", () => resolve(null));
+      });
+      const output = `${stdout.join("")}\n${stderr.join("")}`;
+      expect(status).toBe(1);
+      expect(output).toContain("container_abort=health_degradation");
+      expect(output).toContain("candidate_build=failed reason=build_abort_or_cleanup status=125");
+      expect(output).toContain("container_cleanup=verified role=candidate-build");
+      expect(output).toMatch(new RegExp(`container_cleanup=verified attempt=[^ ]+ role=candidate-build revision=${newSha} name=${buildContainer}`));
+      expect(output).toContain("container_waiter=reaped");
+      expect(Date.now() - degradedAt).toBeLessThan(10_000);
+      expect(containerIdsByName(buildContainer)).toHaveLength(0);
+      expect(execFileSync("docker", ["inspect", "--format", "{{.State.Running}}", normalContainer], { encoding: "utf8" }).trim()).toBe("true");
+      expect(execFileSync("docker", ["inspect", "--format", "{{.State.Running}}", unrelatedContainer], { encoding: "utf8" }).trim()).toBe("true");
+      expect(Date.now() - startedAt).toBeLessThan(45_000);
+    } finally {
+      if (wrapper && wrapper.exitCode === null) wrapper.kill("SIGKILL");
+      removeContainerByName(normalContainer);
+      removeContainerByName(unrelatedContainer);
+      removeContainerByName(buildContainer);
+      for (const volume of [
+        `clashcookies-prod-build-${newSha}`,
+        `clashcookies-prod-build-dist-${newSha}`,
+        `clashcookies-prod-build-workspace-${newSha}`,
+        `clashcookies-prod-artifact-${oldSha}-rollback-dist`,
+        `clashcookies-prod-artifact-${oldSha}-rollback-node-modules`,
+      ]) removeVolume(volume);
       rmSync(fixture, { recursive: true, force: true });
       rmSync(origin, { recursive: true, force: true });
     }

@@ -65,6 +65,12 @@ BUILD_DIST_CREATED="0"
 ACTIVE_CONTAINER_ID=""
 CANDIDATE_CONTAINER_ID=""
 ARTIFACT_CONTAINER_ID=""
+CANDIDATE_CONTAINER_ATTEMPT=""
+CANDIDATE_CONTAINER_REVISION=""
+CANDIDATE_CONTAINER_NAME=""
+ARTIFACT_CONTAINER_ATTEMPT=""
+ARTIFACT_CONTAINER_REVISION=""
+ARTIFACT_CONTAINER_NAME=""
 ARTIFACT_STAGE_COUNTER="0"
 CURRENT_CONTAINER_ROLE=""
 CURRENT_CONTAINER_LOG=""
@@ -401,7 +407,14 @@ terminate_owned_container() {
   records="$(docker_bounded ps -aq --filter "id=${container_id}" 2>/dev/null)" || { log "container_cleanup=failed reason=removal_verification_unknown role=${role} container=${container_id}" >&2; return 1; }
   [ -z "$records" ] || { log "container_cleanup=failed reason=container_remains role=${role} container=${container_id}" >&2; return 1; }
   [ "$operation_status" -eq 0 ] || { log "container_cleanup=failed reason=bounded_operation_status status=${operation_status} role=${role} container=${container_id}" >&2; return 1; }
-  log "container_cleanup=verified role=${role} container=${container_id} reason=${reason}"
+  log "container_cleanup=verified attempt=${expected_attempt} role=${role} revision=${expected_revision} name=${expected_name:-unknown} container=${container_id} reason=${reason}"
+}
+
+reap_waiter_after_containment() {
+  local waiter_pid="$1"
+  kill -KILL "$waiter_pid" >/dev/null 2>&1 || true
+  wait "$waiter_pid" >/dev/null 2>&1 || true
+  log "container_waiter=reaped pid=${waiter_pid}"
 }
 
 intent_field() { sed -n "s/^$2=//p" "$1" | head -n1; }
@@ -443,10 +456,10 @@ reconcile_abandoned_owned_containers() {
   records="$(docker_bounded ps -a --format '{{.ID}}|{{.Names}}|{{.Label "com.clashcookies.deploy"}}|{{.Label "com.clashcookies.deploy.owner"}}|{{.Label "com.clashcookies.deploy.environment"}}|{{.Label "com.clashcookies.deploy.role"}}|{{.Label "com.clashcookies.deploy.attempt"}}|{{.Label "com.clashcookies.deploy.revision"}}' 2>/dev/null)" || fatal "owned_resource_reconciliation=failed reason=container_enumeration_unknown"
   while IFS='|' read -r container_id name deploy owner environment role attempt revision; do
     [ -n "$container_id" ] || continue
-    if [[ "$name" = "$BUILD_CONTAINER"* ]] && { [ "$owner" != "$DEPLOY_OWNER_LABEL" ] || [ "$environment" != "$DEPLOY_ENVIRONMENT_LABEL" ] || [ "$role" != candidate-build ] || [ "$deploy" != candidate-build-only ] || [ -z "$attempt" ] || [ -z "$revision" ]; }; then
+    if { [ "$name" = "$BUILD_CONTAINER" ] || [[ "$name" = "$BUILD_CONTAINER"-* && "$name" != "$BUILD_CONTAINER-artifact-"* ]]; } && { [ "$owner" != "$DEPLOY_OWNER_LABEL" ] || [ "$environment" != "$DEPLOY_ENVIRONMENT_LABEL" ] || [ "$role" != candidate-build ] || [ "$deploy" != candidate-build-only ] || [ -z "$attempt" ] || [ -z "$revision" ]; }; then
       fatal "owned_resource_reconciliation=denied reason=legacy_candidate_ambiguous container=${container_id} name=${name}"
     fi
-    if [ "$owner" = "$DEPLOY_OWNER_LABEL" ] || [[ "$name" = "$BUILD_CONTAINER"* ]]; then
+    if [ "$owner" = "$DEPLOY_OWNER_LABEL" ] || [[ "$name" = "$BUILD_CONTAINER"-* ]]; then
       [ "$owner" = "$DEPLOY_OWNER_LABEL" ] && [ "$environment" = "$DEPLOY_ENVIRONMENT_LABEL" ] && [ "$role" = candidate-build -o "$role" = artifact-stage ] && [ "$deploy" = candidate-build-only -o "$deploy" = artifact-stage ] && [ -n "$attempt" ] && [ -n "$revision" ] || fatal "owned_resource_reconciliation=denied reason=ambiguous_container container=${container_id} name=${name}"
       log "owned_resource_reconciliation=abandoned_container attempt=${attempt} role=${role} name=${name} id=${container_id}"
       terminate_owned_container "$container_id" "$role" abandoned "$attempt" "$revision" "$name" || fatal "owned_resource_reconciliation=failed reason=container_cleanup container=${container_id} operator_intervention_required"
@@ -562,9 +575,32 @@ run_owned_container() {
     return "$create_status"
   fi
   [ -n "$container_id" ] || { reconcile_container_intent "$CURRENT_CONTAINER_INTENT"; return 1; }
-  if [ "$role" = "candidate-build" ]; then CANDIDATE_CONTAINER_ID="$container_id"; else ARTIFACT_CONTAINER_ID="$container_id"; fi
+  if [ "$role" = "candidate-build" ]; then
+    CANDIDATE_CONTAINER_ID="$container_id"
+    CANDIDATE_CONTAINER_ATTEMPT="$DEPLOY_ATTEMPT_ID"
+    CANDIDATE_CONTAINER_REVISION="$container_revision"
+    CANDIDATE_CONTAINER_NAME="$container_name"
+  else
+    ARTIFACT_CONTAINER_ID="$container_id"
+    ARTIFACT_CONTAINER_ATTEMPT="$DEPLOY_ATTEMPT_ID"
+    ARTIFACT_CONTAINER_REVISION="$container_revision"
+    ARTIFACT_CONTAINER_NAME="$container_name"
+  fi
   assert_container_limits "$container_id" || {
-    terminate_owned_container "$container_id" "$role" unenforceable_limits "" "$container_revision" "$container_name" || true
+    if terminate_owned_container "$container_id" "$role" unenforceable_limits "$DEPLOY_ATTEMPT_ID" "$container_revision" "$container_name"; then
+      if [ "$role" = "candidate-build" ]; then
+        CANDIDATE_CONTAINER_ID=""
+        CANDIDATE_CONTAINER_ATTEMPT=""
+        CANDIDATE_CONTAINER_REVISION=""
+        CANDIDATE_CONTAINER_NAME=""
+      else
+        ARTIFACT_CONTAINER_ID=""
+        ARTIFACT_CONTAINER_ATTEMPT=""
+        ARTIFACT_CONTAINER_REVISION=""
+        ARTIFACT_CONTAINER_NAME=""
+      fi
+      rm -f -- "$CURRENT_CONTAINER_INTENT"
+    fi
     return 125
   }
   rm -f -- "$CURRENT_CONTAINER_INTENT"
@@ -599,21 +635,49 @@ run_owned_container() {
     elapsed=$((SECONDS - start_seconds))
   done
   if [ "$timed_out" = "1" ] || [ "$health_abort" = "1" ]; then
-    kill "$wait_pid" >/dev/null 2>&1 || true
-    wait "$wait_pid" >/dev/null 2>&1 || true
     if [ "$health_abort" = "1" ]; then
       log "container_abort=health_degradation attempt=${DEPLOY_ATTEMPT_ID} role=${role} container=${container_id}" >&2
-      terminate_owned_container "$container_id" "$role" health_degradation || return 125
-      [ "$role" = "candidate-build" ] && CANDIDATE_CONTAINER_ID="" || ARTIFACT_CONTAINER_ID=""
+      terminate_owned_container "$container_id" "$role" health_degradation "$DEPLOY_ATTEMPT_ID" "$container_revision" "$container_name" || {
+        reap_waiter_after_containment "$wait_pid"
+        return 125
+      }
+      reap_waiter_after_containment "$wait_pid"
+      if [ "$role" = "candidate-build" ]; then
+        CANDIDATE_CONTAINER_ID=""
+        CANDIDATE_CONTAINER_ATTEMPT=""
+        CANDIDATE_CONTAINER_REVISION=""
+        CANDIDATE_CONTAINER_NAME=""
+      else
+        ARTIFACT_CONTAINER_ID=""
+        ARTIFACT_CONTAINER_ATTEMPT=""
+        ARTIFACT_CONTAINER_REVISION=""
+        ARTIFACT_CONTAINER_NAME=""
+      fi
+      LAST_CONTAINER_STATUS_KIND=wrapper_abort
       return 125
     fi
     log "container_abort=deadline attempt=${DEPLOY_ATTEMPT_ID} role=${role} container=${container_id} timeout_seconds=${timeout_seconds}" >&2
-    terminate_owned_container "$container_id" "$role" deadline || return 125
-    [ "$role" = "candidate-build" ] && CANDIDATE_CONTAINER_ID="" || ARTIFACT_CONTAINER_ID=""
+    terminate_owned_container "$container_id" "$role" deadline "$DEPLOY_ATTEMPT_ID" "$container_revision" "$container_name" || {
+      reap_waiter_after_containment "$wait_pid"
+      return 125
+    }
+    reap_waiter_after_containment "$wait_pid"
+    if [ "$role" = "candidate-build" ]; then
+      CANDIDATE_CONTAINER_ID=""
+      CANDIDATE_CONTAINER_ATTEMPT=""
+      CANDIDATE_CONTAINER_REVISION=""
+      CANDIDATE_CONTAINER_NAME=""
+    else
+      ARTIFACT_CONTAINER_ID=""
+      ARTIFACT_CONTAINER_ATTEMPT=""
+      ARTIFACT_CONTAINER_REVISION=""
+      ARTIFACT_CONTAINER_NAME=""
+    fi
     LAST_CONTAINER_STATUS_KIND="wrapper_deadline"
     return 124
   fi
   wait "$wait_pid" >/dev/null 2>&1 || true
+  log "container_waiter=reaped pid=${wait_pid}"
   wait_status="$(sed -n 's/^client_status=//p' "$wait_file" | head -n1)"
   exit_status="$(sed -n 's/^container_exit=//p' "$wait_file" | head -n1)"
   wait_status="${wait_status:-125}"
@@ -621,8 +685,35 @@ run_owned_container() {
   diagnostics_status=0
   docker_bounded inspect --format 'status={{.State.Status}} exit_status={{.State.ExitCode}}' "$container_id" >>"$log_file" 2>&1 || diagnostics_status=1
   docker_bounded logs --tail 400 "$container_id" >>"$log_file" 2>&1 || diagnostics_status=1
-  if ! terminate_owned_container "$container_id" "$role" completed "" "$container_revision" "$container_name"; then return 125; fi
-  if [ "$role" = "candidate-build" ]; then CANDIDATE_CONTAINER_ID=""; else ARTIFACT_CONTAINER_ID=""; fi
+  if [ "$wait_status" -eq 124 ]; then
+    log "container_abort=deadline attempt=${DEPLOY_ATTEMPT_ID} role=${role} container=${container_id} timeout_seconds=${timeout_seconds}" >&2
+    terminate_owned_container "$container_id" "$role" deadline "$DEPLOY_ATTEMPT_ID" "$container_revision" "$container_name" || return 125
+    if [ "$role" = "candidate-build" ]; then
+      CANDIDATE_CONTAINER_ID=""
+      CANDIDATE_CONTAINER_ATTEMPT=""
+      CANDIDATE_CONTAINER_REVISION=""
+      CANDIDATE_CONTAINER_NAME=""
+    else
+      ARTIFACT_CONTAINER_ID=""
+      ARTIFACT_CONTAINER_ATTEMPT=""
+      ARTIFACT_CONTAINER_REVISION=""
+      ARTIFACT_CONTAINER_NAME=""
+    fi
+    LAST_CONTAINER_STATUS_KIND="wrapper_deadline"
+    return 124
+  fi
+  if ! terminate_owned_container "$container_id" "$role" completed "$DEPLOY_ATTEMPT_ID" "$container_revision" "$container_name"; then return 125; fi
+  if [ "$role" = "candidate-build" ]; then
+    CANDIDATE_CONTAINER_ID=""
+    CANDIDATE_CONTAINER_ATTEMPT=""
+    CANDIDATE_CONTAINER_REVISION=""
+    CANDIDATE_CONTAINER_NAME=""
+  else
+    ARTIFACT_CONTAINER_ID=""
+    ARTIFACT_CONTAINER_ATTEMPT=""
+    ARTIFACT_CONTAINER_REVISION=""
+    ARTIFACT_CONTAINER_NAME=""
+  fi
   rm -f -- "$CURRENT_CONTAINER_INTENT"
   [ "$diagnostics_status" -eq 0 ] || return 125
   [ "$wait_status" -eq 0 ] || { LAST_CONTAINER_STATUS_KIND=wrapper_status; return "$wait_status"; }
@@ -1091,11 +1182,14 @@ cleanup_owned_containers_on_exit() {
   if [ -n "$CANDIDATE_CONTAINER_ID" ]; then
     log "cleanup_owned_containers=candidate_begin id=${CANDIDATE_CONTAINER_ID}"
     set +e
-    terminate_owned_container "$CANDIDATE_CONTAINER_ID" candidate-build interruption
+    terminate_owned_container "$CANDIDATE_CONTAINER_ID" candidate-build interruption "$CANDIDATE_CONTAINER_ATTEMPT" "$CANDIDATE_CONTAINER_REVISION" "$CANDIDATE_CONTAINER_NAME"
     local terminate_status=$?
     set -e
     if [ "$terminate_status" -eq 0 ]; then
       CANDIDATE_CONTAINER_ID=""
+      CANDIDATE_CONTAINER_ATTEMPT=""
+      CANDIDATE_CONTAINER_REVISION=""
+      CANDIDATE_CONTAINER_NAME=""
       [ -z "$CURRENT_CONTAINER_INTENT" ] || rm -f -- "$CURRENT_CONTAINER_INTENT"
     else
       cleanup_status=1
@@ -1103,11 +1197,14 @@ cleanup_owned_containers_on_exit() {
   fi
   if [ -n "$ARTIFACT_CONTAINER_ID" ]; then
     set +e
-    terminate_owned_container "$ARTIFACT_CONTAINER_ID" artifact-stage interruption
+    terminate_owned_container "$ARTIFACT_CONTAINER_ID" artifact-stage interruption "$ARTIFACT_CONTAINER_ATTEMPT" "$ARTIFACT_CONTAINER_REVISION" "$ARTIFACT_CONTAINER_NAME"
     terminate_status=$?
     set -e
     if [ "$terminate_status" -eq 0 ]; then
       ARTIFACT_CONTAINER_ID=""
+      ARTIFACT_CONTAINER_ATTEMPT=""
+      ARTIFACT_CONTAINER_REVISION=""
+      ARTIFACT_CONTAINER_NAME=""
       [ -z "$CURRENT_CONTAINER_INTENT" ] || rm -f -- "$CURRENT_CONTAINER_INTENT"
     else
       cleanup_status=1
@@ -1359,6 +1456,8 @@ if [ "${DEPLOY_PROD_ARTIFACT_TEST_MODE:-0}" = "1" ]; then
   [ "$#" -eq 5 ] || fatal "artifact_test_requires_source_dist_source_node_modules_target_dist_target_node_modules_revision"
   NEW_SHA="$5"
   DIAGNOSTIC_DIR="${DEPLOY_DIAGNOSTIC_DIR:-${TMPDIR:-/tmp}/clashcookies-artifact-test-$$}"
+  mkdir -p "$DEPLOY_INTENT_DIR"
+  chmod 700 "$DEPLOY_INTENT_DIR"
   validate_private_directory "$DIAGNOSTIC_DIR"
   copy_artifacts_to_volumes "$@"
   verify_artifact_volumes "$3" "$4" "$5"

@@ -362,6 +362,7 @@ case "${1:-}" in
     id="$2"
     [ -f "$(container_meta "$id")" ] || exit 1
     if { [ "$DEPLOY_TEST_SCENARIO" = slow-candidate-build ] || [ "$DEPLOY_TEST_SCENARIO" = health-degradation ] || [ "$DEPLOY_TEST_SCENARIO" = signal-term ] || [ "$DEPLOY_TEST_SCENARIO" = signal-int ] || [ "$DEPLOY_TEST_SCENARIO" = signal-hup ]; } && [[ "$id" == *candidate* ]]; then /usr/bin/sleep 5; fi
+    if [ "$DEPLOY_TEST_SCENARIO" = signal-rollback-artifact ] && [[ "$id" == *artifact* ]]; then /usr/bin/sleep 5; fi
     sed -i 's/^running=.*/running=false/' "$(container_meta "$id")"
     printf '%s\n' "$(sed -n 's/^exit=//p' "$(container_meta "$id")")"
     ;;
@@ -478,6 +479,10 @@ if [ "$scenario" = diagnostic-permissions ]; then mkdir -m 755 "${root}/diagnost
 if [ "$scenario" = abandoned-attempt ]; then
   printf 'name=abandoned-candidate\nowner=clashcookies-deploy\nenvironment=prod\nrole=candidate-build\nattempt=abandoned-attempt\ndeploy=candidate-build-only\nrevision=abandoned-revision\nrunning=true\nexit=0\n' > "$container_dir/abandoned-candidate.meta"
 fi
+if [ "$scenario" = abandoned-artifact ]; then
+  artifact_name="${BUILD_CONTAINER:-clashcookies-prod-candidate-build}-artifact-abandoned-attempt-1"
+  printf 'name=%s\nowner=clashcookies-deploy\nenvironment=prod\nrole=artifact-stage\nattempt=abandoned-artifact-attempt\ndeploy=artifact-stage\nrevision=old-reviewed-sha\nrunning=true\nexit=0\n' "$artifact_name" > "$container_dir/abandoned-artifact.meta"
+fi
 if [ "$scenario" = legacy-candidate ]; then
   printf 'name=%s\nowner=\nenvironment=\nrole=\ncandidate=\nrevision=\nrunning=true\nexit=0\n' "${BUILD_CONTAINER:-clashcookies-prod-candidate-build}" > "$container_dir/legacy-candidate.meta"
 fi
@@ -506,7 +511,7 @@ case "$scenario" in
   slow-candidate-build)
     candidate_timeout=1
     ;;
-  health-degradation|signal-term|signal-int|signal-hup)
+  health-degradation|signal-term|signal-int|signal-hup|signal-rollback-artifact)
     candidate_timeout=30
     ;;
   cold-start)
@@ -557,18 +562,35 @@ elif [ "$scenario" = concurrent-stale-lock ]; then
   printf 'CONCURRENT_FIRST_STATUS=%s\nCONCURRENT_SECOND_STATUS=%s\n' "$first_status" "$second_status" > "$output_file"
   cat "${output_file}.one" "${output_file}.two" >> "$output_file"
   status=0
-elif [[ "$scenario" = signal-term || "$scenario" = signal-int || "$scenario" = signal-hup ]]; then
+elif [[ "$scenario" = signal-term || "$scenario" = signal-int || "$scenario" = signal-hup || "$scenario" = signal-rollback-artifact ]]; then
   export DEPLOY_LOCK_WRAPPED=1
   bash "$deploy_script" > "$output_file" 2>&1 &
   deploy_pid=$!
   found_candidate=0
-  for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    for candidate_meta in "$container_dir"/*candidate*.meta; do
-      if [ -f "$candidate_meta" ]; then found_candidate=1; break; fi
+  poll_attempts=10
+  [ "$scenario" != signal-rollback-artifact ] || poll_attempts=60
+  for attempt in $(seq 1 "$poll_attempts"); do
+    candidate_glob="$container_dir/*candidate*.meta"
+    [ "$scenario" != signal-rollback-artifact ] || candidate_glob="$container_dir/*artifact*.meta"
+    for candidate_meta in $candidate_glob; do
+      [ -f "$candidate_meta" ] || continue
+      if [ "$scenario" = signal-rollback-artifact ] && ! grep -qx 'revision=old-reviewed-sha' "$candidate_meta"; then continue; fi
+      found_candidate=1
+      break
     done
     [ "$found_candidate" -eq 1 ] && break
     /usr/bin/sleep 1
   done
+  [ "$found_candidate" -eq 1 ] || {
+    printf 'SIGNAL_TARGET_NOT_FOUND=%s\n' "$scenario" >> "$output_file"
+    kill -s TERM "$deploy_pid" >/dev/null 2>&1 || true
+    wait "$deploy_pid"
+    status=$?
+    set -e
+    printf 'STATUS=%s\n' "$status"
+    printf 'OUTPUT_BEGIN\n'; cat "$output_file"; printf 'OUTPUT_END\n'
+    exit 0
+  }
   /usr/bin/sleep 1
   signal=TERM
   [ "$scenario" != signal-int ] || signal=INT
