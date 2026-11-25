@@ -9,10 +9,11 @@ Project handoff and priorities for this repo (`ClashCookies`):
 - Never commit directly to `main` or `dev`.
 - Keep commits small, scoped, and conventional (`feat`, `fix`, `refactor`, `test`, `docs`, `chore`).
 - Codex completes and publishes each assigned feature slice without a separate owner publication handoff, following the [canonical workflow](ai-development-workflow.md):
-  - run applicable local typecheck/tests and report any unavailable CI-only evidence
+  - run targeted local tests of changed and likely affected behavior, applicable typecheck/changed-file lint and diff checks; defer full test/lint/build to CI by default, with risk-justified or explicitly requested exceptions
   - write `.git/AI_COMMIT_MSG` and `.git/AI_PR_BODY_CUSTOM.md`
   - run `bash ./scripts/commit-feature.sh && gh pr edit --body-file .git/AI_PR_BODY_CUSTOM.md` (use the verified actual PR number in `gh pr edit` when needed)
-  - verify and report the PR URL, pushed SHA, custom description and validation status; do not bypass freshness/hooks or merge/deploy
+  - verify and immediately report the PR URL, pushed SHA, custom description, targeted results/limitations and current CI status; do not wait for remote CI unless explicitly requested or bypass freshness/hooks or merge/deploy
+  - ChatGPT reviews in parallel with CI and sends corrections on the same PR without waiting for superseded runs; require independent review and green required CI at the exact final head before owner merge approval
 - Avoid destructive git operations unless explicitly requested.
 - **Standing documentation-only merge approval (2026-11-12):** For changes strictly limited to documentation, roadmap/vision/priorities, policy decisions, or roadmap-progress reconciliation, reuse an appropriate feature branch/PR or create one targeting `dev`, review the actual GitHub diff and mergeability/CI/review state, and **merge without requesting separate user approval**. Keep the PR audit trail; never commit directly to `dev` or `main`. Validate doc formatting and agreement vs proposal vs shipped status; do not run unrelated code tests.
 - **Code-changing boundary:** That standing approval does not extend to application code, database schema/migrations, runtime configuration, deployment/infrastructure, or any production/currency issuance/fulfillment operation. These still require explicit user approval to merge or execute. Never promote `dev` to `main` implicitly.
