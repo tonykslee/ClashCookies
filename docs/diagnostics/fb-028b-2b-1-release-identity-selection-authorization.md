@@ -1,6 +1,6 @@
 # FB-028B-2b-1 — Release Identity, Exact Selection, and Authorization Foundation
 
-Status: implemented repository contract; production authority unavailable
+Status: identity/selection contract merged; authorization-only verifier boundary implemented on the feature branch; production authority unavailable
 
 ## Scope
 
@@ -38,7 +38,11 @@ The `--selection-request` command exercised by the non-production workflow emits
 
 The implementation defines the future authorization binding and lifecycle fields: forward versus recovery scope, exact identity binding, issuance/expiry, stable retry key, recovery context, and verification evidence. A retry may reuse only the same still-valid authorization and exact identity. An expired forward authorization cannot authorize rollback; rollback needs a separately approved recovery context. Durable replay state is required to reject a consumed authorization across retries.
 
-GitHub protected environments can express approval for a job, but the available upstream evidence does not by itself provide durable offline proof bound to this exact artifact-service ZIP and inner archive. The separately approved signed authorization-record alternative is documented but not implemented. No trusted key root, signed-record verifier, replay store, production producer, production environment, or production secret is provisioned. Dataclass constructors, serialized envelopes, fixtures, environment variables, and booleans cannot establish authoritative eligibility. The evaluator remains fail-closed with production authority unavailable.
+GitHub protected environments can express approval for a job, but the available upstream evidence does not by itself provide durable offline proof bound to this exact artifact-service ZIP and inner archive. The authorization-only branch now verifies a versioned canonical record with the installed OpenSSL Ed25519 verifier. The signed record binds the exact main-push SHA, producer and signer workflow revisions, run/attempt, artifact-service and inner-archive IDs/digests/sizes, platform/image digest, scope, issuance/expiry, retry key, signing-key ID, and recovery context.
+
+The verifier requires an owner-supplied immutable producer/signer revision allowlist and a trusted public-key path outside the mutable checkout. Forward records are exactly 24 hours, and recovery records are separate signed records with non-empty recovery context; a recovery record cannot authorize a forward release. The replay journal is an explicitly supplied directory outside the checkout. It uses private files, atomic state transitions, file/directory fsync where supported, and preserves a reserved state across an interrupted consume so only the same identity can retry while unexpired. Tests use disposable Ed25519 keys and temporary replay directories only.
+
+No production key, trust root, allowlist, replay store, producer, production environment, or production secret is provisioned. The evaluator remains unconditionally disabled for production in this authorization-only slice. Dataclass constructors, serialized envelopes, fixtures, environment variables, and booleans cannot establish authoritative eligibility. SSH transfer, host-key handling, deployment workflows, the live wrapper, and VM state remain out of scope for the subsequent delivery milestone.
 
 ## Producer and validation contract
 

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import copy
+import base64
 import hashlib
 import importlib.util
+import shutil
 import struct
+import subprocess
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -174,6 +177,8 @@ def trusted_identity() -> object:
         source_ref=provenance.RELEASE_SOURCE_REF,
         source_sha=MAIN_SOURCE_SHA,
         event=provenance.RELEASE_EVENT,
+        producer_workflow=provenance.RELEASE_PRODUCER_WORKFLOW,
+        producer_revision="a" * 40,
         signer_workflow=provenance.RELEASE_SIGNER_WORKFLOW,
         signer_revision=SIGNER_SHA,
         run_id=RUN_ID,
@@ -190,6 +195,31 @@ def trusted_identity() -> object:
         image=provenance.RELEASE_IMAGE,
         image_digest=provenance.RELEASE_IMAGE.split("@", 1)[1],
         authorization_context="owner-approved-main-release",
+    )
+
+
+def authorization_allowlist() -> object:
+    return provenance.AuthorizationRevisionAllowlist(
+        producer_workflow=provenance.RELEASE_PRODUCER_WORKFLOW,
+        producer_revisions=("a" * 40,),
+        signer_workflow=provenance.RELEASE_SIGNER_WORKFLOW,
+        signer_revisions=(SIGNER_SHA,),
+    )
+
+
+def authorization_for(identity: object, *, scope: str = "forward-release", issued_at: str = "2026-11-25T12:00:00Z", expires_at: str = "2026-11-26T12:00:00Z", recovery_context: str | None = None, authorization_id: str = "auth-1") -> object:
+    return provenance.IndependentReleaseAuthorization(
+        authorization_id=authorization_id, context=identity.authorization_context, scope=scope,
+        repository=identity.repository, repository_id=identity.repository_id, repository_owner_id=identity.repository_owner_id,
+        source_ref=identity.source_ref, source_sha=identity.source_sha, event=identity.event,
+        producer_workflow=identity.producer_workflow, producer_revision=identity.producer_revision,
+        signer_workflow=identity.signer_workflow, signer_revision=identity.signer_revision, run_id=identity.run_id, run_attempt=identity.run_attempt,
+        artifact_id=identity.artifact_id, artifact_name=identity.artifact_name, artifact_class=identity.artifact_class,
+        artifact_service_zip_sha256=identity.artifact_service_zip_sha256, artifact_service_zip_bytes=identity.artifact_service_zip_bytes,
+        archive_name=identity.archive_name, archive_sha256=identity.archive_sha256, archive_bytes=identity.archive_bytes,
+        platform=identity.platform, image=identity.image, image_digest=identity.image_digest,
+        issued_at=issued_at, expires_at=expires_at, retry_key=authorization_id, recovery_context=recovery_context,
+        signing_key_id="test-key", verification=provenance.AuthorizationVerificationReceipt("test", "7" * 64, issued_at, "test-key"),
     )
 
 
@@ -278,6 +308,29 @@ def main_selection_request() -> object:
     )
 
 
+def authoritative_evidence_for(identity: object) -> object:
+    return replace(
+        validate(),
+        artifact_class=identity.artifact_class,
+        archive_name=identity.archive_name,
+        archive_sha256=identity.archive_sha256,
+        archive_bytes=identity.archive_bytes,
+        repository=identity.repository,
+        repository_id=str(identity.repository_id),
+        source_ref=identity.source_ref,
+        source_sha=identity.source_sha,
+        event=identity.event,
+        signer_workflow=identity.signer_workflow,
+        signer_revision=identity.signer_revision,
+        run_id=identity.run_id,
+        run_attempt=identity.run_attempt,
+        platform=identity.platform,
+        image=identity.image,
+        image_digest=identity.image_digest,
+        receipt=replace(validate().receipt, subject_digest=identity.archive_sha256, run_invocation_uri=f"https://github.com/{identity.repository}/actions/runs/{identity.run_id}/attempts/{identity.run_attempt}"),
+    )
+
+
 class RuntimeArtifactProvenanceTests(unittest.TestCase):
     """Exercise PR/push semantics, fail-closed verification, and policy boundaries."""
 
@@ -349,40 +402,10 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             image_digest=identity.image_digest,
             receipt=replace(validate().receipt, subject_digest=identity.archive_sha256, run_invocation_uri=f"https://github.com/{identity.repository}/actions/runs/{identity.run_id}/attempts/{identity.run_attempt}"),
         )
-        authorization = provenance.IndependentReleaseAuthorization(
-            authorization_id="auth-1",
-            context="owner-approved-main-release",
-            scope="forward-release",
-            repository=identity.repository,
-            repository_id=identity.repository_id,
-            repository_owner_id=identity.repository_owner_id,
-            source_ref=identity.source_ref,
-            source_sha=identity.source_sha,
-            event=identity.event,
-            signer_workflow=identity.signer_workflow,
-            signer_revision=identity.signer_revision,
-            run_id=identity.run_id,
-            run_attempt=identity.run_attempt,
-            artifact_id=identity.artifact_id,
-            artifact_name=identity.artifact_name,
-            artifact_class=identity.artifact_class,
-            artifact_service_zip_sha256=identity.artifact_service_zip_sha256,
-            artifact_service_zip_bytes=identity.artifact_service_zip_bytes,
-            archive_name=identity.archive_name,
-            archive_sha256=identity.archive_sha256,
-            archive_bytes=identity.archive_bytes,
-            platform=identity.platform,
-            image=identity.image,
-            image_digest=identity.image_digest,
-            issued_at="2026-11-25T00:00:00Z",
-            expires_at="2026-11-26T00:00:00Z",
-            retry_key="auth-1",
-            recovery_context=None,
-            verification=provenance.AuthorizationVerificationReceipt("test", "7" * 64, "2026-11-25T00:00:00Z", "test-key"),
-        )
-        result = provenance.evaluate_production_eligibility(evidence, identity, authorization, now=datetime(2026, 11, 25, 12, tzinfo=timezone.utc))
+        authorization = authorization_for(identity, issued_at="2026-11-25T00:00:00Z", expires_at="2026-11-26T00:00:00Z")
+        result = provenance.evaluate_production_eligibility(evidence, identity, authorization, revision_allowlist=authorization_allowlist(), now=datetime(2026, 11, 25, 12, tzinfo=timezone.utc))
         self.assertFalse(result.eligible)
-        self.assertEqual(result.reason_code, "production-producer-unavailable")
+        self.assertEqual(result.reason_code, "production-eligibility-disabled")
 
     def test_authenticated_provenance_identity_conflict_is_rejected_before_production(self) -> None:
         identity = trusted_identity()
@@ -563,24 +586,104 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
 
     def test_authorization_lifecycle_is_deterministic_and_recovery_is_not_forward_authority(self) -> None:
         identity = trusted_identity()
-        authorization = provenance.IndependentReleaseAuthorization(
-            authorization_id="auth-1", context=identity.authorization_context, scope="forward-release",
-            repository=identity.repository, repository_id=identity.repository_id, repository_owner_id=identity.repository_owner_id,
-            source_ref=identity.source_ref, source_sha=identity.source_sha, event=identity.event,
-            signer_workflow=identity.signer_workflow, signer_revision=identity.signer_revision, run_id=identity.run_id, run_attempt=identity.run_attempt,
-            artifact_id=identity.artifact_id, artifact_name=identity.artifact_name, artifact_class=identity.artifact_class,
-            artifact_service_zip_sha256=identity.artifact_service_zip_sha256, artifact_service_zip_bytes=identity.artifact_service_zip_bytes,
-            archive_name=identity.archive_name, archive_sha256=identity.archive_sha256, archive_bytes=identity.archive_bytes,
-            platform=identity.platform, image=identity.image, image_digest=identity.image_digest,
-            issued_at="2026-11-25T12:00:00Z", expires_at="2026-11-25T13:00:00Z", retry_key="auth-1", recovery_context=None,
-            verification=provenance.AuthorizationVerificationReceipt("test", "7" * 64, "2026-11-25T12:00:00Z", "test-key"),
-        )
-        provenance.validate_independent_authorization(authorization, identity, now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+        authorization = authorization_for(identity)
+        provenance.validate_independent_authorization(authorization, identity, revision_allowlist=authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
         self.assertFalse(provenance.evaluate_production_eligibility("not-authenticated", identity, authorization, now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc)).authoritative)
-        for field, value in (("expires_at", "2026-11-25T12:00:00Z"), ("issued_at", "2026-11-25T14:00:00Z"), ("scope", "recovery-release"), ("retry_key", "other")):
+        for field, value in (("expires_at", "2026-11-25T12:00:00Z"), ("issued_at", "2026-11-25T14:00:00Z"), ("retry_key", "other")):
             candidate = replace(authorization, **{field: value})
             with self.subTest(field=field), self.assertRaises(provenance.ProvenanceError):
-                provenance.validate_independent_authorization(candidate, identity, now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+                provenance.validate_independent_authorization(candidate, identity, revision_allowlist=authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+
+    def _signed_envelope(self, directory: Path, authorization: object) -> tuple[dict[str, object], Path]:
+        openssl = shutil.which("openssl")
+        self.assertIsNotNone(openssl)
+        private_key = directory / "test-private.pem"
+        public_key = directory / "test-public.pem"
+        record_path = directory / "record.json"
+        signature_path = directory / "record.sig"
+        subprocess.run([openssl, "genpkey", "-algorithm", "ED25519", "-out", str(private_key)], check=True, capture_output=True)
+        subprocess.run([openssl, "pkey", "-in", str(private_key), "-pubout", "-out", str(public_key)], check=True, capture_output=True)
+        record_path.write_bytes(provenance.canonical_authorization_record(authorization))
+        subprocess.run([openssl, "pkeyutl", "-sign", "-rawin", "-inkey", str(private_key), "-in", str(record_path), "-out", str(signature_path)], check=True, capture_output=True)
+        return provenance.authorization_record_envelope(authorization, signature_path.read_bytes()), public_key
+
+    def test_signed_authorization_verifies_with_complete_identity_and_rejects_mutations(self) -> None:
+        self.assertIsNotNone(shutil.which("openssl"))
+        identity = trusted_identity()
+        authorization = authorization_for(identity)
+        with TemporaryDirectory() as directory:
+            envelope, public_key = self._signed_envelope(Path(directory), authorization)
+            verified = provenance.verify_signed_authorization_record(envelope, public_key, identity, authorization_allowlist(), repository_root=Path(directory) / "mutable-checkout", trusted_key_id="test-key", now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            self.assertEqual(verified.authorization_id, authorization.authorization_id)
+            self.assertEqual(verified.verification.algorithm, "ed25519")
+            mutated = copy.deepcopy(envelope)
+            mutated["record"]["release"]["archive_sha256"] = "0" * 64
+            with self.assertRaisesRegex(provenance.ProvenanceError, "signature is invalid"):
+                provenance.verify_signed_authorization_record(mutated, public_key, identity, authorization_allowlist(), repository_root=Path(directory) / "mutable-checkout", trusted_key_id="test-key", now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            bad_signature = copy.deepcopy(envelope)
+            bad_signature["signature"]["value"] = base64.b64encode(b"x" * 64).decode("ascii")
+            with self.assertRaisesRegex(provenance.ProvenanceError, "signature is invalid"):
+                provenance.verify_signed_authorization_record(bad_signature, public_key, identity, authorization_allowlist(), repository_root=Path(directory) / "mutable-checkout", trusted_key_id="test-key", now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+
+    def test_authorization_allowlists_expiry_and_retry_identity_are_enforced(self) -> None:
+        identity = trusted_identity()
+        authorization = authorization_for(identity)
+        with self.assertRaisesRegex(provenance.ProvenanceError, "allowlisted"):
+            provenance.validate_independent_authorization(authorization, identity, revision_allowlist=replace(authorization_allowlist(), producer_revisions=("b" * 40,)), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+        with self.assertRaisesRegex(provenance.ProvenanceError, "exactly 24 hours"):
+            provenance.validate_independent_authorization(replace(authorization, expires_at="2026-11-25T13:00:00Z"), identity, revision_allowlist=authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.validate_independent_authorization(replace(authorization, retry_key="other"), identity, revision_allowlist=authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+        with self.assertRaisesRegex(provenance.ProvenanceError, "stale"):
+            provenance.validate_independent_authorization(authorization, identity, revision_allowlist=authorization_allowlist(), now=datetime(2026, 11, 26, 12, tzinfo=timezone.utc))
+
+    def test_recovery_authorization_is_signed_separately_and_not_forward_authority(self) -> None:
+        identity = trusted_identity()
+        recovery = authorization_for(identity, scope="recovery-release", recovery_context="operator-recovery-2026-11-25", authorization_id="recovery-1")
+        with TemporaryDirectory() as directory:
+            envelope, public_key = self._signed_envelope(Path(directory), recovery)
+            verified = provenance.verify_signed_authorization_record(envelope, public_key, identity, authorization_allowlist(), repository_root=Path(directory) / "mutable-checkout", trusted_key_id="test-key", now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            self.assertEqual(verified.scope, "recovery-release")
+            result = provenance.evaluate_production_eligibility("not-authenticated", identity, verified, revision_allowlist=authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            self.assertFalse(result.eligible)
+            self.assertEqual(result.reason_code, "unverifiable-provenance")
+
+    def test_replay_journal_allows_same_identity_retry_and_rejects_replay_or_mismatch(self) -> None:
+        identity = trusted_identity()
+        authorization = authorization_for(identity)
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "replay"
+            root.mkdir()
+            journal = provenance.AuthorizationReplayJournal(root, repository_root=Path(directory) / "mutable-checkout")
+            now = datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc)
+            journal.reserve(authorization, identity, authorization_allowlist(), now=now)
+            journal.reserve(authorization, identity, authorization_allowlist(), now=now)
+            mismatched = replace(authorization, archive_sha256="0" * 64)
+            with self.assertRaises(provenance.ProvenanceError):
+                journal.reserve(mismatched, identity, authorization_allowlist(), now=now)
+            journal.consume(authorization, identity, authorization_allowlist(), now=now)
+            with self.assertRaisesRegex(provenance.ProvenanceError, "replay"):
+                journal.reserve(authorization, identity, authorization_allowlist(), now=now)
+
+    def test_replay_journal_recovers_from_interrupted_consume_without_losing_reservation(self) -> None:
+        identity = trusted_identity()
+        authorization = authorization_for(identity)
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "replay"
+            root.mkdir()
+            journal = provenance.AuthorizationReplayJournal(root, repository_root=Path(directory) / "mutable-checkout")
+            now = datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc)
+            journal.reserve(authorization, identity, authorization_allowlist(), now=now)
+            with patch.object(provenance.os, "replace", side_effect=OSError("simulated interruption")), self.assertRaisesRegex(provenance.ProvenanceError, "commit failed"):
+                journal.consume(authorization, identity, authorization_allowlist(), now=now)
+            journal.reserve(authorization, identity, authorization_allowlist(), now=now)
+
+    def test_production_eligibility_is_disabled_even_for_valid_forward_authorization(self) -> None:
+        identity = trusted_identity()
+        authorization = authorization_for(identity)
+        result = provenance.evaluate_production_eligibility(authoritative_evidence_for(identity), identity, authorization, revision_allowlist=authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+        self.assertFalse(result.eligible)
+        self.assertEqual(result.reason_code, "production-eligibility-disabled")
 
     def test_exact_run_attempt_api_route_is_used(self) -> None:
         response = provenance.subprocess.CompletedProcess([], 0, '{"id": 45506759751, "run_attempt": 2}', "")

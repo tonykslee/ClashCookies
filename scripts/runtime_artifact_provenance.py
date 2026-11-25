@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -17,6 +19,7 @@ import subprocess
 import threading
 import time
 import tempfile
+import shutil
 from zipfile import BadZipFile, ZipFile
 from pathlib import Path
 from typing import Any
@@ -24,6 +27,12 @@ from typing import Any
 
 PROVENANCE_CONTRACT_VERSION = 1
 PROVENANCE_CONTRACT = "clashcookies.runtime-artifact-provenance"
+AUTHORIZATION_CONTRACT_VERSION = 1
+AUTHORIZATION_CONTRACT = "clashcookies.release-authorization"
+AUTHORIZATION_SIGNATURE_ALGORITHM = "ed25519"
+AUTHORIZATION_VERIFIER = "openssl-pkeyutl"
+AUTHORIZATION_FORWARD_VALIDITY_SECONDS = 24 * 60 * 60
+MAX_AUTHORIZATION_RECORD_BYTES = 256 * 1024
 SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1"
 ACTIONS_WORKFLOW_BUILD_TYPE = "https://actions.github.io/buildtypes/workflow/v1"
 GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
@@ -43,6 +52,7 @@ RELEASE_REPOSITORY_OWNER_ID = 18295450
 RELEASE_SOURCE_REF = "refs/heads/main"
 RELEASE_EVENT = "push"
 RELEASE_SIGNER_WORKFLOW = ".github/workflows/runtime-artifact.yml"
+RELEASE_PRODUCER_WORKFLOW = ".github/workflows/runtime-artifact.yml"
 RELEASE_PLATFORM = "linux/amd64"
 RELEASE_IMAGE = "node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5"
 PRODUCTION_CANDIDATE_ARTIFACT_CLASS = "production-candidate-runtime-evidence-v1"
@@ -89,6 +99,7 @@ class AuthorizationVerificationReceipt:
     record_sha256: str
     verified_at: str
     key_reference: str
+    algorithm: str = AUTHORIZATION_SIGNATURE_ALGORITHM
 
 
 @dataclass(frozen=True)
@@ -141,6 +152,8 @@ class TrustedReleaseIdentity:
     source_ref: str
     source_sha: str
     event: str
+    producer_workflow: str
+    producer_revision: str
     signer_workflow: str
     signer_revision: str
     run_id: int
@@ -177,6 +190,8 @@ class IndependentReleaseAuthorization:
     source_ref: str
     source_sha: str
     event: str
+    producer_workflow: str
+    producer_revision: str
     signer_workflow: str
     signer_revision: str
     run_id: int
@@ -196,7 +211,18 @@ class IndependentReleaseAuthorization:
     expires_at: str
     retry_key: str
     recovery_context: str | None
+    signing_key_id: str
     verification: AuthorizationVerificationReceipt
+
+
+@dataclass(frozen=True)
+class AuthorizationRevisionAllowlist:
+    """Explicit immutable producer and signer revisions supplied by an owner."""
+
+    producer_workflow: str
+    producer_revisions: tuple[str, ...]
+    signer_workflow: str
+    signer_revisions: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -340,6 +366,8 @@ def validate_trusted_release_identity(identity: TrustedReleaseIdentity) -> None:
     require(identity.source_ref == RELEASE_SOURCE_REF, "release source ref must be refs/heads/main")
     require_sha(identity.source_sha, "release.source_sha")
     require(identity.event == RELEASE_EVENT, "release event must be a main push")
+    require(identity.producer_workflow == RELEASE_PRODUCER_WORKFLOW, "release producer workflow is not approved")
+    require_sha(identity.producer_revision, "release.producer_revision")
     require(identity.signer_workflow == RELEASE_SIGNER_WORKFLOW, "release signer workflow is not approved")
     require_sha(identity.signer_revision, "release.signer_revision")
     require_int(identity.run_id, "release.run_id", 1)
@@ -516,24 +544,353 @@ def validate_exact_run_attempt_request_metadata(metadata: dict[str, Any], reques
     require(request.source_sha != request.pull_request_head_sha, "PR test-merge SHA was confused with PR head SHA")
 
 
-def validate_independent_authorization(authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, *, now: datetime | None = None) -> None:
-    """Check binding and lifecycle semantics for a future verified authorization record."""
+def validate_authorization_revision_allowlist(allowlist: AuthorizationRevisionAllowlist) -> None:
+    """Validate an owner-supplied immutable producer/signer revision allowlist."""
+    require(isinstance(allowlist, AuthorizationRevisionAllowlist), "authorization revision allowlist has an unsupported type")
+    require(allowlist.producer_workflow == RELEASE_PRODUCER_WORKFLOW, "authorization producer workflow is not approved")
+    require(allowlist.signer_workflow == RELEASE_SIGNER_WORKFLOW, "authorization signer workflow is not approved")
+    for path, revisions in (("producer_revisions", allowlist.producer_revisions), ("signer_revisions", allowlist.signer_revisions)):
+        require(isinstance(revisions, tuple) and len(revisions) > 0, f"authorization {path} must be an explicit non-empty tuple")
+        require(len(set(revisions)) == len(revisions), f"authorization {path} must not contain duplicates")
+        for revision in revisions:
+            require_sha(revision, f"authorization.{path}")
+
+
+def _authorization_identity_payload(identity: TrustedReleaseIdentity) -> dict[str, Any]:
+    """Return the exact identity fields carried by a signed authorization."""
+    return {
+        "repository": identity.repository,
+        "repository_id": identity.repository_id,
+        "repository_owner_id": identity.repository_owner_id,
+        "source_ref": identity.source_ref,
+        "source_sha": identity.source_sha,
+        "event": identity.event,
+        "producer_workflow": identity.producer_workflow,
+        "producer_revision": identity.producer_revision,
+        "signer_workflow": identity.signer_workflow,
+        "signer_revision": identity.signer_revision,
+        "run_id": identity.run_id,
+        "run_attempt": identity.run_attempt,
+        "artifact_id": identity.artifact_id,
+        "artifact_name": identity.artifact_name,
+        "artifact_class": identity.artifact_class,
+        "artifact_service_zip_sha256": identity.artifact_service_zip_sha256,
+        "artifact_service_zip_bytes": identity.artifact_service_zip_bytes,
+        "archive_name": identity.archive_name,
+        "archive_sha256": identity.archive_sha256,
+        "archive_bytes": identity.archive_bytes,
+        "platform": identity.platform,
+        "image": identity.image,
+        "image_digest": identity.image_digest,
+        "authorization_context": identity.authorization_context,
+    }
+
+
+def _canonical_json(value: Any) -> bytes:
+    """Serialize a contract object with one deterministic JSON representation."""
+    try:
+        serialized = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        fail(f"authorization record is not canonically serializable: {error}")
+    require(len(serialized) <= MAX_AUTHORIZATION_RECORD_BYTES, "authorization record exceeds the size limit")
+    return serialized
+
+
+def authorization_record_payload(authorization: IndependentReleaseAuthorization) -> dict[str, Any]:
+    """Return the versioned signed payload; verification evidence is never signed into it."""
+    require(isinstance(authorization, IndependentReleaseAuthorization), "authorization record has an unsupported type")
+    return {
+        "contract": AUTHORIZATION_CONTRACT,
+        "version": AUTHORIZATION_CONTRACT_VERSION,
+        "authorization": {
+            "authorization_id": authorization.authorization_id,
+            "context": authorization.context,
+            "scope": authorization.scope,
+            "issued_at": authorization.issued_at,
+            "expires_at": authorization.expires_at,
+            "retry_key": authorization.retry_key,
+            "recovery_context": authorization.recovery_context,
+            "signing_key_id": authorization.signing_key_id,
+        },
+        "release": _authorization_identity_payload(TrustedReleaseIdentity(
+            repository=authorization.repository,
+            repository_id=authorization.repository_id,
+            repository_owner_id=authorization.repository_owner_id,
+            source_ref=authorization.source_ref,
+            source_sha=authorization.source_sha,
+            event=authorization.event,
+            producer_workflow=authorization.producer_workflow,
+            producer_revision=authorization.producer_revision,
+            signer_workflow=authorization.signer_workflow,
+            signer_revision=authorization.signer_revision,
+            run_id=authorization.run_id,
+            run_attempt=authorization.run_attempt,
+            artifact_id=authorization.artifact_id,
+            artifact_name=authorization.artifact_name,
+            artifact_class=authorization.artifact_class,
+            artifact_service_zip_sha256=authorization.artifact_service_zip_sha256,
+            artifact_service_zip_bytes=authorization.artifact_service_zip_bytes,
+            archive_name=authorization.archive_name,
+            archive_sha256=authorization.archive_sha256,
+            archive_bytes=authorization.archive_bytes,
+            platform=authorization.platform,
+            image=authorization.image,
+            image_digest=authorization.image_digest,
+            authorization_context=authorization.context,
+        )),
+    }
+
+
+def canonical_authorization_record(authorization: IndependentReleaseAuthorization) -> bytes:
+    """Return the exact bytes that an owner signs with Ed25519."""
+    return _canonical_json(authorization_record_payload(authorization))
+
+
+def authorization_record_envelope(authorization: IndependentReleaseAuthorization, signature: bytes) -> dict[str, Any]:
+    """Construct a detached-signature envelope without generating a key or signature."""
+    require(isinstance(signature, bytes) and len(signature) == 64, "Ed25519 detached signature must be 64 bytes")
+    return {
+        "contract": AUTHORIZATION_CONTRACT,
+        "version": AUTHORIZATION_CONTRACT_VERSION,
+        "record": authorization_record_payload(authorization),
+        "signature": {"algorithm": AUTHORIZATION_SIGNATURE_ALGORITHM, "key_id": authorization.signing_key_id, "value": base64.b64encode(signature).decode("ascii")},
+    }
+
+
+def _validate_authorization_envelope(envelope: Any) -> tuple[dict[str, Any], bytes, str]:
+    """Validate envelope shape and canonical payload bytes before cryptographic verification."""
+    require(isinstance(envelope, dict), "authorization envelope must be an object")
+    require(set(envelope) == {"contract", "version", "record", "signature"}, "authorization envelope has missing or unexpected fields")
+    require(envelope["contract"] == AUTHORIZATION_CONTRACT and envelope["version"] == AUTHORIZATION_CONTRACT_VERSION, "authorization contract version is unsupported")
+    record = envelope["record"]
+    require(isinstance(record, dict), "authorization record must be an object")
+    canonical = _canonical_json(record)
+    signature = envelope["signature"]
+    require(isinstance(signature, dict) and set(signature) == {"algorithm", "key_id", "value"}, "authorization signature envelope is malformed")
+    require(signature["algorithm"] == AUTHORIZATION_SIGNATURE_ALGORITHM, "authorization signature algorithm is unsupported")
+    key_id = require_string(signature["key_id"], "authorization.signature.key_id")
+    encoded = require_string(signature["value"], "authorization.signature.value")
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as error:
+        fail(f"authorization signature is not valid base64: {error}")
+    require(len(decoded) == 64 and base64.b64encode(decoded).decode("ascii") == encoded, "authorization signature has an invalid Ed25519 encoding")
+    return record, decoded, key_id
+
+
+def _authorization_from_payload(record: dict[str, Any], verification: AuthorizationVerificationReceipt) -> IndependentReleaseAuthorization:
+    """Parse a strict canonical payload into the typed authorization object."""
+    require(set(record) == {"contract", "version", "authorization", "release"}, "authorization record has missing or unexpected fields")
+    authorization = record["authorization"]
+    release = record["release"]
+    require(isinstance(authorization, dict) and set(authorization) == {"authorization_id", "context", "scope", "issued_at", "expires_at", "retry_key", "recovery_context", "signing_key_id"}, "authorization lifecycle fields are malformed")
+    require(isinstance(release, dict), "authorization release identity is malformed")
+    require(authorization.get("context") == release.get("authorization_context"), "authorization context is not consistently bound")
+    identity_fields = ("repository", "repository_id", "repository_owner_id", "source_ref", "source_sha", "event", "producer_workflow", "producer_revision", "signer_workflow", "signer_revision", "run_id", "run_attempt", "artifact_id", "artifact_name", "artifact_class", "artifact_service_zip_sha256", "artifact_service_zip_bytes", "archive_name", "archive_sha256", "archive_bytes", "platform", "image", "image_digest", "authorization_context")
+    require(set(release) == set(identity_fields), "authorization release identity has missing or unexpected fields")
+    try:
+        return IndependentReleaseAuthorization(
+            authorization_id=authorization["authorization_id"], context=authorization["context"], scope=authorization["scope"],
+            repository=release["repository"], repository_id=release["repository_id"], repository_owner_id=release["repository_owner_id"],
+            source_ref=release["source_ref"], source_sha=release["source_sha"], event=release["event"],
+            producer_workflow=release["producer_workflow"], producer_revision=release["producer_revision"],
+            signer_workflow=release["signer_workflow"], signer_revision=release["signer_revision"], run_id=release["run_id"], run_attempt=release["run_attempt"],
+            artifact_id=release["artifact_id"], artifact_name=release["artifact_name"], artifact_class=release["artifact_class"],
+            artifact_service_zip_sha256=release["artifact_service_zip_sha256"], artifact_service_zip_bytes=release["artifact_service_zip_bytes"],
+            archive_name=release["archive_name"], archive_sha256=release["archive_sha256"], archive_bytes=release["archive_bytes"],
+            platform=release["platform"], image=release["image"], image_digest=release["image_digest"],
+            issued_at=authorization["issued_at"], expires_at=authorization["expires_at"], retry_key=authorization["retry_key"],
+            recovery_context=authorization["recovery_context"], signing_key_id=authorization["signing_key_id"], verification=verification,
+        )
+    except (KeyError, TypeError) as error:
+        fail(f"authorization record fields are malformed: {error}")
+
+
+def _require_external_path(path: Path, repository_root: Path | None, label: str) -> None:
+    """Require a trusted input to be absolute and outside the mutable checkout."""
+    require(path.is_absolute(), f"{label} must be an absolute path")
+    if repository_root is not None:
+        root = repository_root.resolve()
+        require(root.is_absolute(), "mutable repository root must be absolute")
+        try:
+            path.resolve().relative_to(root)
+        except ValueError:
+            return
+        fail(f"{label} must be outside the mutable checkout")
+
+
+def verify_signed_authorization_record(
+    envelope: Any,
+    trusted_public_key: Path,
+    identity: TrustedReleaseIdentity,
+    revision_allowlist: AuthorizationRevisionAllowlist,
+    *,
+    repository_root: Path | None = None,
+    trusted_key_id: str | None = None,
+    now: datetime | None = None,
+) -> IndependentReleaseAuthorization:
+    """Verify an owner-signed Ed25519 record using the installed OpenSSL CLI."""
+    require(shutil.which("openssl") is not None, "established Ed25519 tooling is unavailable: openssl was not found")
+    _require_external_path(trusted_public_key, repository_root, "trusted public key")
+    key_descriptor, _ = _open_nofollow_regular(trusted_public_key, 64 * 1024, "trusted public key")
+    os.close(key_descriptor)
+    record, signature, key_id = _validate_authorization_envelope(envelope)
+    if trusted_key_id is not None:
+        require(key_id == trusted_key_id, "authorization signing key is not the trusted key")
+    require(record.get("contract") == AUTHORIZATION_CONTRACT and record.get("version") == AUTHORIZATION_CONTRACT_VERSION, "authorization record contract version is unsupported")
+    payload_auth = record.get("authorization")
+    require(isinstance(payload_auth, dict) and payload_auth.get("signing_key_id") == key_id, "authorization signing key is not bound to the record")
+    canonical = _canonical_json(record)
+    with tempfile.TemporaryDirectory(prefix="clashcookies-auth-verify-") as directory:
+        record_path = Path(directory) / "record.json"
+        signature_path = Path(directory) / "record.sig"
+        record_path.write_bytes(canonical)
+        signature_path.write_bytes(signature)
+        os.chmod(record_path, 0o600)
+        os.chmod(signature_path, 0o600)
+        try:
+            result = run_bounded([str(shutil.which("openssl")), "pkeyutl", "-verify", "-rawin", "-pubin", "-inkey", str(trusted_public_key), "-in", str(record_path), "-sigfile", str(signature_path)], timeout_seconds=10, max_output_bytes=MAX_VERIFIER_OUTPUT_BYTES, label="Ed25519 authorization verification")
+        except (OSError, subprocess.TimeoutExpired) as error:
+            fail(f"Ed25519 authorization verification failed to run: {error}")
+        require(result.returncode == 0, "Ed25519 authorization signature is invalid")
+    verification = AuthorizationVerificationReceipt(AUTHORIZATION_VERIFIER, hashlib.sha256(canonical).hexdigest(), (now or _now_utc()).astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), key_id)
+    authorization = _authorization_from_payload(record, verification)
+    validate_independent_authorization(authorization, identity, revision_allowlist=revision_allowlist, now=now)
+    return authorization
+
+
+def _identity_fingerprint(identity: TrustedReleaseIdentity) -> str:
+    return hashlib.sha256(_canonical_json(_authorization_identity_payload(identity))).hexdigest()
+
+
+def _fsync_directory(path: Path) -> None:
+    """Fsync a journal directory where the platform exposes directory handles."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+class AuthorizationReplayJournal:
+    """Private durable replay state kept outside the mutable checkout."""
+
+    def __init__(self, root: Path, *, repository_root: Path | None = None) -> None:
+        _require_external_path(root, repository_root, "authorization replay journal")
+        try:
+            metadata = os.lstat(root)
+        except OSError as error:
+            fail(f"authorization replay journal is unavailable: {error}")
+        require(stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), "authorization replay journal must be a real directory")
+        os.chmod(root, 0o700)
+        self.root = root
+
+    def _path(self, authorization: IndependentReleaseAuthorization) -> Path:
+        token = hashlib.sha256(authorization.retry_key.encode("utf-8")).hexdigest()
+        return self.root / f"{token}.json"
+
+    def _state(self, authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, state: str) -> dict[str, Any]:
+        return {"contract": AUTHORIZATION_CONTRACT, "version": AUTHORIZATION_CONTRACT_VERSION, "authorization_id": authorization.authorization_id, "retry_key": authorization.retry_key, "scope": authorization.scope, "identity_sha256": _identity_fingerprint(identity), "expires_at": authorization.expires_at, "state": state}
+
+    def _write_new(self, path: Path, value: dict[str, Any]) -> None:
+        payload = _canonical_json(value)
+        descriptor = None
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.fchmod(descriptor, 0o600) if hasattr(os, "fchmod") else None
+            written = 0
+            while written < len(payload):
+                written += os.write(descriptor, payload[written:])
+            os.fsync(descriptor)
+        except FileExistsError:
+            raise
+        except OSError as error:
+            fail(f"authorization replay journal write failed: {error}")
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        _fsync_directory(self.root)
+
+    def _read(self, path: Path) -> dict[str, Any]:
+        value = _read_bounded_json(path, "authorization replay entry")
+        require(isinstance(value, dict), "authorization replay entry is malformed")
+        return value
+
+    def _check_existing(self, existing: dict[str, Any], authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, now: datetime) -> None:
+        require(existing.get("contract") == AUTHORIZATION_CONTRACT and existing.get("version") == AUTHORIZATION_CONTRACT_VERSION, "authorization replay entry contract is unsupported")
+        require(existing.get("authorization_id") == authorization.authorization_id and existing.get("retry_key") == authorization.retry_key, "authorization retry identity mismatch")
+        require(existing.get("scope") == authorization.scope and existing.get("identity_sha256") == _identity_fingerprint(identity), "authorization replay identity mismatch")
+        require(existing.get("state") == "reserved", "authorization replay detected")
+        require(_parse_timestamp(existing.get("expires_at"), "authorization replay expires_at") > now, "authorization replay entry is expired")
+
+    def reserve(self, authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, revision_allowlist: AuthorizationRevisionAllowlist, *, now: datetime | None = None) -> None:
+        """Reserve once; same-identity, unexpired retries remain idempotent."""
+        validate_independent_authorization(authorization, identity, revision_allowlist=revision_allowlist, now=now)
+        current = (now or _now_utc()).astimezone(timezone.utc)
+        path = self._path(authorization)
+        try:
+            self._write_new(path, self._state(authorization, identity, "reserved"))
+            return
+        except FileExistsError:
+            self._check_existing(self._read(path), authorization, identity, current)
+
+    def consume(self, authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, revision_allowlist: AuthorizationRevisionAllowlist, *, now: datetime | None = None) -> None:
+        """Atomically mark a reserved authorization consumed, preserving recovery on interruption."""
+        validate_independent_authorization(authorization, identity, revision_allowlist=revision_allowlist, now=now)
+        current = (now or _now_utc()).astimezone(timezone.utc)
+        path = self._path(authorization)
+        require(path.exists(), "authorization replay reservation is missing")
+        existing = self._read(path)
+        self._check_existing(existing, authorization, identity, current)
+        temporary = self.root / f".{path.name}.{os.getpid()}.tmp"
+        try:
+            self._write_new(temporary, self._state(authorization, identity, "consumed"))
+            os.replace(temporary, path)
+            _fsync_directory(self.root)
+        except FileExistsError:
+            fail("authorization replay journal interruption left a temporary entry")
+        except OSError as error:
+            fail(f"authorization replay journal commit failed: {error}")
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def validate_independent_authorization(authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, *, revision_allowlist: AuthorizationRevisionAllowlist | None = None, now: datetime | None = None) -> None:
+    """Check binding, explicit revisions, and lifecycle semantics for a verified record."""
     validate_trusted_release_identity(identity)
     require(isinstance(authorization, IndependentReleaseAuthorization), "independent authorization has an unsupported type")
+    require(revision_allowlist is not None, "authorization revision allowlist is required")
+    validate_authorization_revision_allowlist(revision_allowlist)
     require_string(authorization.authorization_id, "authorization.authorization_id")
     require(authorization.context == identity.authorization_context, "authorization context does not match release identity")
     require(authorization.scope in {"forward-release", "recovery-release"}, "authorization scope is unsupported")
-    require(authorization.scope == "forward-release", "recovery authorization cannot authorize a forward release")
-    require(authorization.recovery_context is None, "forward authorization must not carry recovery context")
+    if authorization.scope == "forward-release":
+        require(authorization.recovery_context is None, "forward authorization must not carry recovery context")
+    else:
+        require(isinstance(authorization.recovery_context, str) and authorization.recovery_context != "", "recovery authorization requires recovery context")
     require(authorization.retry_key == authorization.authorization_id, "authorization retry key must be stable and identity-bound")
     require(authorization.repository == identity.repository, "authorization repository mismatch")
     require(authorization.repository_id == identity.repository_id, "authorization repository ID mismatch")
     require(authorization.repository_owner_id == identity.repository_owner_id, "authorization owner ID mismatch")
-    for field in ("source_ref", "source_sha", "event", "signer_workflow", "signer_revision", "run_id", "run_attempt", "artifact_id", "artifact_name", "artifact_class", "artifact_service_zip_sha256", "artifact_service_zip_bytes", "archive_name", "archive_sha256", "archive_bytes", "platform", "image", "image_digest"):
+    for field in ("source_ref", "source_sha", "event", "producer_workflow", "producer_revision", "signer_workflow", "signer_revision", "run_id", "run_attempt", "artifact_id", "artifact_name", "artifact_class", "artifact_service_zip_sha256", "artifact_service_zip_bytes", "archive_name", "archive_sha256", "archive_bytes", "platform", "image", "image_digest"):
         require(getattr(authorization, field) == getattr(identity, field), f"authorization {field} does not match release identity")
+    require(authorization.producer_revision in revision_allowlist.producer_revisions, "authorization producer revision is not allowlisted")
+    require(authorization.signer_revision in revision_allowlist.signer_revisions, "authorization signer revision is not allowlisted")
+    require(authorization.producer_workflow == revision_allowlist.producer_workflow and authorization.signer_workflow == revision_allowlist.signer_workflow, "authorization workflow is not allowlisted")
+    require_string(authorization.signing_key_id, "authorization.signing_key_id")
     issued = _parse_timestamp(authorization.issued_at, "authorization.issued_at")
     expires = _parse_timestamp(authorization.expires_at, "authorization.expires_at")
     require(expires > issued, "authorization expiry must be after issuance")
+    if authorization.scope == "forward-release":
+        require((expires - issued).total_seconds() == AUTHORIZATION_FORWARD_VALIDITY_SECONDS, "forward authorization validity must be exactly 24 hours")
     current = (now or _now_utc()).astimezone(timezone.utc)
     require(issued <= current < expires, "authorization is stale or not yet valid")
     verification = authorization.verification
@@ -542,6 +899,7 @@ def validate_independent_authorization(authorization: IndependentReleaseAuthoriz
     require_digest(verification.record_sha256, "authorization.verification.record_sha256")
     _parse_timestamp(verification.verified_at, "authorization.verification.verified_at")
     require_string(verification.key_reference, "authorization.verification.key_reference")
+    require(verification.algorithm == AUTHORIZATION_SIGNATURE_ALGORITHM, "authorization verification algorithm is unsupported")
 
 
 def validate_authenticated_provenance_binding(provenance: AuthenticatedProvenance, identity: TrustedReleaseIdentity) -> None:
@@ -1374,9 +1732,10 @@ def evaluate_production_eligibility(
     expected: object,
     authorization: object | None,
     *,
+    revision_allowlist: AuthorizationRevisionAllowlist | None = None,
     now: datetime | None = None,
 ) -> EligibilityResult:
-    """Evaluate future production eligibility from typed, independently supplied inputs only."""
+    """Refuse production unconditionally while the authorization-only boundary is staged."""
     if not isinstance(provenance, AuthenticatedProvenance):
         return EligibilityResult(False, "unverifiable-provenance", False, "serialized or unverified provenance cannot authorize production")
     if provenance.artifact_class not in {PRODUCTION_ARTIFACT_CLASS, PRODUCTION_CANDIDATE_ARTIFACT_CLASS}:
@@ -1390,7 +1749,7 @@ def evaluate_production_eligibility(
     except ProvenanceError as error:
         return EligibilityResult(False, "invalid-release-identity", False, str(error))
     try:
-        validate_independent_authorization(authorization, expected, now=now)
+        validate_independent_authorization(authorization, expected, revision_allowlist=revision_allowlist, now=now)
     except ProvenanceError as error:
         detail = str(error)
         if "recovery authorization" in detail:
@@ -1398,11 +1757,13 @@ def evaluate_production_eligibility(
         if "stale" in detail or "not yet valid" in detail:
             return EligibilityResult(False, "stale-independent-authorization", False, detail)
         return EligibilityResult(False, "invalid-independent-authorization", False, detail)
+    if authorization.scope != "forward-release":
+        return EligibilityResult(False, "recovery-authorization-required", False, "recovery authorization is separate and cannot authorize a forward release")
     try:
         validate_authenticated_provenance_binding(provenance, expected)
     except ProvenanceError as error:
         return EligibilityResult(False, "provenance-identity-mismatch", False, str(error))
-    return EligibilityResult(False, "production-producer-unavailable", False, "no authorized production provenance producer exists in this slice")
+    return EligibilityResult(False, "production-eligibility-disabled", False, "production eligibility is unconditionally disabled in the authorization-only slice")
 
 
 def evaluate_synthetic_production_policy_fixture(fixture: dict[str, Any]) -> EligibilityResult:
