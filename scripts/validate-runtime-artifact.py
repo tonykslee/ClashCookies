@@ -28,6 +28,7 @@ from typing import BinaryIO, Iterable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime_artifact_provenance import (  # noqa: E402
     DEVELOPMENT_ARTIFACT_CLASS,
+    evaluate_production_eligibility,
     fetch_run_metadata,
     run_gh_attestation_verify,
     validate_verified_result,
@@ -1070,12 +1071,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-repository-id")
     parser.add_argument("--expected-signer-workflow")
     parser.add_argument("--expected-signer-revision")
+    parser.add_argument("--expected-pr-number", type=int)
+    parser.add_argument("--expected-pr-head-sha")
+    parser.add_argument("--expected-pr-head-ref")
+    parser.add_argument("--expected-pr-base-sha")
+    parser.add_argument("--expected-pr-base-ref")
+    parser.add_argument("--expected-gh-version", default="2.89.0")
     parser.add_argument("--expected-base-image")
     parser.add_argument("--expected-base-image-digest")
     parser.add_argument("--require-attestation", action="store_true")
     parser.add_argument("--attestation-bundle")
     parser.add_argument("--provenance-output")
-    parser.add_argument("--skip-run-metadata", action="store_true")
     parser.add_argument("--source-root")
     parser.add_argument("--extract")
     parser.add_argument("--max-compressed-bytes", type=int, default=Limits.compressed_bytes)
@@ -1125,8 +1131,11 @@ def main() -> int:
         digest = snapshot.digest
         authenticated_provenance = None
         if args.require_attestation:
-            for value, label in ((args.expected_repository, "expected repository"), (args.expected_repository_id, "expected repository ID"), (args.expected_signer_workflow, "expected signer workflow"), (args.expected_signer_revision, "expected signer revision"), (args.expected_source_ref, "expected source ref"), (args.expected_event, "expected event"), (args.expected_run_id, "expected run ID"), (args.expected_run_attempt, "expected run attempt"), (args.expected_base_image, "expected base image"), (args.expected_base_image_digest, "expected base image digest")):
+            for value, label in ((args.expected_repository, "expected repository"), (args.expected_repository_id, "expected repository ID"), (args.expected_signer_workflow, "expected signer workflow"), (args.expected_signer_revision, "expected signer revision"), (args.expected_source_ref, "expected source ref"), (args.expected_event, "expected event"), (args.expected_run_id, "expected run ID"), (args.expected_run_attempt, "expected run attempt"), (args.expected_workflow, "expected workflow name"), (args.expected_base_image, "expected base image"), (args.expected_base_image_digest, "expected base image digest")):
                 require(value is not None and str(value) != "", f"{label} is required when attestation verification is enabled")
+            if args.expected_event == "pull_request":
+                for value, label in ((args.expected_pr_number, "expected PR number"), (args.expected_pr_head_sha, "expected PR head SHA"), (args.expected_pr_head_ref, "expected PR head ref"), (args.expected_pr_base_sha, "expected PR base SHA"), (args.expected_pr_base_ref, "expected PR base ref")):
+                    require(value is not None and str(value) != "", f"{label} is required for pull_request attestation verification")
             expected_provenance = {
                 "repository": args.expected_repository,
                 "repository_id": str(args.expected_repository_id),
@@ -1137,6 +1146,12 @@ def main() -> int:
                 "event": args.expected_event,
                 "run_id": int(args.expected_run_id),
                 "run_attempt": int(args.expected_run_attempt),
+                "workflow_name": args.expected_workflow,
+                "pr_number": int(args.expected_pr_number) if args.expected_pr_number else 0,
+                "pr_head_sha": args.expected_pr_head_sha,
+                "pr_head_ref": args.expected_pr_head_ref,
+                "pr_base_sha": args.expected_pr_base_sha,
+                "pr_base_ref": args.expected_pr_base_ref,
                 "artifact_class": DEVELOPMENT_ARTIFACT_CLASS,
                 "platform": args.expected_platform,
                 "image": args.expected_base_image,
@@ -1151,8 +1166,9 @@ def main() -> int:
                 signer_revision=args.expected_signer_revision,
                 source_ref=args.expected_source_ref,
                 source_sha=args.expected_sha,
+                verifier_version=args.expected_gh_version,
             )
-            run_metadata = None if args.skip_run_metadata else fetch_run_metadata(args.expected_repository, int(args.expected_run_id))
+            run_metadata = fetch_run_metadata(args.expected_repository, int(args.expected_run_id))
             authenticated_provenance = validate_verified_result(
                 result,
                 archive_name=snapshot.name,
@@ -1183,7 +1199,10 @@ def main() -> int:
         footprint = sum(entry.size for entry in entries if entry.kind == "file" and (entry.name in ("package.json", "yarn.lock", "runtime-artifact-manifest.json") or entry.name.startswith("dist/") or entry.name.startswith("node_modules/") or entry.name.startswith("prisma/")))
         require(external["measurements"]["extractedFootprintBytes"] == footprint, "manifest extracted footprint does not match archive")
         if authenticated_provenance is not None and args.provenance_output:
-            Path(args.provenance_output).write_text(json.dumps(authenticated_provenance, indent=2) + "\n", encoding="utf-8")
+            policy_result = evaluate_production_eligibility(authenticated_provenance, None, None)
+            diagnostic = authenticated_provenance.diagnostic_json()
+            diagnostic["productionEligibility"] = policy_result.diagnostic_json()
+            Path(args.provenance_output).write_text(json.dumps(diagnostic, indent=2) + "\n", encoding="utf-8")
         if args.extract:
             extract_archive(snapshot, entries, file_hashes, Path(args.extract), limits, digest)
         print(json.dumps({
@@ -1193,7 +1212,7 @@ def main() -> int:
             "sourceSha": external["source"]["gitSha"],
             "archiveBytes": snapshot.size,
             "extractedFootprintBytes": footprint,
-            "authenticatedProvenance": authenticated_provenance,
+            "authenticatedProvenance": authenticated_provenance.diagnostic_json() if authenticated_provenance is not None else None,
             "measurements": {
                 "elapsedMs": round((time.monotonic() - started) * 1000, 3),
                 "temporaryDiskBytesRequired": snapshot.size + footprint,
