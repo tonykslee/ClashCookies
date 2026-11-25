@@ -12,6 +12,7 @@ permissions:
 env:
   RUNTIME_ARTIFACT_IMAGE: node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5
   RUNTIME_ARTIFACT_PLATFORM: linux/amd64
+  RUNTIME_ARTIFACT_SIGNER_WORKFLOW: .github/workflows/runtime-artifact.yml
 
 jobs:
   build-runtime-artifact:
@@ -30,6 +31,8 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
           GITHUB_REF: ${{ github.ref }}
+          GITHUB_WORKFLOW_PATH: .github/workflows/runtime-artifact.yml
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
         run: |
@@ -57,9 +60,40 @@ jobs:
           retention-days: 3
           include-hidden-files: true
 
+  attest-runtime-artifact:
+    name: Generate authenticated development attestation
+    needs: build-runtime-artifact
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download built artifact into the signer job
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-artifact-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/attestation-input
+
+      - name: Generate GitHub-native provenance attestation
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/attestation-input/*.tar.gz
+
+      - name: Publish attestation bundle for independent verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-artifact-attestation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.attest.outputs.bundle-path }}
+          if-no-files-found: error
+          retention-days: 3
+          include-hidden-files: true
+
   validate-runtime-artifact:
     name: Retrieve and validate runtime artifact
-    needs: build-runtime-artifact
+    needs: attest-runtime-artifact
     runs-on: ubuntu-latest
     steps:
       - name: Checkout validation probe only
@@ -73,14 +107,29 @@ jobs:
           name: runtime-artifact-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/retrieved-runtime-artifact
 
+      - name: Download authenticated attestation bundle into a fresh job
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-artifact-attestation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/retrieved-runtime-attestation
+
       - name: Run Linux descriptor-boundary regressions
         run: python -m unittest discover -s tests -p 'test_runtime_artifact_security.py' -v
 
+      - name: Run provenance contract regressions
+        run: python -m unittest discover -s tests -p 'test_runtime_artifact_provenance.py' -v
+
       - name: Validate retrieved bytes and safely extract
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNTIME_ARTIFACT_REPOSITORY_ID: ${{ github.repository_id }}
+          RUNTIME_ARTIFACT_SIGNER_REVISION: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
           archive="$(find "$RUNNER_TEMP/retrieved-runtime-artifact" -maxdepth 1 -name '*.tar.gz' -print -quit)"
           test -n "$archive"
+          bundle="$(find "$RUNNER_TEMP/retrieved-runtime-attestation" -maxdepth 2 -type f -name '*.json' -print -quit)"
+          test -n "$bundle"
           validation_output="$(bash ./scripts/validate-runtime-artifact.sh \
             --archive "$archive" \
             --checksum "$archive.sha256" \
@@ -91,8 +140,16 @@ jobs:
             --expected-workflow "$GITHUB_WORKFLOW" \
             --expected-run-id "$GITHUB_RUN_ID" \
             --expected-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-event "$GITHUB_EVENT_NAME" \
+            --expected-source-ref "$GITHUB_REF" \
+            --expected-repository-id "$RUNTIME_ARTIFACT_REPOSITORY_ID" \
+            --expected-signer-workflow "$RUNTIME_ARTIFACT_SIGNER_WORKFLOW" \
+            --expected-signer-revision "$RUNTIME_ARTIFACT_SIGNER_REVISION" \
             --expected-base-image "$RUNTIME_ARTIFACT_IMAGE" \
             --expected-base-image-digest "${RUNTIME_ARTIFACT_IMAGE##*@}" \
+            --require-attestation \
+            --attestation-bundle "$bundle" \
+            --provenance-output "$RUNNER_TEMP/authenticated-development-provenance.json" \
             --source-root "$GITHUB_WORKSPACE" \
             --extract "$RUNNER_TEMP/extracted-runtime-artifact")"
           printf '%s\n' "$validation_output"
@@ -100,6 +157,65 @@ jobs:
             echo "## FB-028B bounded validation/extraction"
             jq -r '"- Elapsed: \(.measurements.elapsedMs) ms\n- Headers: \(.measurements.headers.totalHeaders) total / \(.measurements.headers.metadataHeaders) metadata\n- Physical metadata: \(.measurements.headers.physicalMetadataBytes) bytes\n- Archive: \(.archiveBytes) bytes\n- Extracted footprint: \(.extractedFootprintBytes) bytes\n- Estimated temporary disk: \(.measurements.temporaryDiskBytesRequired) bytes\n- Peak memory: \(.measurements.peakMemoryBytes // "unavailable")"' <<< "$validation_output"
           } >> "$GITHUB_STEP_SUMMARY"
+
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg repository_id "$RUNTIME_ARTIFACT_REPOSITORY_ID" \
+            --arg signer_workflow "$RUNTIME_ARTIFACT_SIGNER_WORKFLOW" \
+            --arg signer_revision "$RUNTIME_ARTIFACT_SIGNER_REVISION" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg approved_release_sha "$GITHUB_SHA" \
+            --arg archive_sha256 "$(jq -r '.sha256' <<< "$validation_output")" \
+            --argjson archive_bytes "$(jq -r '.archiveBytes' <<< "$validation_output")" \
+            --arg platform "$RUNTIME_ARTIFACT_PLATFORM" \
+            --arg image_digest "${RUNTIME_ARTIFACT_IMAGE##*@}" \
+            --arg authorization_context "future-approved-main-release" \
+            '{repository: $repository, repository_id: $repository_id, signer_workflow: $signer_workflow, signer_revision: $signer_revision, run_id: ($run_id | tonumber), run_attempt: ($run_attempt | tonumber), approved_release_sha: $approved_release_sha, archive_sha256: $archive_sha256, archive_bytes: $archive_bytes, platform: $platform, image_digest: $image_digest, authorization_context: $authorization_context}' \
+            > "$RUNNER_TEMP/production-policy-expected.json"
+          if python scripts/runtime-artifact-provenance.py \
+            --evaluate-production \
+            --evidence "$RUNNER_TEMP/authenticated-development-provenance.json" \
+            --expected "$RUNNER_TEMP/production-policy-expected.json"; then
+            echo 'A development attestation was incorrectly accepted by production eligibility' >&2
+            exit 1
+          fi
+
+      - name: Reject modified subject bytes with the official verifier
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive="$(find "$RUNNER_TEMP/retrieved-runtime-artifact" -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          bundle="$(find "$RUNNER_TEMP/retrieved-runtime-attestation" -maxdepth 2 -type f -name '*.json' -print -quit)"
+          cp "$archive" "$RUNNER_TEMP/tampered-runtime-artifact.tar.gz"
+          python -c 'from pathlib import Path; p=Path(__import__("sys").argv[1]); b=bytearray(p.read_bytes()); b[len(b)//2] ^= 1; p.write_bytes(b)' "$RUNNER_TEMP/tampered-runtime-artifact.tar.gz"
+          if gh attestation verify "$RUNNER_TEMP/tampered-runtime-artifact.tar.gz" \
+            --repo "$GITHUB_REPOSITORY" \
+            --bundle "$bundle" \
+            --predicate-type https://slsa.dev/provenance/v1 \
+            --format json; then
+            echo 'The official verifier accepted modified subject bytes' >&2
+            exit 1
+          fi
+
+      - name: Reject mismatched source expectations with the official verifier
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive="$(find "$RUNNER_TEMP/retrieved-runtime-artifact" -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          bundle="$(find "$RUNNER_TEMP/retrieved-runtime-attestation" -maxdepth 2 -type f -name '*.json' -print -quit)"
+          if gh attestation verify "$archive" \
+            --repo "$GITHUB_REPOSITORY" \
+            --bundle "$bundle" \
+            --source-ref refs/heads/main \
+            --source-digest "$GITHUB_SHA" \
+            --predicate-type https://slsa.dev/provenance/v1 \
+            --format json; then
+            echo 'The official verifier accepted a mismatched source ref' >&2
+            exit 1
+          fi
 
       - name: Start disposable PostgreSQL for runtime engine probe
         run: |

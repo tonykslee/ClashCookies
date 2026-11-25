@@ -126,10 +126,10 @@ function fixture(options: { unsafe?: boolean; escapingSymlink?: boolean; cyclicS
 
   const manifest = {
     schemaVersion: 1,
-    artifact: { name, format: "tar.gz", contents: ["dist", "node_modules", "prisma", "package.json", "yarn.lock"], nonProductionEvidence: true },
+    artifact: { name, format: "tar.gz", contents: ["dist", "node_modules", "prisma", "package.json", "yarn.lock"], artifactClass: "development-runtime-evidence", nonProductionEvidence: true },
     source: { gitSha: sourceSha, context: "git-archive", untrackedFilesExcluded: true, localEnvironmentFilesExcluded: true, cleanSourceContext: true },
     identity: { kind: "pull_request_merge_commit", event: "pull_request", deployableRelease: false, note: "test" },
-    provenance: { integrity: "archive SHA-256 checksum and manifest binding", authenticated: false, note: "Integrity metadata does not authenticate the source revision or authorize production use." },
+    provenance: { contractVersion: 1, integrity: "archive SHA-256 checksum and manifest binding", authenticated: false, note: "Integrity metadata does not authenticate the source revision or authorize production use." },
     workflow: { name: "test", runId: "1", runAttempt: "1", ref: "refs/pull/1/merge", repository: "test/test", url: null },
     build: { platform: "linux/amd64", architecture: "amd64", nodeVersion: "v20.0.0", yarnVersion: "1.22.22", compiler: "npm run build", baseImage: "node:20-bookworm@sha256:" + "a".repeat(64), baseImageDigest: "sha256:" + "a".repeat(64), nativeLibraryCompatibility: { libc: "glibc", distribution: "Debian Bookworm", openssl: "OpenSSL 3.x", liveVmCompatibility: "not established" }, durationMs: 1, startedAt: "2026-01-01T00:00:00.000Z", completedAt: "2026-01-01T00:00:01.000Z" },
     inputs: { packageJsonSha256: "", yarnLockSha256: "", prismaSchemaSha256: "", prismaMigrations: [] },
