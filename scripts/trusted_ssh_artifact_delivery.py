@@ -276,33 +276,42 @@ def _receiver_lock(root: Path, timeout_seconds: int = 5) -> Iterator[None]:
     """Serialize bounded receiving activity without deleting the lock file."""
     lock_path = root / ".receiver.lock"
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(lock_path, flags, 0o600)
     try:
-        metadata = os.fstat(descriptor)
-        _require(stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1, "receiver lock must be a single regular file")
-        if os.name == "posix":
-            import fcntl
-            _require(metadata.st_uid == os.geteuid() and stat.S_IMODE(metadata.st_mode) & 0o077 == 0, "receiver lock ownership or permissions are unsafe")
-            deadline = time.monotonic() + timeout_seconds
-            while True:
-                try:
-                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        _fail("receiver activity lock acquisition deadline exceeded")
-                    time.sleep(0.01)
-        yield
+        descriptor = os.open(lock_path, flags, 0o600)
     except OSError as error:
         _fail(f"receiver activity lock failed: {error}")
+    try:
+        try:
+            metadata = os.fstat(descriptor)
+            _require(stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1, "receiver lock must be a single regular file")
+            if os.name == "posix":
+                import fcntl
+                _require(metadata.st_uid == os.geteuid() and stat.S_IMODE(metadata.st_mode) & 0o077 == 0, "receiver lock ownership or permissions are unsafe")
+                deadline = time.monotonic() + timeout_seconds
+                while True:
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            _fail("receiver activity lock acquisition deadline exceeded")
+                        time.sleep(0.01)
+        except OSError as error:
+            _fail(f"receiver activity lock failed: {error}")
+        try:
+            yield
+        finally:
+            if os.name == "posix":
+                import fcntl
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                except OSError:
+                    pass
     finally:
-        if os.name == "posix":
-            import fcntl
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-            except OSError:
-                pass
-        os.close(descriptor)
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
 
 
 def _bounded_copy(source: Path, destination: Path, maximum: int, label: str) -> tuple[str, int]:

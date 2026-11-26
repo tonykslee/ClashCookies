@@ -324,6 +324,18 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             with delivery._receiver_lock(root):
                 pass
 
+    def test_receiver_lock_preserves_protected_oserror_and_can_be_reacquired(self) -> None:
+        with TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            root.mkdir(exist_ok=True)
+            root.chmod(0o700)
+            with self.assertRaises(OSError) as context:
+                with delivery._receiver_lock(root):
+                    raise OSError("protected operation failure")
+            self.assertEqual(str(context.exception), "protected operation failure")
+            with delivery._receiver_lock(root):
+                pass
+
     @unittest.skipUnless(os.name == "posix", "lock contention regression requires POSIX file locks")
     def test_receiver_lock_contention_is_bounded_and_retryable(self) -> None:
         with TemporaryDirectory() as root_name:
