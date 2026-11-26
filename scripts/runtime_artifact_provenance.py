@@ -197,6 +197,26 @@ class TrustedReleaseIdentity:
     authorization_context: str
 
 
+def validate_expectation_identity_binding(identity: Any, expectation: dict[str, Any]) -> None:
+    """Bind delivery/retention expectation fields to one immutable identity."""
+    require(isinstance(expectation, dict), "provenance expectation must be an object")
+    required = (
+        "repository", "repository_id", "repository_owner_id", "source_ref", "source_sha", "event",
+        "producer_workflow", "producer_revision", "signer_workflow", "signer_revision", "run_id", "run_attempt",
+        "artifact_class", "platform", "image", "image_digest",
+    )
+    optional = (
+        "archive_name", "archive_sha256", "archive_bytes", "artifact_service_zip_sha256", "artifact_service_zip_bytes",
+        "artifact_id", "artifact_name", "authorization_context",
+    )
+    for field in required:
+        require(field in expectation, f"provenance expectation omits delivery identity field {field}")
+        require(str(expectation[field]) == str(getattr(identity, field, object())), f"provenance expectation {field} does not match the delivery identity")
+    for field in optional:
+        if field in expectation:
+            require(str(expectation[field]) == str(getattr(identity, field, object())), f"provenance expectation {field} does not match the delivery identity")
+
+
 @dataclass(frozen=True)
 class IndependentReleaseAuthorization:
     """Externally verified authorization record reserved for a future producer.
@@ -1529,6 +1549,10 @@ def run_gh_attestation_verify(
         command.extend(["--bundle", str(bundle)])
     if custom_trusted_root is not None:
         command.extend(["--custom-trusted-root", str(root_snapshot or custom_trusted_root)])
+    trusted_root_digest = None
+    trusted_root_bytes = None
+    if root_snapshot is not None:
+        trusted_root_digest, trusted_root_bytes = _sha256_file(root_snapshot, MAX_BUNDLE_BYTES, "custom trusted root snapshot")
     try:
         if deadline is not None:
             remaining = deadline - time.monotonic()
@@ -1552,6 +1576,9 @@ def run_gh_attestation_verify(
     require(len(document) == 1, "attestation selection is missing or ambiguous")
     require(isinstance(document[0], dict), "official GitHub attestation verifier returned an invalid result")
     document[0]["_verifierVersion"] = verified_version
+    if trusted_root_digest is not None and trusted_root_bytes is not None:
+        document[0]["_trustedRootSha256"] = trusted_root_digest
+        document[0]["_trustedRootBytes"] = trusted_root_bytes
     return document[0]
 
 

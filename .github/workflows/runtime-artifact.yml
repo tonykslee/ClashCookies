@@ -152,6 +152,9 @@ jobs:
       - name: Run trusted SSH delivery boundary regressions
         run: python -m unittest discover -s tests -p 'test_trusted_ssh_artifact_delivery.py' -v
 
+      - name: Run durable retention and readiness regressions
+        run: python -m unittest discover -s tests -p 'test_durable_artifact_retention.py' -v
+
       - name: Acquire independently trusted offline verification root
         env:
           GH_TOKEN: ${{ github.token }}
@@ -165,6 +168,7 @@ jobs:
           test -s "$trusted_root"
           chmod 600 "$trusted_root"
           sha256sum "$trusted_root" | tee "$trusted_root_dir/trusted-root.sha256"
+          echo "CC_TRUSTED_ROOT_VERSION=$(sha256sum "$trusted_root" | awk '{ print substr($1,1,16) }')" >> "$GITHUB_ENV"
           echo "Trusted root was acquired before network-disabled verification and retained outside the checkout." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Select exact artifact-service ZIP and inner archive
@@ -423,6 +427,16 @@ jobs:
             echo "CC_RECEIVER_TRUSTED_ROOT=$custody/trusted_root.jsonl"
             echo "CC_RECEIVER_OFFLINE_EXPECTATION=$custody/receiver-offline-expectation.json"
             echo "CC_RECEIVER_GH=$GH_ATTESTATION_CLI"
+            echo "CC_REAL_RETENTION_OFFLINE=1"
+            echo "CC_RETENTION_REPOSITORY_ROOT=$GITHUB_WORKSPACE"
+            echo "CC_RETENTION_SERVICE_ZIP=$custody/artifact-service.zip"
+            echo "CC_RETENTION_BUNDLE=$custody/attestation-bundle.json"
+            echo "CC_RETENTION_TRUSTED_ROOT=$custody/trusted_root.jsonl"
+            echo "CC_RETENTION_TRUSTED_ROOT_VERSION=$CC_TRUSTED_ROOT_VERSION"
+            echo "CC_RETENTION_EXPECTED_IDENTITY=$custody/receiver-expected-identity.json"
+            echo "CC_RETENTION_OFFLINE_EXPECTATION=$custody/receiver-offline-expectation.json"
+            echo "CC_RECEIVER_PUBLICATION_CAPTURE=$RUNNER_TEMP/receiver-publication-capture"
+            echo "CC_RETENTION_PUBLICATION_CAPTURE=$RUNNER_TEMP/receiver-publication-capture"
           } >> "$GITHUB_ENV"
 
       - name: Run mandatory genuine Linux/OpenSSH receiver integration
@@ -513,6 +527,24 @@ jobs:
           assert not verified.run_metadata_independently_checked
           print("genuine pinned-gh offline attestation verification passed without token or network")
           PY
+
+      - name: Verify operationally retained artifact offline
+        run: |
+          set -euo pipefail
+          test "$CC_REAL_RETENTION_OFFLINE" = 1
+          test -d "$CC_RETENTION_PUBLICATION_CAPTURE"
+          runner_user="$(id -un)"
+          sudo -n unshare --net --mount-proc --fork runuser -u "$runner_user" -- env -i \
+            PATH="/usr/bin:/bin" \
+            PYTHONPATH="$GITHUB_WORKSPACE/scripts" \
+            GH_ATTESTATION_CLI="$GH_ATTESTATION_CLI" \
+            CC_REAL_RETENTION_OFFLINE=1 \
+            CC_RETENTION_REPOSITORY_ROOT="$CC_RETENTION_REPOSITORY_ROOT" \
+            CC_RETENTION_PUBLICATION_CAPTURE="$CC_RETENTION_PUBLICATION_CAPTURE" \
+            CC_RETENTION_TRUSTED_ROOT="$CC_RETENTION_TRUSTED_ROOT" \
+            CC_RETENTION_TRUSTED_ROOT_VERSION="$CC_RETENTION_TRUSTED_ROOT_VERSION" \
+            CC_RETENTION_EXPECTED_IDENTITY="$CC_RETENTION_EXPECTED_IDENTITY" \
+            python3 -m unittest tests.test_durable_artifact_retention.DurableRetentionTests.test_real_retained_offline_verification_after_operational_delivery -v
 
       - name: Verify synthetic policy output is explicitly non-authoritative
         run: |
