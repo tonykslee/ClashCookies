@@ -28,6 +28,17 @@ from typing import BinaryIO, Iterable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime_artifact_provenance import (  # noqa: E402
     DEVELOPMENT_ARTIFACT_CLASS,
+    PRODUCTION_CANDIDATE_ARTIFACT_CLASS,
+    PRODUCTION_CANDIDATE_AUTHORIZATION_CONTEXT,
+    PRODUCTION_CANDIDATE_PROFILE,
+    RELEASE_EVENT,
+    RELEASE_REPOSITORY,
+    RELEASE_REPOSITORY_ID,
+    RELEASE_REPOSITORY_OWNER_ID,
+    RELEASE_SOURCE_REF,
+    RELEASE_IMAGE,
+    RELEASE_PLATFORM,
+    RELEASE_SIGNER_WORKFLOW,
     evaluate_production_eligibility,
     fetch_run_metadata,
     run_gh_attestation_verify,
@@ -611,15 +622,29 @@ def validate_checksum(archive_path: Path, checksum_path: Path, digest: str) -> N
 
 
 def validate_manifest(manifest: dict, archive_name: str, archive_size: int, digest: str, expected: argparse.Namespace, embedded: bool = False) -> None:
+    if expected.expected_artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
+        require(expected.expected_event == RELEASE_EVENT, "candidate manifest expectation event must be push")
+        require(expected.expected_source_ref == RELEASE_SOURCE_REF, "candidate manifest expectation source ref must be main")
+        require(expected.expected_repository == RELEASE_REPOSITORY, "candidate manifest expectation repository is not approved")
+        require(str(expected.expected_repository_id) == str(RELEASE_REPOSITORY_ID), "candidate manifest expectation repository ID is not approved")
+        require(str(expected.expected_repository_owner_id) == str(RELEASE_REPOSITORY_OWNER_ID), "candidate manifest expectation owner ID is not approved")
+        require(expected.expected_signer_workflow == RELEASE_SIGNER_WORKFLOW, "candidate manifest expectation signer workflow is not approved")
+        require(expected.expected_platform == RELEASE_PLATFORM, "candidate manifest expectation platform is unsupported")
+        require(expected.expected_base_image == RELEASE_IMAGE, "candidate manifest expectation runtime image is not approved")
+        require(expected.expected_base_image_digest == RELEASE_IMAGE.split("@", 1)[1], "candidate manifest expectation runtime image digest is not approved")
+    else:
+        require(not (expected.expected_event == RELEASE_EVENT and expected.expected_source_ref == RELEASE_SOURCE_REF), "main push cannot be validated as development evidence")
     require(manifest.get("schemaVersion") == 1, "unsupported manifest schema")
     artifact = manifest.get("artifact")
     require(isinstance(artifact, dict), "manifest artifact section is missing")
     require(require_string(artifact.get("name"), "artifact.name") == archive_name, "manifest archive name does not match archive")
     require(artifact.get("format") == "tar.gz", "manifest artifact format is invalid")
     require(artifact.get("contents") == ["dist", "node_modules", "prisma", "package.json", "yarn.lock"], "manifest artifact contents are invalid")
+    require(artifact.get("artifactClass") == expected.expected_artifact_class, "manifest artifact class does not match independently supplied expectation")
+    if expected.expected_artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
+        require(artifact.get("profile") == PRODUCTION_CANDIDATE_PROFILE, "candidate manifest profile is invalid")
     require_bool(artifact.get("nonProductionEvidence"), "artifact.nonProductionEvidence")
     require(artifact.get("nonProductionEvidence") is True, "artifact is not marked as non-production evidence")
-    require(artifact.get("artifactClass") == DEVELOPMENT_ARTIFACT_CLASS, "manifest artifact class is not development evidence")
     source = manifest.get("source")
     require(isinstance(source, dict), "manifest source section is missing")
     git_sha = require_string(source.get("gitSha"), "source.gitSha").lower()
@@ -637,6 +662,13 @@ def validate_manifest(manifest: dict, archive_name: str, archive_size: int, dige
     require_string(identity.get("event"), "identity.event")
     require_bool(identity.get("deployableRelease"), "identity.deployableRelease")
     require(identity.get("deployableRelease") is False, "artifact is marked deployable")
+    if expected.expected_event is not None:
+        require(identity.get("event") == expected.expected_event, "manifest identity event does not match independently supplied expectation")
+    if expected.expected_artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
+        require(identity.get("kind") == "production_candidate_main_push", "candidate manifest identity kind is invalid")
+        require(identity.get("authorizationContext") == PRODUCTION_CANDIDATE_AUTHORIZATION_CONTEXT, "candidate authorization context is invalid")
+    else:
+        require(identity.get("kind") in {"pull_request_merge_commit", "development_branch_push", "local_validation"}, "development manifest identity kind is invalid")
 
     provenance = manifest.get("provenance")
     require(isinstance(provenance, dict), "manifest provenance section is missing")
@@ -650,6 +682,17 @@ def validate_manifest(manifest: dict, archive_name: str, archive_size: int, dige
     require(isinstance(workflow, dict), "manifest workflow section is missing")
     for key in ("name", "runId", "runAttempt", "ref", "repository"):
         require_string(workflow.get(key), f"workflow.{key}")
+    if expected.expected_artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
+        for key in ("repositoryId", "repositoryOwnerId", "sourceRef", "workflowPath", "signerWorkflow", "signerRevision"):
+            require_string(workflow.get(key), f"workflow.{key}")
+        require(workflow.get("repository") == RELEASE_REPOSITORY, "candidate workflow repository is not approved")
+        require(workflow.get("repositoryId") == str(RELEASE_REPOSITORY_ID), "candidate workflow repository ID is not approved")
+        require(workflow.get("repositoryOwnerId") == str(RELEASE_REPOSITORY_OWNER_ID), "candidate workflow owner ID is not approved")
+        require(workflow.get("ref") == RELEASE_SOURCE_REF and workflow.get("sourceRef") == RELEASE_SOURCE_REF, "candidate workflow source ref is not main")
+        require(workflow.get("workflowPath") == RELEASE_SIGNER_WORKFLOW and workflow.get("signerWorkflow") == RELEASE_SIGNER_WORKFLOW, "candidate workflow identity is not approved")
+        require(bool(GIT_SHA_RE.fullmatch(workflow.get("signerRevision", ""))), "candidate signer revision is not immutable")
+        if expected.expected_signer_revision is not None:
+            require(workflow.get("signerRevision") == expected.expected_signer_revision.lower(), "candidate signer revision does not match independently supplied expectation")
     for key, expected_value in (("repository", expected.expected_repository), ("name", expected.expected_workflow), ("runId", expected.expected_run_id), ("runAttempt", expected.expected_run_attempt)):
         if expected_value is not None:
             require(workflow.get(key) == expected_value, f"manifest workflow.{key} does not match independent CI context")
@@ -1068,6 +1111,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-run-attempt")
     parser.add_argument("--expected-event")
     parser.add_argument("--expected-source-ref")
+    parser.add_argument("--expected-artifact-class", default=DEVELOPMENT_ARTIFACT_CLASS)
     parser.add_argument("--expected-repository-id")
     parser.add_argument("--expected-repository-owner-id")
     parser.add_argument("--expected-repository-visibility", default="public")
@@ -1110,6 +1154,18 @@ def peak_memory_bytes() -> int | None:
 
 def main() -> int:
     args = parse_args()
+    require(args.expected_artifact_class in {DEVELOPMENT_ARTIFACT_CLASS, PRODUCTION_CANDIDATE_ARTIFACT_CLASS}, "expected artifact class is unsupported")
+    if args.expected_artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
+        require(args.expected_repository == RELEASE_REPOSITORY, "candidate expected repository is not approved")
+        require(str(args.expected_repository_id) == str(RELEASE_REPOSITORY_ID), "candidate expected repository ID is not approved")
+        require(str(args.expected_repository_owner_id) == str(RELEASE_REPOSITORY_OWNER_ID), "candidate expected owner ID is not approved")
+        require(args.expected_event == RELEASE_EVENT, "candidate expected event must be push")
+        require(args.expected_source_ref == RELEASE_SOURCE_REF, "candidate expected source ref must be main")
+        require(args.expected_signer_workflow == RELEASE_SIGNER_WORKFLOW, "candidate expected signer workflow is not approved")
+        require(args.expected_signer_revision is not None and bool(GIT_SHA_RE.fullmatch(args.expected_signer_revision.lower())), "candidate expected signer revision is not immutable")
+        require(args.expected_platform == RELEASE_PLATFORM, "candidate expected platform is unsupported")
+        require(args.expected_base_image == RELEASE_IMAGE, "candidate expected runtime image is not the approved pinned image")
+        require(args.expected_base_image_digest == RELEASE_IMAGE.split("@", 1)[1], "candidate expected runtime image digest is not approved")
     limits = Limits(
         compressed_bytes=args.max_compressed_bytes,
         expanded_bytes=args.max_expanded_bytes,
@@ -1156,7 +1212,7 @@ def main() -> int:
                 "pr_head_ref": args.expected_pr_head_ref,
                 "pr_base_sha": args.expected_pr_base_sha,
                 "pr_base_ref": args.expected_pr_base_ref,
-                "artifact_class": DEVELOPMENT_ARTIFACT_CLASS,
+                "artifact_class": args.expected_artifact_class,
                 "platform": args.expected_platform,
                 "image": args.expected_base_image,
                 "image_digest": args.expected_base_image_digest,

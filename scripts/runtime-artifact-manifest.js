@@ -4,6 +4,18 @@ const { createHash } = require("node:crypto");
 const { lstatSync, readFileSync, readdirSync, writeFileSync } = require("node:fs");
 const { join, relative } = require("node:path");
 
+const DEVELOPMENT_ARTIFACT_CLASS = "development-runtime-evidence";
+const PRODUCTION_CANDIDATE_ARTIFACT_CLASS = "production-candidate-runtime-evidence-v1";
+const PRODUCTION_CANDIDATE_PROFILE = "production-candidate-main-push-v1";
+const PRODUCTION_CANDIDATE_AUTHORIZATION_CONTEXT = "production-candidate-selection-only";
+const RELEASE_REPOSITORY = "tonykslee/ClashCookies";
+const RELEASE_REPOSITORY_ID = "668452496";
+const RELEASE_REPOSITORY_OWNER_ID = "18295450";
+const RELEASE_SOURCE_REF = "refs/heads/main";
+const RELEASE_WORKFLOW_PATH = ".github/workflows/runtime-artifact.yml";
+const RELEASE_PLATFORM = "linux/amd64";
+const RELEASE_IMAGE = "node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5";
+
 function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
@@ -44,6 +56,18 @@ function buildManifest(root) {
   const event = process.env.GITHUB_EVENT_NAME || "local";
   const isPullRequest = event === "pull_request";
   const sourceSha = process.env.SOURCE_SHA;
+  const isProductionCandidate = event === "push"
+    && process.env.GITHUB_REF === RELEASE_SOURCE_REF
+    && process.env.GITHUB_REPOSITORY === RELEASE_REPOSITORY
+    && process.env.GITHUB_REPOSITORY_ID === RELEASE_REPOSITORY_ID
+    && process.env.GITHUB_REPOSITORY_OWNER_ID === RELEASE_REPOSITORY_OWNER_ID
+    && process.env.GITHUB_WORKFLOW_PATH === RELEASE_WORKFLOW_PATH
+    && /^[0-9a-f]{40}$/i.test(process.env.GITHUB_WORKFLOW_SHA || "")
+    && /^[0-9a-f]{40}$/i.test(process.env.GITHUB_SHA || "")
+    && process.env.GITHUB_SHA.toLowerCase() === sourceSha?.toLowerCase()
+    && process.env.BUILD_IMAGE === RELEASE_IMAGE
+    && process.env.BUILD_PLATFORM === RELEASE_PLATFORM
+    && process.env.BUILD_ARCHITECTURE === "amd64";
   if (!/^[0-9a-f]{40}$/i.test(sourceSha || "")) throw new Error("SOURCE_SHA must be a full Git SHA");
   const image = process.env.BUILD_IMAGE || "node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5";
   const digest = image.match(/@(?<digest>sha256:[0-9a-f]{64})$/i)?.groups?.digest;
@@ -55,15 +79,19 @@ function buildManifest(root) {
       name: process.env.ARTIFACT_NAME,
       format: "tar.gz",
       contents: ["dist", "node_modules", "prisma", "package.json", "yarn.lock"],
-      artifactClass: "development-runtime-evidence",
+      artifactClass: isProductionCandidate ? PRODUCTION_CANDIDATE_ARTIFACT_CLASS : DEVELOPMENT_ARTIFACT_CLASS,
+      profile: isProductionCandidate ? PRODUCTION_CANDIDATE_PROFILE : "development-runtime-evidence",
       nonProductionEvidence: true,
     },
     source: { gitSha: sourceSha.toLowerCase(), context: "git-archive", untrackedFilesExcluded: true, localEnvironmentFilesExcluded: true, cleanSourceContext: true },
     identity: {
-      kind: isPullRequest ? "pull_request_merge_commit" : event === "push" ? "development_branch_push" : "local_validation",
+      kind: isProductionCandidate ? "production_candidate_main_push" : isPullRequest ? "pull_request_merge_commit" : event === "push" ? "development_branch_push" : "local_validation",
       event,
       deployableRelease: false,
-      note: isPullRequest
+      authorizationContext: isProductionCandidate ? PRODUCTION_CANDIDATE_AUTHORIZATION_CONTEXT : "ci-selection-only",
+      note: isProductionCandidate
+        ? "This main-push candidate is authenticated evidence for a later independent authorization decision; it is not a deployable release or authorization record."
+        : isPullRequest
         ? "GitHub pull_request GITHUB_SHA is a test/merge commit and is not a deployable release identity."
         : "This development artifact is evidence only and is not eligible for production promotion.",
     },
@@ -79,7 +107,10 @@ function buildManifest(root) {
       runAttempt: process.env.GITHUB_RUN_ATTEMPT || "1",
       ref: process.env.GITHUB_REF || "local",
       repository: process.env.GITHUB_REPOSITORY || "local",
+      repositoryId: process.env.GITHUB_REPOSITORY_ID || "local",
+      repositoryOwnerId: process.env.GITHUB_REPOSITORY_OWNER_ID || "local",
       sourceRef: process.env.GITHUB_REF || "local",
+      workflowPath: process.env.GITHUB_WORKFLOW_PATH || "local",
       signerWorkflow: process.env.GITHUB_WORKFLOW_PATH || "local",
       signerRevision: process.env.GITHUB_WORKFLOW_SHA || "local",
       url: process.env.GITHUB_RUN_ID && process.env.GITHUB_SERVER_URL && process.env.GITHUB_REPOSITORY

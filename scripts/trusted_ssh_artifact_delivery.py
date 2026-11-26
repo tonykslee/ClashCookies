@@ -583,6 +583,7 @@ def _validate_inner_archive(archive: Path, checksum: Path, manifest: Path, ident
             expected_run_attempt=str(context.get("run_attempt", identity.run_attempt)),
             expected_event=context.get("event", identity.event),
             expected_source_ref=context.get("source_ref", identity.source_ref),
+            expected_artifact_class=provenance.DEVELOPMENT_ARTIFACT_CLASS,
             expected_base_image=identity.image,
             expected_base_image_digest=identity.image_digest,
         )
