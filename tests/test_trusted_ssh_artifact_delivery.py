@@ -1517,9 +1517,34 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                         time.sleep(0.1)
                     self.fail("candidate disposable sshd did not become ready")
 
+                def assert_receiver_environment(expected_paths: dict[str, Path]) -> None:
+                    environment_names = ["PYTHONPATH", *delivery.RECEIVER_CONFIG_ENV.values(), delivery.RECEIVER_AUTHORIZATION_POLICY_ENV, "CC_SYNTHETIC_VERIFIER_OUTPUT"]
+                    environment_probe = "import json,os; print(json.dumps({key: os.environ.get(key) for key in " + repr(environment_names) + "}, sort_keys=True))"
+                    remote_environment = subprocess.run([
+                        "ssh", "-F", "none", "-T", "-o", "BatchMode=yes", "-o", "RequestTTY=no",
+                        "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known_hosts}",
+                        "-o", f"IdentityFile={client_key}", "-o", "IdentitiesOnly=yes", "-o", f"Port={port_number}",
+                        f"{user}@127.0.0.1", "python3", "-c", shlex.quote(environment_probe),
+                    ], check=False, capture_output=True, text=True)
+                    self.assertEqual(remote_environment.returncode, 0, remote_environment.stderr)
+                    expected_environment = {
+                        "PYTHONPATH": str(SCRIPT.parent),
+                        "CC_RECEIVER_REPOSITORY_ROOT": str(checkout),
+                        "CC_RECEIVER_RECEIVING_ROOT": str(expected_paths["receiving"]),
+                        "CC_RECEIVER_PUBLICATION_ROOT": str(expected_paths["publication"]),
+                        "CC_RECEIVER_EXPECTED_IDENTITY": str(identity_path),
+                        "CC_RECEIVER_TRUSTED_ROOT": str(trusted_root),
+                        "CC_RECEIVER_OFFLINE_EXPECTATION": str(root / "expectation.json"),
+                        "CC_RECEIVER_ATTESTATION_CLI": str(gh_wrapper),
+                        "CC_RECEIVER_AUTHORIZATION_POLICY": str(expected_paths["policy"]),
+                        "CC_SYNTHETIC_VERIFIER_OUTPUT": str(verifier_output),
+                    }
+                    self.assertEqual(json.loads(remote_environment.stdout), expected_environment)
+
                 wait_for_candidate_server()
                 known_hosts.write_text(f"[127.0.0.1]:{port_number} {server_pub[0]} {server_pub[1]}\n", encoding="utf-8")
                 known_hosts.chmod(0o600)
+                assert_receiver_environment({"receiving": receiving, "publication": publication, "policy": policy_path})
                 endpoint = delivery.SshDeliveryEndpoint(host="127.0.0.1", user=user, known_hosts=known_hosts, identity_file=client_key, destination=str(publication), remote_repository_root=str(checkout), remote_receiving_root=str(receiving), remote_publication_root=str(publication), remote_expected_identity=str(identity_path), remote_trusted_root=str(trusted_root), remote_offline_expectation=str(root / "expectation.json"), remote_attestation_cli=str(gh_wrapper), remote_authorization_policy=str(policy_path), port=port_number, execution_timeout_seconds=delivery.MAX_RECEIVING_SECONDS)
                 deliver = lambda: delivery.deliver_exact_artifact_over_ssh(endpoint, service_zip, candidate_identity, checkout, attestation_bundle=bundle, authorization_envelope=envelope_path, candidate_verification_context=context_path)
                 normal = deliver()
@@ -1538,6 +1563,7 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                 lost_receiving = lost_root / "receiving"
                 lost_publication = lost_root / "publication"
                 lost_journal = lost_root / "authorization-journal"
+                lost_root.mkdir(mode=0o700)
                 for path in (lost_receiving, lost_publication, lost_journal):
                     path.mkdir(parents=True, mode=0o700)
                 lost_record = json.loads(json.dumps(authorization_record))
@@ -1562,16 +1588,19 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                 server.wait(timeout=5)
                 server = subprocess.Popen([shutil.which("sshd"), "-D", "-e", "-f", str(config)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 wait_for_candidate_server()
+                assert_receiver_environment({"receiving": lost_receiving, "publication": lost_publication, "policy": lost_policy_path})
                 lost_endpoint = delivery.SshDeliveryEndpoint(host="127.0.0.1", user=user, known_hosts=known_hosts, identity_file=client_key, destination=str(lost_publication), remote_repository_root=str(checkout), remote_receiving_root=str(lost_receiving), remote_publication_root=str(lost_publication), remote_expected_identity=str(identity_path), remote_trusted_root=str(trusted_root), remote_offline_expectation=str(root / "expectation.json"), remote_attestation_cli=str(gh_wrapper), remote_authorization_policy=str(lost_policy_path), port=port_number, execution_timeout_seconds=delivery.MAX_RECEIVING_SECONDS)
                 lost_deliver = lambda: delivery.deliver_exact_artifact_over_ssh(lost_endpoint, service_zip, candidate_identity, checkout, attestation_bundle=bundle, authorization_envelope=lost_envelope_path, candidate_verification_context=context_path)
+                delivery._assert_private_input(lost_envelope_path, checkout, "lost-ack authorization envelope", delivery.provenance.MAX_AUTHORIZATION_RECORD_BYTES)
+                delivery._assert_private_input(lost_policy_path, checkout, "lost-ack receiver authorization policy", delivery.MAX_HEADER_BYTES)
                 drop_directory = root / "ssh-drop-ack"
                 drop_directory.mkdir(mode=0o700)
                 drop_ssh = drop_directory / "ssh"
                 real_ssh = shutil.which("ssh")
-                drop_ssh.write_text(f"#!/bin/sh\n{shlex.quote(real_ssh)} \"$@\" | cat >/dev/null\nexit 75\n", encoding="utf-8")
+                drop_ssh.write_text(f"#!/bin/sh\n{shlex.quote(real_ssh)} \"$@\" >/dev/null\nstatus=$?\nif [ \"$status\" -eq 0 ]; then\n  printf '%s\\n' 'synthetic acknowledgment loss after successful receiver execution' >&2\n  exit 75\nfi\nexit \"$status\"\n", encoding="utf-8")
                 drop_ssh.chmod(0o700)
                 with patch.dict(os.environ, {"PATH": str(drop_directory) + os.pathsep + os.environ["PATH"]}):
-                    with self.assertRaises(delivery.DeliveryError):
+                    with self.assertRaisesRegex(delivery.DeliveryError, "synthetic acknowledgment loss after successful receiver execution"):
                         lost_deliver()
                 lost_publication_path = lost_publication / f"release-{delivery._identity_digest(candidate_identity)}"
                 self.assertTrue(lost_publication_path.is_dir(), "receiver did not complete publication before the acknowledgment was lost")
@@ -1580,6 +1609,7 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                 lost_record_state = lost_state["releases"][delivery._identity_digest(candidate_identity)]
                 self.assertEqual(lost_record_state["identity"], delivery._identity_payload(candidate_identity))
                 self.assertEqual(lost_record_state["roles"], ["pending", "reserved"])
+                self.assertIsNone(lost_record_state["reconciliation"]["authorization"])
                 delivery.provenance.AuthorizationReplayJournal(lost_journal, repository_root=checkout).assert_reserved(lost_envelope, candidate_identity, candidate_allowlist, candidate_trust, operation="forward-release")
                 final = lost_deliver()
                 self.assertEqual(final.status, "retry-success")
@@ -1597,6 +1627,8 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                         excluded_roots=(lost_receiving,),
                     )
                 self.assertEqual(historical["authorizationDiagnostic"]["replayMutation"], "none")
+                self.assertEqual(lost_store.load(), lost_state)
+                delivery.provenance.AuthorizationReplayJournal(lost_journal, repository_root=checkout).assert_reserved(lost_envelope, candidate_identity, candidate_allowlist, candidate_trust, operation="forward-release")
             finally:
                 server.terminate()
                 try:
