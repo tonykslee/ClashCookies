@@ -83,6 +83,35 @@ def _safe_directory(path: Path, label: str) -> None:
         _require(stat.S_IMODE(metadata.st_mode) & 0o077 == 0, f"{label} is not private")
 
 
+def _private_regular_file(path: Path, label: str) -> os.stat_result:
+    try:
+        metadata = os.lstat(path)
+    except OSError as error:
+        _fail(f"{label} is unavailable: {error}")
+    _require(stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), f"{label} must be a regular file")
+    _require(metadata.st_nlink == 1, f"{label} must be a single regular file")
+    if os.name == "posix":
+        _require(metadata.st_uid == os.geteuid(), f"{label} is not owner-controlled")
+        _require(stat.S_IMODE(metadata.st_mode) & 0o077 == 0, f"{label} is not private")
+    return metadata
+
+
+def _timestamp(value: Any, label: str, *, allow_none: bool = False) -> None:
+    if value is None and allow_none:
+        return
+    _require(isinstance(value, str) and value != "", f"{label} is malformed")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        _fail(f"{label} is malformed")
+    _require(parsed.tzinfo is not None, f"{label} must include a timezone")
+
+
+def _nonnegative_int(value: Any, label: str) -> int:
+    _require(type(value) is int and value >= 0, f"{label} must be a non-negative integer")
+    return value
+
+
 def _fsync_directory(path: Path, *, required: bool = True) -> None:
     if os.name != "posix":
         if required:
@@ -145,6 +174,10 @@ def _strict_identity(value: Any) -> dict[str, Any]:
     _require(set(value) == expected_fields, "retained release identity has missing or unexpected fields")
     artifact_class = value.get("artifact_class")
     _require(artifact_class in {provenance.DEVELOPMENT_ARTIFACT_CLASS, provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS}, "retained release artifact class is unsupported")
+    for field in ("repository", "source_ref", "source_sha", "event", "producer_workflow", "producer_revision", "signer_workflow", "signer_revision", "artifact_name", "artifact_class", "artifact_service_zip_sha256", "archive_name", "archive_sha256", "platform", "image", "image_digest", "authorization_context"):
+        _require(type(value[field]) is str and value[field] != "", f"retained identity field is malformed: {field}")
+    for field in ("repository_id", "repository_owner_id", "run_id", "run_attempt", "artifact_id", "artifact_service_zip_bytes", "archive_bytes"):
+        _require(type(value[field]) is int and value[field] > 0, f"retained identity field is malformed: {field}")
     if artifact_class == provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
         try:
             provenance.validate_trusted_release_identity(provenance.TrustedReleaseIdentity(**value))
@@ -162,11 +195,7 @@ def _strict_identity(value: Any) -> dict[str, Any]:
 
 
 def _read_json(path: Path, maximum: int, label: str) -> Any:
-    try:
-        metadata = os.lstat(path)
-    except OSError as error:
-        _fail(f"{label} is unavailable: {error}")
-    _require(stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1 and not stat.S_ISLNK(metadata.st_mode), f"{label} must be a regular file")
+    metadata = _private_regular_file(path, label)
     _require(metadata.st_size <= maximum, f"{label} is oversized")
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -175,6 +204,7 @@ def _read_json(path: Path, maximum: int, label: str) -> Any:
 
 
 def _file_evidence(path: Path, maximum: int, label: str) -> dict[str, Any]:
+    _private_regular_file(path, label)
     digest, size = provenance._sha256_file(path, maximum, label)
     return {"sha256": digest, "bytes": size}
 
@@ -204,6 +234,7 @@ def _validate_state(state: Any) -> dict[str, Any]:
     _require(set(state) == expected, "retention metadata has missing or unexpected fields")
     _require(state["contract"] == RETENTION_CONTRACT and state["version"] == RETENTION_VERSION, "retention metadata contract version is unsupported")
     _require(isinstance(state["generation"], int) and state["generation"] >= 0, "retention metadata generation is invalid")
+    _timestamp(state["updated_at"], "retention metadata updated_at")
     _require(isinstance(state["releases"], dict) and len(state["releases"]) <= MAX_RELEASES, "retention release table is invalid")
     _require(isinstance(state["operations"], dict) and len(state["operations"]) <= MAX_RELEASES, "retention operation table is invalid")
     legacy = state["legacy_baseline"]
@@ -223,6 +254,12 @@ def _validate_state(state: Any) -> dict[str, Any]:
         _require(isinstance(name, str) and name == f"release-{key}", "retention publication ownership is malformed")
         roles = record["roles"]
         _require(isinstance(roles, list) and all(role in {"pending", "reserved", "in-flight", "recovery-protected", "retired"} for role in roles) and len(set(roles)) == len(roles), "retention release roles are malformed")
+        _timestamp(record["created_at"], "retention release created_at")
+        _timestamp(record["retired_at"], "retention release retired_at", allow_none=True)
+        if "retired" in roles:
+            _require(record["retired_at"] is not None, "retired release is missing retired_at")
+        else:
+            _require(record["retired_at"] is None, "unretired release has retired_at")
         evidence = record["evidence"]
         _require(isinstance(evidence, dict) and "artifact-service.zip" in evidence and set(evidence).issubset({"artifact-service.zip", "attestation-bundle.json", "authorization-envelope.json"}), "retention evidence metadata is malformed")
         for evidence_name, evidence_record in evidence.items():
@@ -231,10 +268,19 @@ def _validate_state(state: Any) -> dict[str, Any]:
         _require(isinstance(operation_id, str) and 0 < len(operation_id) <= 128 and isinstance(operation, dict), "retention in-flight operation is malformed")
         _require(set(operation) == {"release_sha256", "kind", "started_at"}, "retention in-flight operation has unexpected fields")
         _require(operation["release_sha256"] in state["releases"], "retention operation references an unknown release")
+        _require(isinstance(operation["kind"], str) and operation["kind"] != "", "retention operation kind is malformed")
+        _timestamp(operation["started_at"], "retention operation started_at")
     for pointer_name in ("active_release", "previous_known_good_release"):
         pointer = state[pointer_name]
         if pointer not in (None, LEGACY_BASELINE_ID):
             _require(pointer in state["releases"], f"{pointer_name} references an unknown release")
+    _require(state["active_release"] is None or state["active_release"] != state["previous_known_good_release"], "active and previous known-good releases must be distinct")
+    for pointer in (state["active_release"], state["previous_known_good_release"]):
+        if pointer not in (None, LEGACY_BASELINE_ID):
+            _require(state["releases"][pointer]["roles"] == [], "active or previous release has conflicting retention roles")
+    for key, record in state["releases"].items():
+        if key not in {state["active_release"], state["previous_known_good_release"]}:
+            _require(record["roles"] != [], "unreferenced release has no retention role")
     return state
 
 
@@ -260,6 +306,8 @@ def assess_storage(
 ) -> StorageAssessment:
     """Account once per filesystem, including overlapping receiving/publication roots."""
     _require(paths and all(isinstance(path, Path) for path in paths), "storage admission requires explicit paths")
+    for value, label in ((temporary_bytes, "temporary_bytes"), (persistent_bytes, "persistent_bytes"), (preserved_runtime_bytes, "preserved_runtime_bytes"), (database_headroom_bytes, "database_headroom_bytes"), (host_headroom_bytes, "host_headroom_bytes"), (temporary_inodes, "temporary_inodes"), (persistent_inodes, "persistent_inodes"), (headroom_inodes, "headroom_inodes")):
+        _nonnegative_int(value, label)
     values: dict[int, dict[str, Any]] = {}
     for path in paths:
         try:
@@ -376,6 +424,7 @@ class RetentionStore:
             if path.exists():
                 evidence[name] = _file_evidence(path, MAX_EVIDENCE_BYTES if name != "artifact-service.zip" else provenance.MAX_ARTIFACT_BYTES, f"retained {name}")
         _require("artifact-service.zip" in evidence, "retained publication is missing the original artifact-service ZIP")
+        _require(evidence["artifact-service.zip"] == {"sha256": identity["artifact_service_zip_sha256"], "bytes": identity["artifact_service_zip_bytes"]}, "retained artifact does not match the immutable release identity")
         roles = ["pending"] + (["reserved"] if authorization_reserved else [])
         def apply() -> None:
             state = self.load()
@@ -439,6 +488,11 @@ class RetentionStore:
             _require(bool(health_gate()), "activation health gate did not pass")
             consume_authorization()
             old_active = state["active_release"]
+            old_previous = state["previous_known_good_release"]
+            if old_previous not in (None, LEGACY_BASELINE_ID, old_active):
+                previous_record = state["releases"][old_previous]
+                previous_record["roles"] = ["retired"]
+                previous_record["retired_at"] = _now()
             if old_active and old_active != identity_sha256:
                 old_record = state["releases"][old_active]
                 old_record["roles"] = [role for role in old_record["roles"] if role not in {"pending", "reserved", "in-flight", "recovery-protected", "retired"}]
@@ -506,6 +560,8 @@ class RetentionStore:
         _require(path.parent == self.root and path.name == record["publication_name"], "release ownership path changed")
         metadata = os.lstat(path)
         _require(stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode) and metadata.st_nlink == 1, "release ownership directory is unsafe")
+        if os.name == "posix":
+            _require(metadata.st_uid == os.geteuid() and stat.S_IMODE(metadata.st_mode) & 0o077 == 0, "release ownership directory is not private or owner-controlled")
         identity = _strict_identity(_read_json(path / "identity.json", MAX_IDENTITY_BYTES, "retained identity"))
         _require(identity_digest(identity) == record["identity_sha256"] and identity == record["identity"], "release ownership identity changed")
         allowed = set(record["evidence"]) | {"identity.json", "artifact-service.zip"}

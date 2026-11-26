@@ -36,32 +36,41 @@ class DurableRetentionTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.repo = self.root / "checkout"
-        self.repo.mkdir()
+        self.repo.mkdir(mode=0o700)
         self.publication = self.root / "publication"
-        self.publication.mkdir()
+        self.publication.mkdir(mode=0o700)
+        if os.name == "posix":
+            self.root.chmod(0o700)
+            self.repo.chmod(0o700)
+            self.publication.chmod(0o700)
         self.store = retention.RetentionStore(self.publication, repository_root=self.repo, require_durable=False)
 
     def tearDown(self) -> None:
         self.temp.cleanup()
 
     def release(self, token: str) -> tuple[dict[str, object], str]:
+        artifact = (token.encode("ascii") * 1024)[:1024]
         digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+        artifact_digest = hashlib.sha256(artifact).hexdigest()
         identity: dict[str, object] = {
             "repository": "tonykslee/ClashCookies", "repository_id": 668452496, "repository_owner_id": 18295450,
             "source_ref": "refs/heads/dev", "source_sha": token * 40, "event": "push",
             "producer_workflow": ".github/workflows/runtime-artifact.yml", "producer_revision": token * 40,
             "signer_workflow": ".github/workflows/runtime-artifact.yml", "signer_revision": token * 40,
             "run_id": 1, "run_attempt": 1, "artifact_id": 1, "artifact_name": "runtime-artifact-1-1",
-            "artifact_class": "development-runtime-evidence", "artifact_service_zip_sha256": digest,
-            "artifact_service_zip_bytes": 1024, "archive_name": f"runtime-{token * 40}.tar.gz",
+            "artifact_class": "development-runtime-evidence", "artifact_service_zip_sha256": artifact_digest,
+            "artifact_service_zip_bytes": len(artifact), "archive_name": f"runtime-{token * 40}.tar.gz",
             "archive_sha256": digest, "archive_bytes": 1, "platform": "linux/amd64", "image": "node:20-bookworm",
             "image_digest": digest, "authorization_context": "development",
         }
         identity_digest = retention.identity_digest(identity)
         path = self.publication / f"release-{identity_digest}"
-        path.mkdir()
+        path.mkdir(mode=0o700)
         (path / "identity.json").write_text(json.dumps(identity, sort_keys=True, separators=(",", ":")), encoding="utf-8")
-        (path / "artifact-service.zip").write_bytes((token.encode("ascii") * 128)[:1024])
+        (path / "artifact-service.zip").write_bytes(artifact)
+        if os.name == "posix":
+            (path / "identity.json").chmod(0o600)
+            (path / "artifact-service.zip").chmod(0o600)
         self.store.register_delivery(identity, path)
         return identity, identity_digest
 
@@ -78,7 +87,6 @@ class DurableRetentionTests(unittest.TestCase):
         _, fourth = self.release("d")
         self.store.transition_active_for_test(first, health_gate=lambda: True, consume_authorization=lambda: None)
         self.store.transition_active_for_test(second, health_gate=lambda: True, consume_authorization=lambda: None)
-        self.store.transition_active_for_test(third, health_gate=lambda: True, consume_authorization=lambda: None)
         self.store.mark_operation("recover-1", fourth, kind="delivery", recovery_required=True)
         dry_run = self.store.garbage_collect()
         self.assertNotIn(first, dry_run["candidates"])
@@ -111,6 +119,21 @@ class DurableRetentionTests(unittest.TestCase):
         self.assertEqual(result["deleted"], [])
         self.assertTrue(unknown.exists())
         self.assertIn({"publication": unknown.name, "reason": "unknown-or-ambiguous-ownership"}, result["unknown"])
+
+    @unittest.skipUnless(os.name == "posix", "Linux ownership and permission regression")
+    def test_gc_preserves_release_with_unsafe_private_permissions(self) -> None:
+        _, digest = self.release("unsafe")
+        self.store.retire(digest)
+        release_path = self.publication / f"release-{digest}"
+        release_path.chmod(0o755)
+        result = self.store.garbage_collect(execute=True)
+        self.assertNotIn(digest, result["deleted"])
+        self.assertIn({"publication": release_path.name, "reason": "unknown-or-ambiguous-ownership"}, result["unknown"])
+        self.assertTrue(release_path.exists())
+
+    def test_storage_rejects_negative_admission_inputs(self) -> None:
+        with self.assertRaises(retention.RetentionError):
+            retention.assess_storage([self.publication], temporary_bytes=-1, persistent_bytes=0)
 
     def test_atomic_metadata_generation_and_malformed_state_fail_closed(self) -> None:
         _, digest = self.release("a")
@@ -146,9 +169,12 @@ class DurableRetentionTests(unittest.TestCase):
         self.store.retire(first)
         trust = self.root / "trusted-root.jsonl"
         journal = self.root / "authorization-journal"
-        journal.mkdir()
+        journal.mkdir(mode=0o700)
         trust.write_text("trusted-root-evidence", encoding="utf-8")
         (journal / "reserved.json").write_text("replay-state", encoding="utf-8")
+        if os.name == "posix":
+            trust.chmod(0o600)
+            (journal / "reserved.json").chmod(0o600)
         self.store.garbage_collect(execute=True)
         self.assertTrue(trust.exists())
         self.assertEqual((journal / "reserved.json").read_text(encoding="utf-8"), "replay-state")
@@ -201,12 +227,17 @@ class DurableRetentionTests(unittest.TestCase):
     def test_readiness_output_is_sanitized_and_fail_closed(self) -> None:
         wrapper = self.root / "deploy-prod.sh"
         wrapper.write_text("#!/bin/sh\n# PRIVATE KEY https://secret.invalid/token\nDEPLOY_ATTEMPT_ID=1\nreconcile_abandoned_resources\nassert_production_health_ready\n", encoding="utf-8")
-        trust = self.root / "trust"
-        trust.mkdir()
+        trust = self.root / "trust-root.jsonl"
+        trust.write_text("trusted-root-evidence", encoding="utf-8")
         journal = self.root / "journal"
-        journal.mkdir()
+        journal.mkdir(mode=0o700)
         legacy = self.root / "legacy"
-        legacy.mkdir()
+        legacy.mkdir(mode=0o700)
+        if os.name == "posix":
+            wrapper.chmod(0o700)
+            trust.chmod(0o600)
+            journal.chmod(0o700)
+            legacy.chmod(0o700)
         config = {
             "storage_paths": [str(self.publication)],
             "temporary_bytes": 1,

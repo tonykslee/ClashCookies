@@ -321,6 +321,8 @@ def _bounded_copy(source: Path, destination: Path, maximum: int, label: str) -> 
     digest = hashlib.sha256()
     try:
         with destination.open("xb") as output:
+            if hasattr(os, "fchmod"):
+                os.fchmod(output.fileno(), 0o600)
             remaining = size
             while remaining:
                 chunk = os.read(descriptor, min(1024 * 1024, remaining))
@@ -748,6 +750,8 @@ def _write_snapshot(snapshot: provenance.ZipSnapshot, destination: Path) -> None
         digest = hashlib.sha256()
         size = 0
         with os.fdopen(descriptor, "rb", closefd=True) as source, destination.open("xb") as target:
+            if hasattr(os, "fchmod"):
+                os.fchmod(target.fileno(), 0o600)
             while chunk := source.read(1024 * 1024):
                 target.write(chunk)
                 digest.update(chunk)
@@ -761,7 +765,8 @@ def _write_snapshot(snapshot: provenance.ZipSnapshot, destination: Path) -> None
 
 
 def _publication_payload(staging: Path, identity: Any, service_zip_snapshot: provenance.ZipSnapshot, bundle: Path | None, authorization_envelope: Any | None = None) -> tuple[tuple[str, int] | None, tuple[str, int] | None]:
-    (staging / "identity.json").write_text(json.dumps(_identity_payload(identity), sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    identity_payload = json.dumps(_identity_payload(identity), sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    provenance._write_private_bytes(staging / "identity.json", identity_payload, "published identity")
     target = staging / "artifact-service.zip"
     _write_snapshot(service_zip_snapshot, target)
     if bundle is not None:
@@ -772,12 +777,7 @@ def _publication_payload(staging: Path, identity: Any, service_zip_snapshot: pro
     if authorization_envelope is not None:
         authorization_copy = staging / "authorization-envelope.json"
         payload = provenance._canonical_json(authorization_envelope) + b"\n"
-        authorization_copy.write_bytes(payload)
-        descriptor = os.open(authorization_copy, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        provenance._write_private_bytes(authorization_copy, payload, "published authorization envelope")
         authorization_result = hashlib.sha256(payload).hexdigest(), len(payload)
     else:
         authorization_result = None
