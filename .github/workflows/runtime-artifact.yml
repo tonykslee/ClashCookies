@@ -495,6 +495,7 @@ jobs:
           test "$CC_RECEIVER_NETWORK_DISABLED" = 1
           python -m unittest \
             tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_real_openssh_receiver_and_exclusive_host_pinning \
+            tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_real_openssh_candidate_receiver_uses_hardened_validator_and_authorization_custody \
             tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_receiver_lock_contention_is_bounded_and_retryable \
             tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_synthetic_authorized_delivery_composes_reservation_publication_and_durable_retry -v
 

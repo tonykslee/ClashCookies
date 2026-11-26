@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import base64
 import ctypes
@@ -431,7 +431,33 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             "platform": identity.platform, "image": identity.image, "image_digest": identity.image_digest,
             "archive_name": identity.archive_name, "archive_sha256": identity.archive_sha256, "archive_bytes": identity.archive_bytes,
         }
-        verified = type("Verified", (), {field: getattr(identity, field) for field in ("repository", "source_ref", "source_sha", "event", "signer_workflow", "signer_revision", "run_id", "run_attempt", "artifact_class", "platform", "image", "image_digest", "archive_name", "archive_sha256", "archive_bytes")})()
+        verified = delivery.provenance.AuthenticatedProvenance(
+            archive_name=identity.archive_name,
+            archive_sha256=identity.archive_sha256,
+            archive_bytes=identity.archive_bytes,
+            artifact_class=identity.artifact_class,
+            repository=identity.repository,
+            repository_id=str(identity.repository_id),
+            source_ref=identity.source_ref,
+            source_sha=identity.source_sha,
+            event=identity.event,
+            signer_workflow=identity.signer_workflow,
+            signer_revision=identity.signer_revision,
+            run_id=identity.run_id,
+            run_attempt=identity.run_attempt,
+            platform=identity.platform,
+            image=identity.image,
+            image_digest=identity.image_digest,
+            pull_request=None,
+            receipt=delivery.provenance.VerificationReceipt(
+                tool="gh attestation verify",
+                version=delivery.provenance.SUPPORTED_GH_VERSION,
+                subject_digest=identity.archive_sha256,
+                certificate_verified=True,
+                certificate_identity="https://github.com/tonykslee/ClashCookies/.github/workflows/runtime-artifact.yml@" + identity.signer_revision,
+                run_invocation_uri=f"https://github.com/{identity.repository}/actions/runs/{identity.run_id}/attempts/{identity.run_attempt}",
+            ),
+        )
         delivery._validate_provenance_binding(identity, expectation, verified)
         expectation["source_sha"] = "0" * 40
         with self.assertRaisesRegex(delivery.DeliveryError, "source_sha"):
@@ -573,6 +599,9 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             context_path = root / "independent-verification-context.json"
             context_path.write_bytes(delivery.provenance._canonical_json(context) + b"\n")
             context_digest = hashlib.sha256(context_path.read_bytes()).hexdigest()
+            receiving = root / "receiving"
+            publication = root / "publication"
+            journal_root = root / "journal"
             authorization = delivery.provenance.IndependentReleaseAuthorization(
                 authorization_id="delivery-test-auth", context=identity.authorization_context, scope="forward-release",
                 repository=identity.repository, repository_id=identity.repository_id, repository_owner_id=identity.repository_owner_id,
@@ -586,7 +615,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 platform=identity.platform, image=identity.image, image_digest=identity.image_digest,
                 issued_at="2026-11-25T12:00:00Z", expires_at="2026-11-26T12:00:00Z", retry_key="delivery-test-auth",
                 recovery_context=None, signing_key_id="test-key",
-                verification=delivery.provenance.AuthorizationVerificationReceipt("test", "f" * 64, "2026-11-25T12:00:00Z", "test-key", key_fingerprint="1" * 64), verification_context_sha256=context_digest,
+                verification=delivery.provenance.AuthorizationVerificationReceipt("test", "f" * 64, "2026-11-25T12:00:00Z", "test-key", key_fingerprint="1" * 64), verification_context_sha256=context_digest, delivery_destination=str(publication),
             )
             material = root / "key-material"
             material.mkdir(mode=0o700)
@@ -607,9 +636,6 @@ class TrustedSshDeliveryTests(unittest.TestCase):
 
             envelope = signed_envelope(authorization)
             allowlist = delivery.provenance.AuthorizationRevisionAllowlist(identity.producer_workflow, (identity.producer_revision,), identity.signer_workflow, (identity.signer_revision,))
-            receiving = root / "receiving"
-            publication = root / "publication"
-            journal_root = root / "journal"
             for path in (receiving, publication, journal_root):
                 path.mkdir(mode=0o700)
             journal = delivery.provenance.AuthorizationReplayJournal(journal_root, repository_root=checkout)
@@ -620,7 +646,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             trusted_root.write_text("synthetic trusted root\n", encoding="utf-8")
             trusted_root_digest, trusted_root_bytes = delivery.provenance._sha256_file(trusted_root, delivery.provenance.MAX_BUNDLE_BYTES, "synthetic trusted root")
             verification_expectation = {"contract": "clashcookies.retained-verification-expectation", "version": 1, "identity_sha256": delivery._identity_digest(identity), "repository": identity.repository, "repository_id": str(identity.repository_id), "repository_owner_id": str(identity.repository_owner_id), "source_ref": identity.source_ref, "source_sha": identity.source_sha, "event": identity.event, "producer_workflow": identity.producer_workflow, "producer_revision": identity.producer_revision, "signer_workflow": identity.signer_workflow, "signer_revision": identity.signer_revision, "run_id": identity.run_id, "run_attempt": identity.run_attempt, "artifact_class": identity.artifact_class, "platform": identity.platform, "image": identity.image, "image_digest": identity.image_digest, "archive_name": identity.archive_name, "archive_sha256": identity.archive_sha256, "archive_bytes": identity.archive_bytes, "trusted_root_sha256": trusted_root_digest, "trusted_root_bytes": trusted_root_bytes, "trusted_root_version": trusted_root_digest[:16], "verifier_version": delivery.provenance.SUPPORTED_GH_VERSION}
-            verification_receipt = {"status": "verified-provenance-only", "authenticated": True, "synthetic": True}
+            verification_receipt = {"status": "verified-provenance-only", "authenticated": True, "synthetic": True, "source": "isolated-test-harness"}
             (material / "revision-allowlist.json").write_bytes(delivery.provenance._canonical_json({"producer_workflow": identity.producer_workflow, "producer_revisions": [identity.producer_revision], "signer_workflow": identity.signer_workflow, "signer_revisions": [identity.signer_revision]}) + b"\n")
             delivery_kwargs = {"attestation_bundle": attestation_bundle, "candidate_verification_context": context_path, "verification_expectation": verification_expectation, "verification_receipt": verification_receipt, "trusted_root": trusted_root, "trusted_root_expected": (trusted_root_digest, trusted_root_bytes)}
             with patch.object(delivery, "_publish_payload", side_effect=delivery.DeliveryError("interrupted after reservation")), self.assertRaises(delivery.DeliveryError):
@@ -817,6 +843,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 f"AuthorizedKeysFile {authorized}", "PasswordAuthentication no", "KbdInteractiveAuthentication no",
                 "PubkeyAuthentication yes", "UsePAM no", "StrictModes no", "LogLevel QUIET",
                 "PermitUserEnvironment no", f"SetEnv PYTHONPATH={SCRIPT.parent}",
+                f"SetEnv CC_RECEIVER_REPOSITORY_ROOT={checkout}", f"SetEnv CC_RECEIVER_RECEIVING_ROOT={receiving}", f"SetEnv CC_RECEIVER_PUBLICATION_ROOT={publication}", f"SetEnv CC_RECEIVER_EXPECTED_IDENTITY={identity_path}", f"SetEnv CC_RECEIVER_TRUSTED_ROOT={trusted_root}", f"SetEnv CC_RECEIVER_OFFLINE_EXPECTATION={expectation}", f"SetEnv CC_RECEIVER_ATTESTATION_CLI={gh_wrapper}",
             ]) + "\n", encoding="utf-8")
             config.chmod(0o600)
             server_command = [shutil.which("sshd"), "-D", "-e", "-f", str(config)]
@@ -937,6 +964,234 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 self.assertTrue((capture / "retention-state.json").is_file(), "operational publication did not retain durable metadata")
             finally:
                 stop_server(server)
+
+    @unittest.skipUnless(os.environ.get("CC_REAL_RECEIVER") == "1", "candidate OpenSSH integration is enabled only by mandatory Linux CI")
+    def test_real_openssh_candidate_receiver_uses_hardened_validator_and_authorization_custody(self) -> None:
+        """Exercise the candidate frame over OpenSSH with only the verifier seam synthetic."""
+        self.assertEqual(os.name, "posix", "candidate receiver integration requires Linux/POSIX")
+        for executable in ("ssh", "sshd", "ssh-keygen", "openssl"):
+            self.assertIsNotNone(shutil.which(executable), f"candidate receiver integration requires {executable}")
+        with TemporaryDirectory() as directory_name:
+            root = Path(directory_name)
+            root.chmod(0o700)
+            checkout = Path(os.environ["CC_RECEIVER_REPOSITORY_ROOT"])
+            source_service_zip = Path(os.environ["CC_RECEIVER_SERVICE_ZIP"])
+            source_identity = delivery.identity_from_json(json.loads(Path(os.environ["CC_RECEIVER_EXPECTED_IDENTITY"]).read_text(encoding="utf-8")))
+            with ZipFile(source_service_zip) as source_service:
+                source_archive_bytes = source_service.read(source_identity.archive_name)
+                source_manifest = json.loads(source_service.read(f"{source_identity.archive_name}.manifest.json"))
+
+            source_sha = "1" * 40
+            run_id = 2987654321
+            run_attempt = 1
+            signer_revision = "3" * 40
+            producer_revision = "2" * 40
+            archive_name = f"clashcookies-runtime-{source_sha}.tar.gz"
+            candidate_manifest = json.loads(json.dumps(source_manifest))
+            candidate_manifest["artifact"].update({"name": archive_name, "artifactClass": delivery.provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS, "profile": delivery.provenance.PRODUCTION_CANDIDATE_PROFILE, "nonProductionEvidence": True})
+            candidate_manifest["source"]["gitSha"] = source_sha
+            candidate_manifest["identity"].update({"event": "push", "kind": "production_candidate_main_push", "authorizationContext": delivery.provenance.CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT, "deployableRelease": False})
+            candidate_manifest["workflow"].update({"name": delivery.provenance.RELEASE_SIGNER_WORKFLOW, "runId": str(run_id), "runAttempt": str(run_attempt), "ref": delivery.provenance.RELEASE_SOURCE_REF, "repository": delivery.provenance.RELEASE_REPOSITORY, "repositoryId": str(delivery.provenance.RELEASE_REPOSITORY_ID), "repositoryOwnerId": str(delivery.provenance.RELEASE_REPOSITORY_OWNER_ID), "sourceRef": delivery.provenance.RELEASE_SOURCE_REF, "workflowPath": delivery.provenance.RELEASE_SIGNER_WORKFLOW, "signerWorkflow": delivery.provenance.RELEASE_SIGNER_WORKFLOW, "signerRevision": signer_revision})
+            candidate_manifest["build"].update({"platform": delivery.provenance.RELEASE_PLATFORM, "architecture": "amd64", "baseImage": delivery.provenance.RELEASE_IMAGE, "baseImageDigest": delivery.provenance.RELEASE_IMAGE.split("@", 1)[1]})
+            with tarfile.open(fileobj=BytesIO(source_archive_bytes), mode="r:gz") as source_tar:
+                tar_members: list[tuple[tarfile.TarInfo, bytes | None]] = []
+                for member in source_tar.getmembers():
+                    payload = source_tar.extractfile(member).read() if member.isfile() else None
+                    if member.name == "runtime-artifact-manifest.json":
+                        payload = json.dumps(candidate_manifest, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                        member.size = len(payload)
+                    member.pax_headers = {}
+                    tar_members.append((member, payload))
+            archive_buffer = BytesIO()
+            with tarfile.open(fileobj=archive_buffer, mode="w:gz", format=tarfile.GNU_FORMAT) as candidate_tar:
+                for member, payload in tar_members:
+                    candidate_tar.addfile(member, BytesIO(payload) if payload is not None else None)
+            candidate_archive_bytes = archive_buffer.getvalue()
+            archive_digest = hashlib.sha256(candidate_archive_bytes).hexdigest()
+            footprint = sum(member.size for member, _payload in tar_members if member.isfile() and (member.name in {"package.json", "yarn.lock", "runtime-artifact-manifest.json"} or member.name.startswith(("dist/", "node_modules/", "prisma/"))))
+            external_manifest = json.loads(json.dumps(candidate_manifest))
+            external_manifest["artifact"].update({"archiveSha256": archive_digest, "archiveBytes": len(candidate_archive_bytes)})
+            external_manifest["integrity"]["sha256"] = archive_digest
+            external_manifest["measurements"].update({"archiveBytes": len(candidate_archive_bytes), "extractedFootprintBytes": footprint})
+
+            candidate_identity = delivery.provenance.TrustedReleaseIdentity(
+                repository=delivery.provenance.RELEASE_REPOSITORY, repository_id=delivery.provenance.RELEASE_REPOSITORY_ID, repository_owner_id=delivery.provenance.RELEASE_REPOSITORY_OWNER_ID,
+                source_ref=delivery.provenance.RELEASE_SOURCE_REF, source_sha=source_sha, event="push", producer_workflow=delivery.provenance.RELEASE_PRODUCER_WORKFLOW, producer_revision=producer_revision,
+                signer_workflow=delivery.provenance.RELEASE_SIGNER_WORKFLOW, signer_revision=signer_revision, run_id=run_id, run_attempt=run_attempt, artifact_id=987654,
+                artifact_name=f"runtime-artifact-{run_id}-{run_attempt}", artifact_class=delivery.provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS,
+                artifact_service_zip_sha256="0" * 64, artifact_service_zip_bytes=1, archive_name=archive_name, archive_sha256=archive_digest, archive_bytes=len(candidate_archive_bytes),
+                platform=delivery.provenance.RELEASE_PLATFORM, image=delivery.provenance.RELEASE_IMAGE, image_digest=delivery.provenance.RELEASE_IMAGE.split("@", 1)[1], authorization_context=delivery.provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT,
+            )
+            archive_path = root / archive_name
+            archive_path.write_bytes(candidate_archive_bytes)
+            service_zip = root / "candidate-artifact-service.zip"
+            with ZipFile(service_zip, "w") as candidate_service:
+                candidate_service.writestr(archive_name, candidate_archive_bytes)
+                candidate_service.writestr(f"{archive_name}.sha256", f"{archive_digest}  {archive_name}\n")
+                candidate_service.writestr(f"{archive_name}.manifest.json", json.dumps(external_manifest, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+            service_digest = hashlib.sha256(service_zip.read_bytes()).hexdigest()
+            candidate_identity = replace(candidate_identity, artifact_service_zip_sha256=service_digest, artifact_service_zip_bytes=service_zip.stat().st_size)
+            delivery.provenance.validate_trusted_release_identity(candidate_identity)
+
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+            completion_boundary = (now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+            verification_completed = (now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
+            context = {
+                "contract": delivery.provenance.CANDIDATE_VERIFICATION_CONTEXT_CONTRACT, "version": delivery.provenance.CANDIDATE_VERIFICATION_CONTEXT_VERSION, "authoritative": False, "independentlyCompleted": True,
+                "identitySha256": delivery.provenance._identity_fingerprint(candidate_identity), "sourceSha": source_sha, "artifactClass": candidate_identity.artifact_class,
+                "run": {"id": run_id, "attempt": run_attempt, "status": "completed", "conclusion": "success", "createdAt": (now - timedelta(minutes=7)).isoformat().replace("+00:00", "Z"), "startedAt": (now - timedelta(minutes=6)).isoformat().replace("+00:00", "Z"), "updatedAt": verification_completed, "jobCompletionBoundary": completion_boundary},
+                "jobs": [{"id": index, "runId": run_id, "runAttempt": run_attempt, "headSha": source_sha, "name": name, "status": "completed", "conclusion": "success", "steps": [{"name": step, "status": "completed", "conclusion": "success"} for step in steps]} for index, (name, steps) in enumerate(delivery.provenance.CANDIDATE_REQUIRED_JOBS.items(), 1)],
+                "attestation": {"status": "official-verifier-authenticated", "authenticated": True, "verifier": "synthetic-harness", "verifierVersion": delivery.provenance.SUPPORTED_GH_VERSION, "subjectDigest": archive_digest},
+                "archiveValidation": {"status": "hardened-validated", "archiveSha256": archive_digest, "archiveBytes": len(candidate_archive_bytes), "extracted": True},
+                "workflowIdentity": {"producerWorkflow": candidate_identity.producer_workflow, "producerRevision": producer_revision, "signerWorkflow": candidate_identity.signer_workflow, "signerRevision": signer_revision, "policy": "immutable-owner-allowlist"},
+                "verificationCompletedAt": verification_completed,
+            }
+            context_path = root / "independent-verification-context.json"
+            context_path.write_bytes(delivery.provenance._canonical_json(context) + b"\n")
+
+            expectation = {"repository": candidate_identity.repository, "repository_id": str(candidate_identity.repository_id), "repository_owner_id": str(candidate_identity.repository_owner_id), "repository_visibility": "public", "producer_workflow": candidate_identity.producer_workflow, "producer_revision": candidate_identity.producer_revision, "signer_workflow": candidate_identity.signer_workflow, "signer_revision": candidate_identity.signer_revision, "source_ref": candidate_identity.source_ref, "source_sha": candidate_identity.source_sha, "event": candidate_identity.event, "workflow_name": candidate_identity.signer_workflow, "run_id": candidate_identity.run_id, "run_attempt": candidate_identity.run_attempt, "artifact_class": candidate_identity.artifact_class, "platform": candidate_identity.platform, "image": candidate_identity.image, "image_digest": candidate_identity.image_digest, "archive_name": candidate_identity.archive_name, "archive_sha256": candidate_identity.archive_sha256, "archive_bytes": candidate_identity.archive_bytes, "verifier_version": delivery.provenance.SUPPORTED_GH_VERSION}
+            verifier_output = root / "synthetic-verifier-output.json"
+            repository_uri = f"https://github.com/{candidate_identity.repository}"
+            workflow_uri = f"{repository_uri}/{candidate_identity.signer_workflow}"
+            run_uri = f"{repository_uri}/actions/runs/{run_id}/attempts/{run_attempt}"
+            verifier_document = [{"verificationResult": {
+                "mediaType": "application/vnd.dev.sigstore.verificationresult+json;version=0.1",
+                "statement": {
+                    "_type": "https://in-toto.io/Statement/v1",
+                    "predicateType": delivery.provenance.SLSA_PROVENANCE_V1,
+                    "subject": [{"name": archive_name, "digest": {"sha256": archive_digest}}],
+                    "predicate": {
+                        "buildDefinition": {
+                            "buildType": delivery.provenance.ACTIONS_WORKFLOW_BUILD_TYPE,
+                            "externalParameters": {"workflow": {"path": candidate_identity.signer_workflow, "ref": candidate_identity.source_ref, "repository": repository_uri}},
+                            "internalParameters": {"github": {"event_name": "push", "repository_id": candidate_identity.repository_id, "repository_owner_id": candidate_identity.repository_owner_id, "runner_environment": delivery.provenance.GITHUB_HOSTED_RUNNER}},
+                            "resolvedDependencies": [{"uri": f"git+{repository_uri}@{candidate_identity.source_ref}", "digest": {"gitCommit": source_sha}}],
+                        },
+                        "runDetails": {"builder": {"id": f"{workflow_uri}@{candidate_identity.source_ref}"}, "metadata": {"invocationId": run_uri}},
+                    },
+                },
+                "signature": {"certificate": {
+                    "certificateIssuer": "CN=sigstore-intermediate,O=sigstore.dev", "sourceRepositoryURI": repository_uri,
+                    "sourceRepositoryIdentifier": str(candidate_identity.repository_id), "sourceRepositoryOwnerIdentifier": str(candidate_identity.repository_owner_id),
+                    "sourceRepositoryOwnerURI": "https://github.com/tonykslee", "sourceRepositoryRef": candidate_identity.source_ref, "sourceRepositoryDigest": source_sha,
+                    "githubWorkflowTrigger": "push", "githubWorkflowSHA": signer_revision, "githubWorkflowName": candidate_identity.signer_workflow,
+                    "githubWorkflowRepository": candidate_identity.repository, "githubWorkflowRef": candidate_identity.source_ref, "buildTrigger": "push",
+                    "buildSignerURI": f"{workflow_uri}@{candidate_identity.source_ref}", "buildSignerDigest": signer_revision,
+                    "buildConfigURI": f"{workflow_uri}@{candidate_identity.source_ref}", "buildConfigDigest": signer_revision,
+                    "runInvocationURI": run_uri, "runnerEnvironment": delivery.provenance.GITHUB_HOSTED_RUNNER, "issuer": delivery.provenance.GITHUB_OIDC_ISSUER,
+                    "sourceRepositoryVisibilityAtSigning": "public", "subjectAlternativeName": f"{workflow_uri}@{candidate_identity.source_ref}",
+                }},
+                "verifiedTimestamps": [verification_completed],
+            }}]
+            verifier_output.write_text(json.dumps(verifier_document), encoding="utf-8")
+
+            material = root / "authorization-custody"
+            material.mkdir(mode=0o700)
+            private_key = material / "owner-private.pem"
+            public_key = material / "owner-public.pem"
+            subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(private_key)], check=True, capture_output=True)
+            subprocess.run(["openssl", "pkey", "-in", str(private_key), "-pubout", "-out", str(public_key)], check=True, capture_output=True)
+            public_key.chmod(0o600)
+            der = material / "owner-public.der"
+            subprocess.run(["openssl", "pkey", "-pubin", "-in", str(public_key), "-outform", "DER", "-out", str(der)], check=True, capture_output=True)
+            key_fingerprint = hashlib.sha256(der.read_bytes()).hexdigest()
+            allowlist = material / "revision-allowlist.json"
+            allowlist.write_bytes(delivery.provenance._canonical_json({"producer_workflow": candidate_identity.producer_workflow, "producer_revisions": [producer_revision], "signer_workflow": candidate_identity.signer_workflow, "signer_revisions": [signer_revision]}) + b"\n")
+            authorization_record = delivery.provenance.prepare_owner_authorization_record(candidate_identity, authorization_id="candidate-ssh-test", issued_at=now.isoformat().replace("+00:00", "Z"), expires_at=(now + timedelta(hours=24)).isoformat().replace("+00:00", "Z"), signing_key_id="candidate-test-key", verification_context_sha256=hashlib.sha256(context_path.read_bytes()).hexdigest(), delivery_destination=str(root / "publication"), verification_completed_at=verification_completed)
+            record_path = material / "authorization-record.json"
+            signature_path = material / "authorization-record.sig"
+            record_path.write_bytes(delivery.provenance._canonical_json(authorization_record))
+            subprocess.run(["openssl", "pkeyutl", "-sign", "-rawin", "-inkey", str(private_key), "-in", str(record_path), "-out", str(signature_path)], check=True, capture_output=True)
+            envelope = delivery.provenance.assemble_owner_authorization_envelope(authorization_record, signature_path.read_bytes(), "candidate-test-key")
+            envelope_path = root / "authorization-envelope.json"
+            envelope_path.write_bytes(delivery.provenance._canonical_json(envelope) + b"\n")
+            journal = root / "authorization-journal"
+            journal.mkdir(mode=0o700)
+            policy_path = root / "receiver-authorization-policy.json"
+            policy_path.write_bytes(delivery.provenance._canonical_json({"contract": "clashcookies.receiver-authorization-policy", "version": 1, "repository": candidate_identity.repository, "destination": str(root / "publication"), "artifact_class": candidate_identity.artifact_class, "authorization_context": delivery.provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT, "public_key_path": str(public_key), "key_id": "candidate-test-key", "key_fingerprint": key_fingerprint, "allowlist_path": str(allowlist), "journal_path": str(journal)}))
+
+            identity_path = root / "candidate-identity.json"
+            identity_path.write_bytes(delivery.provenance._canonical_json(delivery._identity_payload(candidate_identity)) + b"\n")
+            trusted_root = root / "trusted-root.jsonl"
+            trusted_root.write_text("synthetic candidate trust root\n", encoding="utf-8")
+            bundle = root / "attestation-bundle.json"
+            bundle.write_text("{\"synthetic\":true}\n", encoding="utf-8")
+            gh_wrapper = root / "synthetic-gh"
+            gh_wrapper.write_text("#!/bin/sh\nif [ \"$1\" = version ]; then echo 'gh version 2.89.0'; else cat \"$CC_SYNTHETIC_VERIFIER_OUTPUT\"; fi\n", encoding="utf-8")
+            gh_wrapper.chmod(0o700)
+            receiving = root / "receiving"
+            publication = root / "publication"
+            receiving.mkdir(mode=0o700)
+            publication.mkdir(mode=0o700)
+            server_key = root / "server_key"
+            client_key = root / "client_key"
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(server_key)], check=True, capture_output=True)
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(client_key)], check=True, capture_output=True)
+            authorized = root / "authorized_keys"
+            authorized.write_text(client_key.with_suffix(".pub").read_text(encoding="utf-8"), encoding="utf-8")
+            authorized.chmod(0o600)
+            server_pub = server_key.with_suffix(".pub").read_text(encoding="utf-8").split()
+            known_hosts = root / "known_hosts"
+            known_hosts.touch(mode=0o600)
+            port = socket.socket()
+            port.bind(("127.0.0.1", 0))
+            port_number = port.getsockname()[1]
+            port.close()
+            user = getpass.getuser()
+            config = root / "sshd_config"
+            set_env = [f"SetEnv PYTHONPATH={SCRIPT.parent}", f"SetEnv CC_RECEIVER_REPOSITORY_ROOT={checkout}", f"SetEnv CC_RECEIVER_RECEIVING_ROOT={receiving}", f"SetEnv CC_RECEIVER_PUBLICATION_ROOT={publication}", f"SetEnv CC_RECEIVER_EXPECTED_IDENTITY={identity_path}", f"SetEnv CC_RECEIVER_TRUSTED_ROOT={trusted_root}", f"SetEnv CC_RECEIVER_OFFLINE_EXPECTATION={root / 'expectation.json'}", f"SetEnv CC_RECEIVER_ATTESTATION_CLI={gh_wrapper}", f"SetEnv CC_RECEIVER_AUTHORIZATION_POLICY={policy_path}", f"SetEnv CC_SYNTHETIC_VERIFIER_OUTPUT={verifier_output}"]
+            (root / "expectation.json").write_bytes(json.dumps(expectation, sort_keys=True, separators=(",", ":")).encode())
+            for private_input in (service_zip, context_path, envelope_path, identity_path, trusted_root, bundle, verifier_output, policy_path, allowlist, root / "expectation.json"):
+                private_input.chmod(0o600)
+            config.write_text("\n".join([f"Port {port_number}", "ListenAddress 127.0.0.1", f"HostKey {server_key}", f"AuthorizedKeysFile {authorized}", "PasswordAuthentication no", "KbdInteractiveAuthentication no", "PubkeyAuthentication yes", "UsePAM no", "StrictModes no", "LogLevel QUIET", "PermitUserEnvironment no", *set_env]) + "\n", encoding="utf-8")
+            config.chmod(0o600)
+            server = subprocess.Popen([shutil.which("sshd"), "-D", "-e", "-f", str(config)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                for _ in range(60):
+                    probe = subprocess.run(["ssh", "-F", "none", "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", f"IdentityFile={client_key}", "-o", "IdentitiesOnly=yes", "-p", str(port_number), f"{user}@127.0.0.1", "true"], capture_output=True)
+                    if probe.returncode == 0:
+                        break
+                    time.sleep(0.1)
+                else:
+                    self.fail("candidate disposable sshd did not become ready")
+                known_hosts.write_text(f"[127.0.0.1]:{port_number} {server_pub[0]} {server_pub[1]}\n", encoding="utf-8")
+                known_hosts.chmod(0o600)
+                endpoint = delivery.SshDeliveryEndpoint(host="127.0.0.1", user=user, known_hosts=known_hosts, identity_file=client_key, destination=str(publication), remote_repository_root=str(checkout), remote_receiving_root=str(receiving), remote_publication_root=str(publication), remote_expected_identity=str(identity_path), remote_trusted_root=str(trusted_root), remote_offline_expectation=str(root / "expectation.json"), remote_attestation_cli=str(gh_wrapper), remote_authorization_policy=str(policy_path), port=port_number, execution_timeout_seconds=delivery.MAX_RECEIVING_SECONDS)
+                deliver = lambda: delivery.deliver_exact_artifact_over_ssh(endpoint, service_zip, candidate_identity, checkout, attestation_bundle=bundle, authorization_envelope=envelope_path, candidate_verification_context=context_path)
+                first = deliver()
+                self.assertEqual(first.status, "published")
+                retry = deliver()
+                self.assertEqual(retry.status, "retry-success")
+                self.assertTrue((Path(first.publication) / "authorization-envelope.json").is_file())
+                drop_ssh = root / "ssh-drop-ack"
+                real_ssh = shutil.which("ssh")
+                drop_ssh.write_text(f"#!/bin/sh\n{shlex.quote(real_ssh)} \"$@\" | cat >/dev/null\nexit 75\n", encoding="utf-8")
+                drop_ssh.chmod(0o700)
+                with patch.dict(os.environ, {"PATH": str(root) + os.pathsep + os.environ["PATH"]}):
+                    with self.assertRaises(delivery.DeliveryError):
+                        deliver()
+                final = deliver()
+                self.assertEqual(final.status, "retry-success")
+                trusted_root_digest = hashlib.sha256(trusted_root.read_bytes()).hexdigest()
+                historical = delivery.retention.RetentionStore(publication, repository_root=checkout, require_durable=False).verify_retained_offline(
+                    final.identity_sha256,
+                    trusted_root=trusted_root,
+                    trusted_root_version=trusted_root_digest[:16],
+                    verifier_version=delivery.provenance.SUPPORTED_GH_VERSION,
+                    authorization_public_key=public_key,
+                    authorization_key_id="candidate-test-key",
+                    authorization_key_fingerprint=key_fingerprint,
+                    authorization_allowlist=allowlist,
+                    excluded_roots=(receiving,),
+                )
+                self.assertEqual(historical["authorizationDiagnostic"]["replayMutation"], "none")
+            finally:
+                server.terminate()
+                try:
+                    server.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    server.kill()
+                    server.wait(timeout=2)
 
 
 if __name__ == "__main__":

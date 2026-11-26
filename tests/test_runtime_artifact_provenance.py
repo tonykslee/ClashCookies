@@ -15,7 +15,7 @@ import struct
 import subprocess
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1196,12 +1196,12 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         context, context_digest = provenance.independent_candidate_verification_context(
             provenance.validate_completed_candidate_run(main_selection_request(), candidate_run_metadata(), candidate_jobs()), identity
         )
-        record = provenance.prepare_owner_authorization_record(identity, authorization_id="candidate-auth", issued_at="2026-11-25T12:00:00Z", expires_at="2026-11-26T12:00:00Z", signing_key_id="owner-key", verification_context_sha256=context_digest)
+        record = provenance.prepare_owner_authorization_record(identity, authorization_id="candidate-auth", issued_at="2026-11-25T20:00:00Z", expires_at="2026-11-26T20:00:00Z", signing_key_id="owner-key", verification_context_sha256=context_digest, delivery_destination="/srv/candidate", verification_completed_at="2026-11-25T19:48:13Z")
         self.assertEqual(record["authorization"]["context"], provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT)
         self.assertEqual(record["release"]["authorization_context"], provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT)
         self.assertEqual(hashlib.sha256(provenance._canonical_json(context) + b"\n").hexdigest(), context_digest)
         with self.assertRaises(provenance.ProvenanceError):
-            provenance.prepare_owner_authorization_record(identity, authorization_id="candidate-auth", issued_at="2026-11-25T12:00:00Z", expires_at="2026-11-26T12:00:00Z", signing_key_id="owner-key")
+            provenance.prepare_owner_authorization_record(identity, authorization_id="candidate-auth", issued_at="2026-11-25T20:00:00Z", expires_at="2026-11-26T20:00:00Z", signing_key_id="owner-key", delivery_destination="/srv/candidate", verification_completed_at="2026-11-25T19:48:13Z")
 
     @unittest.skipUnless(shutil.which("openssl"), "OpenSSL Ed25519 regression requires OpenSSL")
     def test_cli_prepare_openssl_sign_assemble_and_verify_binds_exact_record_bytes(self) -> None:
@@ -1215,6 +1215,7 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             identity_path = checkout / "candidate-identity.json"
             identity_path.write_bytes(provenance._canonical_json(provenance._authorization_identity_payload(identity)) + b"\n")
             record_path = custody / "authorization-record.json"
+            context_path = custody / "independent-verification-context.json"
             signature_path = custody / "authorization-record.sig"
             envelope_path = custody / "authorization-envelope.json"
             private_key = custody / "owner-private.pem"
@@ -1222,8 +1223,13 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             der_key = custody / "owner-public.der"
             allowlist_path = custody / "revision-allowlist.json"
             allowlist_path.write_bytes(provenance._canonical_json({"producer_workflow": provenance.RELEASE_PRODUCER_WORKFLOW, "producer_revisions": [identity.producer_revision], "signer_workflow": provenance.RELEASE_SIGNER_WORKFLOW, "signer_revisions": [identity.signer_revision]}) + b"\n")
-            context_digest = "e" * 64
-            base = [sys.executable, str(SCRIPT), "--authorization-identity", str(identity_path), "--authorization-id", "cli-auth-1", "--authorization-issued-at", "2026-11-25T12:00:00Z", "--authorization-expires-at", "2026-11-26T12:00:00Z", "--authorization-key-id", "owner-key", "--verification-context-sha256", context_digest]
+            context, _ = provenance.independent_candidate_verification_context(provenance.validate_completed_candidate_run(main_selection_request(), candidate_run_metadata(), candidate_jobs()), identity)
+            context.update({"attestation": {"status": "official-verifier-authenticated", "authenticated": True, "subjectDigest": identity.archive_sha256}, "archiveValidation": {"status": "hardened-validated", "archiveSha256": identity.archive_sha256, "archiveBytes": identity.archive_bytes, "extracted": True}, "workflowIdentity": {"producerRevision": identity.producer_revision, "signerRevision": identity.signer_revision, "policy": "immutable-owner-allowlist"}, "verificationCompletedAt": "2026-11-25T19:50:00Z"})
+            context_path.write_bytes(provenance._canonical_json(context) + b"\n")
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+            issued = now - timedelta(minutes=1)
+            expires = issued + timedelta(hours=24)
+            base = [sys.executable, str(SCRIPT), "--authorization-identity", str(identity_path), "--authorization-id", "cli-auth-1", "--authorization-issued-at", issued.isoformat().replace("+00:00", "Z"), "--authorization-expires-at", expires.isoformat().replace("+00:00", "Z"), "--authorization-key-id", "owner-key", "--authorization-verification-context", str(context_path), "--authorization-destination", "/srv/candidate"]
             prepared = subprocess.run([*base, "--prepare-authorization", "--authorization-output", str(record_path)], check=False, capture_output=True, text=True)
             self.assertEqual(prepared.returncode, 0, prepared.stderr or prepared.stdout)
             record_bytes = record_path.read_bytes()
@@ -1231,14 +1237,16 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             self.assertFalse(record_bytes.endswith(b"\n"))
             subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(private_key)], check=True, capture_output=True)
             subprocess.run(["openssl", "pkey", "-in", str(private_key), "-pubout", "-out", str(public_key)], check=True, capture_output=True)
+            public_key.chmod(0o600)
             subprocess.run(["openssl", "pkeyutl", "-sign", "-rawin", "-inkey", str(private_key), "-in", str(record_path), "-out", str(signature_path)], check=True, capture_output=True)
             subprocess.run(["openssl", "pkey", "-pubin", "-in", str(public_key), "-outform", "DER", "-out", str(der_key)], check=True, capture_output=True)
             fingerprint = hashlib.sha256(der_key.read_bytes()).hexdigest()
-            assembled = subprocess.run([sys.executable, str(SCRIPT), "--assemble-authorization", "--authorization-record", str(record_path), "--authorization-signature", str(signature_path), "--authorization-output", str(envelope_path), "--authorization-identity", str(identity_path), "--authorization-public-key", str(public_key), "--authorization-repository-root", str(checkout), "--authorization-key-id", "owner-key", "--authorization-key-fingerprint", fingerprint, "--authorization-allowlist", str(allowlist_path), "--authorization-verification-now", "2026-11-25T13:00:00Z"], check=False, capture_output=True, text=True)
+            assembled = subprocess.run([sys.executable, str(SCRIPT), "--assemble-authorization", "--authorization-record", str(record_path), "--authorization-signature", str(signature_path), "--authorization-output", str(envelope_path), "--authorization-identity", str(identity_path), "--authorization-public-key", str(public_key), "--authorization-repository-root", str(checkout), "--authorization-key-id", "owner-key", "--authorization-key-fingerprint", fingerprint, "--authorization-allowlist", str(allowlist_path)], check=False, capture_output=True, text=True)
             self.assertEqual(assembled.returncode, 0, assembled.stderr or assembled.stdout)
             self.assertTrue(envelope_path.read_bytes().endswith(b"\n"))
             envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
-            self.assertEqual(envelope["record"]["authorization"]["verification_context_sha256"], context_digest)
+            self.assertEqual(envelope["record"]["authorization"]["verification_context_sha256"], hashlib.sha256(context_path.read_bytes()).hexdigest())
+            self.assertEqual(envelope["record"]["authorization"]["destination"], "/srv/candidate")
 
 
 if __name__ == "__main__":

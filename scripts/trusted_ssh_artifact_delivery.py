@@ -64,6 +64,15 @@ DEFAULT_DATABASE_HEADROOM_BYTES = 512 * 1024 * 1024
 DEFAULT_HOST_HEADROOM_BYTES = 256 * 1024 * 1024
 DEFAULT_INCREMENTAL_PRESERVATION_BYTES = provenance.MAX_ARCHIVE_BYTES
 RECEIVER_AUTHORIZATION_POLICY_ENV = "CC_RECEIVER_AUTHORIZATION_POLICY"
+RECEIVER_CONFIG_ENV = {
+    "repository_root": "CC_RECEIVER_REPOSITORY_ROOT",
+    "receiving_root": "CC_RECEIVER_RECEIVING_ROOT",
+    "publication_root": "CC_RECEIVER_PUBLICATION_ROOT",
+    "expected_identity": "CC_RECEIVER_EXPECTED_IDENTITY",
+    "trusted_root": "CC_RECEIVER_TRUSTED_ROOT",
+    "offline_expectation": "CC_RECEIVER_OFFLINE_EXPECTATION",
+    "attestation_cli": "CC_RECEIVER_ATTESTATION_CLI",
+}
 ALLOWED_FILES = {"artifact-service.zip", "attestation-bundle.json", "authorization-envelope.json", "independent-verification-context.json"}
 
 
@@ -479,7 +488,7 @@ def _validate_frame_header(header: Any, limits: DeliveryLimits) -> tuple[dict[st
         name = item["name"]
         _require(name in ALLOWED_FILES and name not in names, "delivery file name is not allowed or is duplicated")
         _require(isinstance(item["bytes"], int) and item["bytes"] > 0, "delivery file size is malformed")
-        maximum = limits.max_service_zip_bytes if name == "artifact-service.zip" else limits.max_bundle_bytes if name == "attestation-bundle.json" else limits.max_authorization_bytes
+        maximum = limits.max_service_zip_bytes if name == "artifact-service.zip" else limits.max_bundle_bytes if name in {"attestation-bundle.json", "independent-verification-context.json"} else limits.max_authorization_bytes
         _require(item["bytes"] <= maximum, f"delivery file {name} exceeds its limit")
         _require(isinstance(item["sha256"], str) and provenance.SHA256_RE.fullmatch(item["sha256"]), f"delivery file {name} digest is malformed")
         names.add(name)
@@ -606,9 +615,31 @@ def _validate_provenance_binding(identity: Any, expectation: dict[str, Any], ver
         provenance.validate_expectation_identity_binding(identity, expectation)
     except provenance.ProvenanceError as error:
         _fail(str(error))
-    for field in ("repository", "source_ref", "source_sha", "event", "signer_workflow", "signer_revision", "run_id", "run_attempt", "artifact_class", "platform", "image", "image_digest", "archive_name", "archive_sha256", "archive_bytes"):
-        if hasattr(verified, field):
-            _require(str(getattr(verified, field)) == str(getattr(identity, field)), f"verified provenance {field} does not match the delivery identity")
+    _require(isinstance(verified, provenance.AuthenticatedProvenance), "official verifier result is not a typed authenticated provenance result")
+    try:
+        if isinstance(identity, provenance.TrustedReleaseIdentity):
+            provenance.validate_authenticated_provenance_binding(verified, identity)
+        else:
+            for field in ("repository", "source_ref", "source_sha", "event", "signer_workflow", "signer_revision", "run_id", "run_attempt", "artifact_class", "platform", "image", "image_digest", "archive_name", "archive_sha256", "archive_bytes"):
+                _require(getattr(verified, field) == getattr(identity, field), f"authenticated provenance {field} mismatch")
+            _require(str(verified.repository_id) == str(identity.repository_id), "authenticated provenance repository ID mismatch")
+            _require(verified.receipt.subject_digest == identity.archive_sha256, "authenticated provenance receipt digest mismatch")
+            _require(verified.receipt.run_invocation_uri.endswith(f"/actions/runs/{identity.run_id}/attempts/{identity.run_attempt}"), "authenticated provenance receipt run mismatch")
+    except provenance.ProvenanceError as error:
+        _fail(str(error))
+
+
+def _enforce_receiver_configuration(args: argparse.Namespace) -> None:
+    """Require SSH entry arguments to equal receiver-owned immutable configuration."""
+    for argument, variable in RECEIVER_CONFIG_ENV.items():
+        configured = os.environ.get(variable)
+        _require(isinstance(configured, str) and configured != "", f"receiver configuration {variable} is not set")
+        if argument == "attestation_cli":
+            continue
+        supplied = str(getattr(args, argument))
+        _require(os.path.abspath(configured) == os.path.abspath(supplied), f"receiver argument {argument} does not match receiver-owned configuration")
+    configured_cli = os.environ.get(RECEIVER_CONFIG_ENV["attestation_cli"])
+    _require(os.environ.get("GH_ATTESTATION_CLI") == configured_cli, "SSH verifier executable is not the receiver-owned pinned executable")
 
 
 def _safe_publication_name(identity: Any) -> str:
@@ -841,10 +872,10 @@ def _assert_delivery_storage(receiving_root: Path, limits: DeliveryLimits, publi
         _require(assessment.status == "PASS", "delivery storage admission is insufficient for bounded temporary and retained evidence capacity")
 
 
-def _register_retained_delivery(publication_root: Path, repository_root: Path, destination: Path, identity: Any, *, authorization_envelope: Any = None, authorization_journal: Any = None, authorization_revision_allowlist: Any = None, authorization_trust: Any = None, authorization_operation: str | None = None, excluded_roots: tuple[Path, ...] = ()) -> None:
+def _register_retained_delivery(publication_root: Path, repository_root: Path, destination: Path, identity: Any, *, authorization_envelope: Any = None, authorization_journal: Any = None, authorization_revision_allowlist: Any = None, authorization_trust: Any = None, authorization_operation: str | None = None, excluded_roots: tuple[Path, ...] = (), synthetic_test: bool = False) -> None:
     store = retention.RetentionStore(publication_root, repository_root=repository_root)
     store.load()
-    store.register_delivery(_identity_payload(identity), destination, authorization_envelope=authorization_envelope, authorization_journal=authorization_journal, authorization_revision_allowlist=authorization_revision_allowlist, authorization_trust=authorization_trust, authorization_operation=authorization_operation, assume_locked=True, excluded_roots=excluded_roots)
+    store.register_delivery(_identity_payload(identity), destination, authorization_envelope=authorization_envelope, authorization_journal=authorization_journal, authorization_revision_allowlist=authorization_revision_allowlist, authorization_trust=authorization_trust, authorization_operation=authorization_operation, assume_locked=True, excluded_roots=excluded_roots, allow_synthetic_test=synthetic_test)
 
 
 @contextmanager
@@ -899,8 +930,7 @@ def _load_receiver_authorization_policy(path: Path, repository_root: Path, recei
 
 def _candidate_context_file(path: Path, identity: provenance.TrustedReleaseIdentity, authorization: provenance.IndependentReleaseAuthorization | None = None) -> tuple[dict[str, Any], str, int]:
     """Parse canonical retained context; it is evidence, never authority."""
-    raw = path.read_bytes()
-    _require(len(raw) <= MAX_VERIFICATION_CONTEXT_BYTES, "independent candidate verification context exceeds the limit")
+    raw = provenance._read_bounded_bytes(path, MAX_VERIFICATION_CONTEXT_BYTES, "independent candidate verification context")
     context = _read_json_file(path, MAX_VERIFICATION_CONTEXT_BYTES, "independent candidate verification context")
     canonical = provenance._canonical_json(context) + b"\n"
     _require(raw == canonical, "independent candidate verification context is not canonical")
@@ -1052,7 +1082,7 @@ def publish_development_delivery(
                 excluded_roots=(receiving_root, publication_root),
             )
             authenticated = provenance.validate_verified_result(verified, archive_name=expected_identity.archive_name, archive_digest=expected_identity.archive_sha256, archive_bytes=expected_identity.archive_bytes, expected=offline_expectation, run_metadata=None, require_run_metadata=False)
-            _validate_provenance_binding(expected_identity, offline_expectation, verified)
+            _validate_provenance_binding(expected_identity, offline_expectation, authenticated)
             _attempt_bytes(attempt, limits.max_temporary_bytes)
             with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload_owner:
                 payload = payload_owner.path
@@ -1117,7 +1147,7 @@ def publish_synthetic_authorized_delivery_for_test(
                 assert payload is not None
                 expected_bundle, expected_authorization, expected_verification, expected_context = _publication_payload(payload, expected_identity, snapshot, attestation_bundle, authorization_envelope, candidate_verification_context, verification_expectation=verification_expectation, verification_receipt=verification_receipt, trusted_root=trusted_root, trusted_root_expected=trusted_root_expected)
                 destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle=expected_bundle, expected_authorization=expected_authorization, expected_verification=expected_verification, expected_candidate_context=expected_context, staging_owner=payload_owner)
-                _register_retained_delivery(publication_root, repository_root, destination, expected_identity, authorization_envelope=authorization_envelope, authorization_journal=journal, authorization_revision_allowlist=revision_allowlist, authorization_trust=trust, authorization_operation=operation, excluded_roots=(receiving_root,))
+                _register_retained_delivery(publication_root, repository_root, destination, expected_identity, authorization_envelope=authorization_envelope, authorization_journal=journal, authorization_revision_allowlist=revision_allowlist, authorization_trust=trust, authorization_operation=operation, excluded_roots=(receiving_root,), synthetic_test=True)
         finally:
             provenance.close_zip_snapshot(snapshot)
     return DeliveryResult("retry-success" if retry else "published", str(destination), _identity_digest(expected_identity), expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes, expected_identity.archive_sha256, expected_identity.archive_bytes, False, True)
@@ -1350,6 +1380,7 @@ def receive_command(args: argparse.Namespace) -> int:
     authorization_public_key = authorization_allowlist_path = authorization_journal_path = None
     if candidate_delivery:
         _require(authorization_policy_path is not None, "candidate receiver requires an explicit receiver-side authorization policy")
+    _enforce_receiver_configuration(args)
     _assert_external_directory(receiving_root, repository_root, "receiving workspace")
     _assert_external_directory(publication_root, repository_root, "publication directory")
     _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory"), (expected_identity_path, "expected identity"), *([(authorization_policy_path, "authorization policy")] if candidate_delivery else [])])
@@ -1403,7 +1434,7 @@ def receive_command(args: argparse.Namespace) -> int:
                 deadline=deadline,
             )
             authenticated = provenance.validate_verified_result(verified, archive_name=expected_identity.archive_name, archive_digest=expected_identity.archive_sha256, archive_bytes=expected_identity.archive_bytes, expected=expectation, run_metadata=None, require_run_metadata=False)
-            _validate_provenance_binding(expected_identity, expectation, verified)
+            _validate_provenance_binding(expected_identity, expectation, authenticated)
             authorization = None
             candidate_context_path = files.get("independent-verification-context.json")
             candidate_context_result = None
@@ -1417,7 +1448,7 @@ def receive_command(args: argparse.Namespace) -> int:
                 envelope = _read_json_file(files["authorization-envelope.json"], provenance.MAX_AUTHORIZATION_RECORD_BYTES, "authorization envelope")
                 _require(files["authorization-envelope.json"].read_bytes() == provenance._canonical_json(envelope) + b"\n", "authorization envelope is not canonical")
                 authorization = provenance.verify_signed_authorization_record(envelope, trust, expected_identity, allowlist)
-                _require(authorization.scope == "forward-release" and authorization.context == provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT and authorization.verification_context_sha256 == candidate_context_digest, "candidate authorization is not an independently approved forward authorization bound to the exact verification context")
+                _require(authorization.scope == "forward-release" and authorization.context == provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT and authorization.verification_context_sha256 == candidate_context_digest and authorization.delivery_destination == str(publication_root), "candidate authorization is not an independently approved forward authorization bound to the exact verification context and receiver destination")
                 _candidate_context_file(candidate_context_path, expected_identity, authorization)
                 journal = provenance.AuthorizationReplayJournal(authorization_journal_path, repository_root=repository_root)
             _attempt_bytes(attempt, limits.max_temporary_bytes)
