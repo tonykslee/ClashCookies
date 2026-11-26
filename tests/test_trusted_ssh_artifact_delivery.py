@@ -39,7 +39,6 @@ delivery = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = delivery
 SPEC.loader.exec_module(delivery)
 
-
 def development_identity() -> object:
     return delivery.DevelopmentDeliveryIdentity(
         repository="tonykslee/ClashCookies",
@@ -99,6 +98,25 @@ def synthetic_canonical_identity() -> delivery.provenance.TrustedReleaseIdentity
     )
 
 
+CANDIDATE_WORKFLOW_DISPLAY_NAME = "Runtime Artifact Round Trip"
+
+
+def candidate_run_metadata(identity: delivery.provenance.TrustedReleaseIdentity) -> dict[str, object]:
+    """Return representative GitHub run metadata, including the API's display-name key."""
+    owner = identity.repository.split("/", 1)[0]
+    return {
+        "id": identity.run_id,
+        "name": CANDIDATE_WORKFLOW_DISPLAY_NAME,
+        "event": identity.event,
+        "run_attempt": identity.run_attempt,
+        "path": identity.signer_workflow,
+        "head_sha": identity.source_sha,
+        "head_branch": identity.source_ref.removeprefix("refs/heads/"),
+        "repository": {"full_name": identity.repository, "id": identity.repository_id, "owner": {"id": identity.repository_owner_id, "login": owner}},
+        "head_repository": {"full_name": identity.repository, "id": identity.repository_id, "owner": {"id": identity.repository_owner_id, "login": owner}},
+    }
+
+
 def build_candidate_validator_fixture(root: Path, source_service_zip: Path, source_identity: delivery.provenance.TrustedReleaseIdentity) -> dict[str, object]:
     """Build an explicitly synthetic candidate archive from the real dev artifact shape."""
     with ZipFile(source_service_zip) as source_service:
@@ -114,7 +132,7 @@ def build_candidate_validator_fixture(root: Path, source_service_zip: Path, sour
     candidate_manifest["artifact"].update({"name": archive_name, "artifactClass": delivery.provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS, "profile": delivery.provenance.PRODUCTION_CANDIDATE_PROFILE, "nonProductionEvidence": True})
     candidate_manifest["source"]["gitSha"] = source_sha
     candidate_manifest["identity"].update({"event": "push", "kind": "production_candidate_main_push", "authorizationContext": delivery.provenance.CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT, "deployableRelease": False})
-    candidate_manifest["workflow"].update({"name": "Runtime Artifact Round Trip", "runId": str(run_id), "runAttempt": str(run_attempt), "ref": delivery.provenance.RELEASE_SOURCE_REF, "repository": delivery.provenance.RELEASE_REPOSITORY, "repositoryId": str(delivery.provenance.RELEASE_REPOSITORY_ID), "repositoryOwnerId": str(delivery.provenance.RELEASE_REPOSITORY_OWNER_ID), "sourceRef": delivery.provenance.RELEASE_SOURCE_REF, "workflowPath": delivery.provenance.RELEASE_SIGNER_WORKFLOW, "signerWorkflow": delivery.provenance.RELEASE_SIGNER_WORKFLOW, "signerRevision": signer_revision})
+    candidate_manifest["workflow"].update({"name": CANDIDATE_WORKFLOW_DISPLAY_NAME, "runId": str(run_id), "runAttempt": str(run_attempt), "ref": delivery.provenance.RELEASE_SOURCE_REF, "repository": delivery.provenance.RELEASE_REPOSITORY, "repositoryId": str(delivery.provenance.RELEASE_REPOSITORY_ID), "repositoryOwnerId": str(delivery.provenance.RELEASE_REPOSITORY_OWNER_ID), "sourceRef": delivery.provenance.RELEASE_SOURCE_REF, "workflowPath": delivery.provenance.RELEASE_SIGNER_WORKFLOW, "signerWorkflow": delivery.provenance.RELEASE_SIGNER_WORKFLOW, "signerRevision": signer_revision})
     candidate_manifest["build"].update({"platform": delivery.provenance.RELEASE_PLATFORM, "architecture": "amd64", "baseImage": delivery.provenance.RELEASE_IMAGE, "baseImageDigest": delivery.provenance.RELEASE_IMAGE.split("@", 1)[1]})
     candidate_manifest["integrity"]["checksumFile"] = f"{archive_name}.sha256"
     with tarfile.open(fileobj=BytesIO(source_archive_bytes), mode="r:gz") as source_tar:
@@ -154,15 +172,16 @@ def build_candidate_validator_fixture(root: Path, source_service_zip: Path, sour
         candidate_service.writestr(f"{archive_name}.manifest.json", json.dumps(external_manifest, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
     service_digest = hashlib.sha256(service_zip.read_bytes()).hexdigest()
     candidate_identity = replace(candidate_identity, artifact_service_zip_sha256=service_digest, artifact_service_zip_bytes=service_zip.stat().st_size)
-    context = {
+    run_metadata = candidate_run_metadata(candidate_identity)
+    receiver_context = {
         "repository": candidate_identity.repository,
-        "workflow_name": "Runtime Artifact Round Trip",
+        "workflow_name": CANDIDATE_WORKFLOW_DISPLAY_NAME,
         "run_id": candidate_identity.run_id,
         "run_attempt": candidate_identity.run_attempt,
         "event": candidate_identity.event,
         "source_ref": candidate_identity.source_ref,
     }
-    return {"identity": candidate_identity, "service_zip": service_zip, "context": context, "external_manifest": external_manifest, "archive_digest": archive_digest, "archive_bytes": len(candidate_archive_bytes)}
+    return {"identity": candidate_identity, "service_zip": service_zip, "context": run_metadata, "receiver_context": receiver_context, "external_manifest": external_manifest, "archive_digest": archive_digest, "archive_bytes": len(candidate_archive_bytes)}
 
 
 def sshd_setenv(assignments: dict[str, object]) -> str:
@@ -1249,7 +1268,7 @@ delivery.publish_synthetic_authorized_delivery_for_test(
             workspace.mkdir(mode=0o700)
             archive, checksum, manifest = delivery.provenance._extract_candidate_service_entries(fixture["service_zip"], identity, workspace)
             staging = root / "receiver-extracted"
-            delivery._validate_inner_archive(archive, checksum, manifest, identity, staging, fixture["context"], snapshot_root=workspace)
+            delivery._validate_inner_archive(archive, checksum, manifest, identity, staging, fixture["receiver_context"], snapshot_root=workspace)
             self.assertTrue((staging / "dist" / "ClashCookies.js").is_file())
 
     @unittest.skipUnless(os.environ.get("CC_REAL_RECEIVER") == "1", "candidate validator integration is enabled only by mandatory Linux CI")
@@ -1269,7 +1288,7 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                 expected_repository=identity.repository,
                 expected_repository_id=str(identity.repository_id),
                 expected_repository_owner_id=str(identity.repository_owner_id),
-                expected_workflow=fixture["context"]["workflow_name"],
+                expected_workflow=fixture["context"]["name"],
                 expected_run_id=str(identity.run_id),
                 expected_run_attempt=str(identity.run_attempt),
                 expected_event=identity.event,
@@ -1321,7 +1340,7 @@ delivery.publish_synthetic_authorized_delivery_for_test(
             candidate_manifest["artifact"].update({"name": archive_name, "artifactClass": delivery.provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS, "profile": delivery.provenance.PRODUCTION_CANDIDATE_PROFILE, "nonProductionEvidence": True})
             candidate_manifest["source"]["gitSha"] = source_sha
             candidate_manifest["identity"].update({"event": "push", "kind": "production_candidate_main_push", "authorizationContext": delivery.provenance.CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT, "deployableRelease": False})
-            candidate_manifest["workflow"].update({"name": "Runtime Artifact Round Trip", "runId": str(run_id), "runAttempt": str(run_attempt), "ref": delivery.provenance.RELEASE_SOURCE_REF, "repository": delivery.provenance.RELEASE_REPOSITORY, "repositoryId": str(delivery.provenance.RELEASE_REPOSITORY_ID), "repositoryOwnerId": str(delivery.provenance.RELEASE_REPOSITORY_OWNER_ID), "sourceRef": delivery.provenance.RELEASE_SOURCE_REF, "workflowPath": delivery.provenance.RELEASE_SIGNER_WORKFLOW, "signerWorkflow": delivery.provenance.RELEASE_SIGNER_WORKFLOW, "signerRevision": signer_revision})
+            candidate_manifest["workflow"].update({"name": CANDIDATE_WORKFLOW_DISPLAY_NAME, "runId": str(run_id), "runAttempt": str(run_attempt), "ref": delivery.provenance.RELEASE_SOURCE_REF, "repository": delivery.provenance.RELEASE_REPOSITORY, "repositoryId": str(delivery.provenance.RELEASE_REPOSITORY_ID), "repositoryOwnerId": str(delivery.provenance.RELEASE_REPOSITORY_OWNER_ID), "sourceRef": delivery.provenance.RELEASE_SOURCE_REF, "workflowPath": delivery.provenance.RELEASE_SIGNER_WORKFLOW, "signerWorkflow": delivery.provenance.RELEASE_SIGNER_WORKFLOW, "signerRevision": signer_revision})
             candidate_manifest["integrity"]["checksumFile"] = f"{archive_name}.sha256"
             candidate_manifest["build"].update({"platform": delivery.provenance.RELEASE_PLATFORM, "architecture": "amd64", "baseImage": delivery.provenance.RELEASE_IMAGE, "baseImageDigest": delivery.provenance.RELEASE_IMAGE.split("@", 1)[1]})
             with tarfile.open(fileobj=BytesIO(source_archive_bytes), mode="r:gz") as source_tar:
@@ -1380,7 +1399,7 @@ delivery.publish_synthetic_authorized_delivery_for_test(
             context_path = root / "independent-verification-context.json"
             context_path.write_bytes(delivery.provenance._canonical_json(context) + b"\n")
 
-            expectation = {"repository": candidate_identity.repository, "repository_id": str(candidate_identity.repository_id), "repository_owner_id": str(candidate_identity.repository_owner_id), "repository_visibility": "public", "producer_workflow": candidate_identity.producer_workflow, "producer_revision": candidate_identity.producer_revision, "signer_workflow": candidate_identity.signer_workflow, "signer_revision": candidate_identity.signer_revision, "source_ref": candidate_identity.source_ref, "source_sha": candidate_identity.source_sha, "event": candidate_identity.event, "workflow_name": "Runtime Artifact Round Trip", "run_id": candidate_identity.run_id, "run_attempt": candidate_identity.run_attempt, "artifact_class": candidate_identity.artifact_class, "platform": candidate_identity.platform, "image": candidate_identity.image, "image_digest": candidate_identity.image_digest, "archive_name": candidate_identity.archive_name, "archive_sha256": candidate_identity.archive_sha256, "archive_bytes": candidate_identity.archive_bytes, "verifier_version": delivery.provenance.SUPPORTED_GH_VERSION}
+            expectation = {"repository": candidate_identity.repository, "repository_id": str(candidate_identity.repository_id), "repository_owner_id": str(candidate_identity.repository_owner_id), "repository_visibility": "public", "producer_workflow": candidate_identity.producer_workflow, "producer_revision": candidate_identity.producer_revision, "signer_workflow": candidate_identity.signer_workflow, "signer_revision": candidate_identity.signer_revision, "source_ref": candidate_identity.source_ref, "source_sha": candidate_identity.source_sha, "event": candidate_identity.event, "workflow_name": CANDIDATE_WORKFLOW_DISPLAY_NAME, "run_id": candidate_identity.run_id, "run_attempt": candidate_identity.run_attempt, "artifact_class": candidate_identity.artifact_class, "platform": candidate_identity.platform, "image": candidate_identity.image, "image_digest": candidate_identity.image_digest, "archive_name": candidate_identity.archive_name, "archive_sha256": candidate_identity.archive_sha256, "archive_bytes": candidate_identity.archive_bytes, "verifier_version": delivery.provenance.SUPPORTED_GH_VERSION}
             verifier_output = root / "synthetic-verifier-output.json"
             repository_uri = f"https://github.com/{candidate_identity.repository}"
             workflow_uri = f"{repository_uri}/{candidate_identity.signer_workflow}"
@@ -1405,7 +1424,7 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                     "certificateIssuer": "CN=sigstore-intermediate,O=sigstore.dev", "sourceRepositoryURI": repository_uri,
                     "sourceRepositoryIdentifier": str(candidate_identity.repository_id), "sourceRepositoryOwnerIdentifier": str(candidate_identity.repository_owner_id),
                     "sourceRepositoryOwnerURI": "https://github.com/tonykslee", "sourceRepositoryRef": candidate_identity.source_ref, "sourceRepositoryDigest": source_sha,
-                    "githubWorkflowTrigger": "push", "githubWorkflowSHA": signer_revision, "githubWorkflowName": candidate_identity.signer_workflow,
+                    "githubWorkflowTrigger": "push", "githubWorkflowSHA": signer_revision, "githubWorkflowName": CANDIDATE_WORKFLOW_DISPLAY_NAME,
                     "githubWorkflowRepository": candidate_identity.repository, "githubWorkflowRef": candidate_identity.source_ref, "buildTrigger": "push",
                     "buildSignerURI": f"{workflow_uri}@{candidate_identity.source_ref}", "buildSignerDigest": signer_revision,
                     "buildConfigURI": f"{workflow_uri}@{candidate_identity.source_ref}", "buildConfigDigest": signer_revision,
@@ -1415,6 +1434,16 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                 "verifiedTimestamps": [verification_completed],
             }}]
             verifier_output.write_text(json.dumps(verifier_document), encoding="utf-8")
+            parsed_provenance = delivery.provenance.validate_verified_result(
+                verifier_document[0],
+                archive_name=candidate_identity.archive_name,
+                archive_digest=candidate_identity.archive_sha256,
+                archive_bytes=candidate_identity.archive_bytes,
+                expected=expectation,
+                run_metadata=candidate_run_metadata(candidate_identity),
+            )
+            self.assertEqual(parsed_provenance.signer_workflow, candidate_identity.signer_workflow)
+            self.assertEqual(parsed_provenance.run_id, candidate_identity.run_id)
 
             material = root / "authorization-custody"
             material.mkdir(mode=0o700)
