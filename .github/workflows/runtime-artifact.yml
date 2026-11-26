@@ -386,7 +386,7 @@ jobs:
           include-hidden-files: true
 
       - name: Run candidate authorization and custody fixture regressions
-        if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'production-candidate-runtime-evidence-v1'
+        if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'development-runtime-evidence' || env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'production-candidate-runtime-evidence-v1'
         run: |
           set -euo pipefail
           python -m unittest \

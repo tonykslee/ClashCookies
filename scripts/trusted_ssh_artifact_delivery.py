@@ -63,6 +63,7 @@ MAX_TEMPORARY_BYTES = (4 * MAX_SERVICE_ZIP_BYTES) + (3 * provenance.MAX_BUNDLE_B
 DEFAULT_DATABASE_HEADROOM_BYTES = 512 * 1024 * 1024
 DEFAULT_HOST_HEADROOM_BYTES = 256 * 1024 * 1024
 DEFAULT_INCREMENTAL_PRESERVATION_BYTES = provenance.MAX_ARCHIVE_BYTES
+RECEIVER_AUTHORIZATION_POLICY_ENV = "CC_RECEIVER_AUTHORIZATION_POLICY"
 ALLOWED_FILES = {"artifact-service.zip", "attestation-bundle.json", "authorization-envelope.json", "independent-verification-context.json"}
 
 
@@ -99,11 +100,7 @@ class SshDeliveryEndpoint:
     remote_trusted_root: str = ""
     remote_offline_expectation: str = ""
     remote_attestation_cli: str = ""
-    remote_authorization_public_key: str = ""
-    remote_authorization_key_id: str = ""
-    remote_authorization_key_fingerprint: str = ""
-    remote_authorization_allowlist: str = ""
-    remote_authorization_journal: str = ""
+    remote_authorization_policy: str = ""
     port: int = 22
     connect_timeout_seconds: int = 10
     execution_timeout_seconds: int = MAX_RECEIVING_SECONDS
@@ -367,11 +364,10 @@ def _validate_endpoint(endpoint: SshDeliveryEndpoint, repository_root: Path) -> 
         _require(os.path.normpath(value) == value and ".." not in Path(value).parts, f"{label} must be an explicit normalized absolute path")
 
     strict_remote_path(endpoint.destination, "SSH destination")
-    for value, label in ((endpoint.remote_repository_root, "remote repository root"), (endpoint.remote_receiving_root, "remote receiving root"), (endpoint.remote_publication_root, "remote publication root"), (endpoint.remote_expected_identity, "remote expected identity"), (endpoint.remote_trusted_root, "remote trusted root"), (endpoint.remote_offline_expectation, "remote offline expectation"), (endpoint.remote_authorization_public_key, "remote authorization public key"), (endpoint.remote_authorization_allowlist, "remote authorization revision allowlist"), (endpoint.remote_authorization_journal, "remote authorization replay journal")):
-        if value:
-            strict_remote_path(value, label)
-    if endpoint.remote_attestation_cli:
-        strict_remote_path(endpoint.remote_attestation_cli, "remote attestation verifier")
+    for value, label in ((endpoint.remote_repository_root, "remote repository root"), (endpoint.remote_receiving_root, "remote receiving root"), (endpoint.remote_publication_root, "remote publication root"), (endpoint.remote_expected_identity, "remote expected identity"), (endpoint.remote_trusted_root, "remote trusted root"), (endpoint.remote_offline_expectation, "remote offline expectation"), (endpoint.remote_attestation_cli, "remote attestation verifier")):
+        strict_remote_path(value, label)
+    if endpoint.remote_authorization_policy:
+        strict_remote_path(endpoint.remote_authorization_policy, "remote authorization policy")
     _require(endpoint.destination == endpoint.remote_publication_root, "SSH destination does not match the explicit receiver publication directory")
 
 
@@ -845,10 +841,10 @@ def _assert_delivery_storage(receiving_root: Path, limits: DeliveryLimits, publi
         _require(assessment.status == "PASS", "delivery storage admission is insufficient for bounded temporary and retained evidence capacity")
 
 
-def _register_retained_delivery(publication_root: Path, repository_root: Path, destination: Path, identity: Any, *, authorization_reserved: bool, candidate_evidence_verified: bool = False) -> None:
+def _register_retained_delivery(publication_root: Path, repository_root: Path, destination: Path, identity: Any, *, authorization_envelope: Any = None, authorization_journal: Any = None, authorization_revision_allowlist: Any = None, authorization_trust: Any = None, authorization_operation: str | None = None, excluded_roots: tuple[Path, ...] = ()) -> None:
     store = retention.RetentionStore(publication_root, repository_root=repository_root)
     store.load()
-    store.register_delivery(_identity_payload(identity), destination, authorization_reserved=authorization_reserved, assume_locked=True, candidate_evidence_verified=candidate_evidence_verified)
+    store.register_delivery(_identity_payload(identity), destination, authorization_envelope=authorization_envelope, authorization_journal=authorization_journal, authorization_revision_allowlist=authorization_revision_allowlist, authorization_trust=authorization_trust, authorization_operation=authorization_operation, assume_locked=True, excluded_roots=excluded_roots)
 
 
 @contextmanager
@@ -873,6 +869,32 @@ def _candidate_revision_allowlist(path: Path, repository_root: Path) -> provenan
     except (TypeError, provenance.ProvenanceError) as error:
         _fail(f"candidate authorization revision allowlist is invalid: {error}")
     return allowlist
+
+
+def _load_receiver_authorization_policy(path: Path, repository_root: Path, receiving_root: Path, publication_root: Path, expected_identity: provenance.TrustedReleaseIdentity) -> tuple[provenance.AuthorizationTrustConfig, provenance.AuthorizationRevisionAllowlist, Path]:
+    """Load receiver-owned candidate authorization custody, never sender-selected trust."""
+    configured = os.environ.get(RECEIVER_AUTHORIZATION_POLICY_ENV)
+    _require(isinstance(configured, str) and configured != "", f"receiver-side authorization policy environment {RECEIVER_AUTHORIZATION_POLICY_ENV} is not configured")
+    _require(os.path.abspath(configured) == os.path.abspath(str(path)), "candidate authorization policy is not the receiver-configured policy")
+    _assert_private_input(path, repository_root, "receiver-side authorization policy", MAX_HEADER_BYTES)
+    raw = path.read_bytes()
+    policy = _read_json_file(path, MAX_HEADER_BYTES, "receiver-side authorization policy")
+    _require(raw == provenance._canonical_json(policy), "receiver-side authorization policy is not canonical")
+    fields = {"contract", "version", "repository", "destination", "artifact_class", "authorization_context", "public_key_path", "key_id", "key_fingerprint", "allowlist_path", "journal_path"}
+    _require(isinstance(policy, dict) and set(policy) == fields and policy.get("contract") == "clashcookies.receiver-authorization-policy" and policy.get("version") == 1, "receiver-side authorization policy is malformed")
+    _require(policy["repository"] == expected_identity.repository and policy["destination"] == str(publication_root) and policy["artifact_class"] == provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS and policy["authorization_context"] == provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT, "receiver-side authorization policy is bound to the wrong delivery domain")
+    _require(re.fullmatch(r"[A-Za-z0-9._:+@-]{1,128}", policy["key_id"] or "") is not None, "receiver-side authorization key ID is not shell-safe")
+    _require(provenance.SHA256_RE.fullmatch(policy["key_fingerprint"] or "") is not None, "receiver-side authorization key fingerprint is malformed")
+    paths = {name: Path(policy[name]) for name in ("public_key_path", "allowlist_path", "journal_path")}
+    for name, candidate in paths.items():
+        _require(candidate.is_absolute(), f"receiver-side authorization {name} must be absolute")
+        _assert_non_overlapping([(candidate, f"receiver-side authorization {name}"), (repository_root, "mutable checkout"), (receiving_root, "receiving workspace"), (publication_root, "publication directory"), (path, "receiver-side authorization policy")])
+    _assert_private_input(paths["public_key_path"], repository_root, "receiver-side authorization public key", provenance.MAX_AUTHORIZATION_PUBLIC_KEY_BYTES)
+    _assert_private_input(paths["allowlist_path"], repository_root, "receiver-side authorization revision allowlist", MAX_HEADER_BYTES)
+    _assert_external_directory(paths["journal_path"], repository_root, "receiver-side authorization replay journal")
+    allowlist = _candidate_revision_allowlist(paths["allowlist_path"], repository_root)
+    trust = provenance.AuthorizationTrustConfig(paths["public_key_path"], policy["key_id"], policy["key_fingerprint"], repository_root)
+    return trust, allowlist, paths["journal_path"]
 
 
 def _candidate_context_file(path: Path, identity: provenance.TrustedReleaseIdentity, authorization: provenance.IndependentReleaseAuthorization | None = None) -> tuple[dict[str, Any], str, int]:
@@ -1042,7 +1064,7 @@ def publish_development_delivery(
                 retained_expectation.update({"contract": "clashcookies.retained-verification-expectation", "version": 1, "identity_sha256": _identity_digest(expected_identity), "trusted_root_sha256": root_digest, "trusted_root_bytes": root_bytes, "trusted_root_version": root_digest[:16], "verifier_version": offline_expectation.get("verifier_version", provenance.SUPPORTED_GH_VERSION)})
                 expected_bundle, _, expected_verification, _ = _publication_payload(payload, expected_identity, snapshot, attestation_bundle, verification_expectation=retained_expectation, verification_receipt=authenticated.diagnostic_json(), trusted_root=trusted_root, trusted_root_expected=(root_digest, root_bytes))
                 destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle, expected_verification=expected_verification, staging_owner=payload_owner)
-                _register_retained_delivery(publication_root, repository_root, destination, expected_identity, authorization_reserved=False)
+                _register_retained_delivery(publication_root, repository_root, destination, expected_identity)
         finally:
             provenance.close_zip_snapshot(snapshot)
     return DeliveryResult("retry-success" if retry else "published", str(destination), _identity_digest(expected_identity), expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes, expected_identity.archive_sha256, expected_identity.archive_bytes, True, False)
@@ -1061,6 +1083,12 @@ def publish_synthetic_authorized_delivery_for_test(
     publication_root: Path,
     operation: str = "forward-release",
     now: Any = None,
+    attestation_bundle: Path | None = None,
+    candidate_verification_context: Path | None = None,
+    verification_expectation: dict[str, Any] | None = None,
+    verification_receipt: dict[str, Any] | None = None,
+    trusted_root: Path | None = None,
+    trusted_root_expected: tuple[str, int] | None = None,
 ) -> DeliveryResult:
     """Synthetic Ed25519 delivery seam used only by isolated regression tests.
 
@@ -1087,9 +1115,9 @@ def publish_synthetic_authorized_delivery_for_test(
             with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload_owner:
                 payload = payload_owner.path
                 assert payload is not None
-                _, expected_authorization, _, _ = _publication_payload(payload, expected_identity, snapshot, None, authorization_envelope)
-                destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_authorization=expected_authorization, staging_owner=payload_owner)
-                _register_retained_delivery(publication_root, repository_root, destination, expected_identity, authorization_reserved=True)
+                expected_bundle, expected_authorization, expected_verification, expected_context = _publication_payload(payload, expected_identity, snapshot, attestation_bundle, authorization_envelope, candidate_verification_context, verification_expectation=verification_expectation, verification_receipt=verification_receipt, trusted_root=trusted_root, trusted_root_expected=trusted_root_expected)
+                destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle=expected_bundle, expected_authorization=expected_authorization, expected_verification=expected_verification, expected_candidate_context=expected_context, staging_owner=payload_owner)
+                _register_retained_delivery(publication_root, repository_root, destination, expected_identity, authorization_envelope=authorization_envelope, authorization_journal=journal, authorization_revision_allowlist=revision_allowlist, authorization_trust=trust, authorization_operation=operation, excluded_roots=(receiving_root,))
         finally:
             provenance.close_zip_snapshot(snapshot)
     return DeliveryResult("retry-success" if retry else "published", str(destination), _identity_digest(expected_identity), expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes, expected_identity.archive_sha256, expected_identity.archive_bytes, False, True)
@@ -1112,14 +1140,8 @@ def _ssh_stream(endpoint: SshDeliveryEndpoint, repository_root: Path, header: by
         "--trusted-root", endpoint.remote_trusted_root,
         "--offline-expectation", endpoint.remote_offline_expectation,
     ]
-    if endpoint.remote_authorization_public_key:
-        command.extend([
-            "--authorization-public-key", endpoint.remote_authorization_public_key,
-            "--authorization-key-id", endpoint.remote_authorization_key_id,
-            "--authorization-key-fingerprint", endpoint.remote_authorization_key_fingerprint,
-            "--authorization-allowlist", endpoint.remote_authorization_allowlist,
-            "--authorization-journal", endpoint.remote_authorization_journal,
-        ])
+    if endpoint.remote_authorization_policy:
+        command.extend(["--authorization-policy", endpoint.remote_authorization_policy])
     command[command.index("python3"):command.index("python3")] = ["env", f"GH_ATTESTATION_CLI={endpoint.remote_attestation_cli}"]
     try:
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=(os.name == "posix"))
@@ -1279,9 +1301,10 @@ def deliver_exact_artifact_over_ssh(endpoint: SshDeliveryEndpoint, service_zip: 
     _validate_endpoint(endpoint, repository_root)
     if identity.artifact_class == provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
         _require(attestation_bundle is not None and authorization_envelope is not None and candidate_verification_context is not None, "candidate SSH delivery requires attestation, authorization, and independent verification context")
-        _require(all((endpoint.remote_authorization_public_key, endpoint.remote_authorization_key_id, endpoint.remote_authorization_key_fingerprint, endpoint.remote_authorization_allowlist, endpoint.remote_authorization_journal)), "candidate SSH delivery requires explicit remote authorization custody configuration")
+        _require(endpoint.remote_authorization_policy, "candidate SSH delivery requires explicit receiver-side authorization policy configuration")
     else:
         _require(identity.artifact_class == provenance.DEVELOPMENT_ARTIFACT_CLASS, "SSH delivery identity has an unsupported artifact class")
+        _require(authorization_envelope is None and candidate_verification_context is None, "development SSH delivery cannot carry candidate authorization evidence")
     _assert_private_input(service_zip, repository_root, "original artifact-service ZIP", limits.max_service_zip_bytes)
     snapshot = provenance.open_zip_snapshot(service_zip)
     try:
@@ -1323,16 +1346,13 @@ def receive_command(args: argparse.Namespace) -> int:
     expected_identity_path = Path(args.expected_identity)
     expected_identity = _load_identity_file(expected_identity_path, repository_root)
     candidate_delivery = expected_identity.artifact_class == provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS
-    authorization_public_key = Path(args.authorization_public_key) if getattr(args, "authorization_public_key", None) else None
-    authorization_allowlist_path = Path(args.authorization_allowlist) if getattr(args, "authorization_allowlist", None) else None
-    authorization_journal_path = Path(args.authorization_journal) if getattr(args, "authorization_journal", None) else None
+    authorization_policy_path = Path(args.authorization_policy) if getattr(args, "authorization_policy", None) else None
+    authorization_public_key = authorization_allowlist_path = authorization_journal_path = None
     if candidate_delivery:
-        _require(authorization_public_key is not None and authorization_allowlist_path is not None and authorization_journal_path is not None, "candidate receiver requires explicit authorization custody configuration")
-        _require(isinstance(getattr(args, "authorization_key_id", None), str) and args.authorization_key_id != "", "candidate receiver requires an authorization key ID")
-        _require(isinstance(getattr(args, "authorization_key_fingerprint", None), str) and provenance.SHA256_RE.fullmatch(args.authorization_key_fingerprint) is not None, "candidate receiver requires an authorization key fingerprint")
+        _require(authorization_policy_path is not None, "candidate receiver requires an explicit receiver-side authorization policy")
     _assert_external_directory(receiving_root, repository_root, "receiving workspace")
     _assert_external_directory(publication_root, repository_root, "publication directory")
-    _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory"), (expected_identity_path, "expected identity"), *([(authorization_public_key, "authorization public key"), (authorization_allowlist_path, "authorization allowlist"), (authorization_journal_path, "authorization journal")] if candidate_delivery else [])])
+    _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory"), (expected_identity_path, "expected identity"), *([(authorization_policy_path, "authorization policy")] if candidate_delivery else [])])
     limits = DeliveryLimits()
     _assert_delivery_storage(receiving_root, limits, publication_root)
     with _receiver_deadline(limits.max_elapsed_seconds) as deadline, _receiver_lock(receiving_root), retention.activity_lock(publication_root), _initialized_retention(publication_root, repository_root), _owned_temp_directory(receiving_root, "clashcookies-receive-") as attempt_owner:
@@ -1348,14 +1368,16 @@ def receive_command(args: argparse.Namespace) -> int:
         _require("attestation-bundle.json" in files, "delivery requires an attestation bundle")
         if candidate_delivery:
             _require("authorization-envelope.json" in files and "independent-verification-context.json" in files, "candidate delivery requires authorization and independent verification context")
+            _require(set(files) == {"artifact-service.zip", "attestation-bundle.json", "authorization-envelope.json", "independent-verification-context.json"}, "candidate delivery frame evidence set is incomplete or has unexpected files")
         else:
             _require(expected_identity.artifact_class == provenance.DEVELOPMENT_ARTIFACT_CLASS, "development delivery received an unsupported artifact class")
+            _require(set(files) == {"artifact-service.zip", "attestation-bundle.json"}, "development delivery frame evidence set is incomplete or has unexpected files")
         _require(args.trusted_root is not None and args.offline_expectation is not None, "receiver requires independently configured offline trust inputs")
         trusted_root = Path(args.trusted_root)
         expectation_path = Path(args.offline_expectation)
         _assert_private_input(trusted_root, repository_root, "independently configured trusted root", MAX_BUNDLE_BYTES)
         _assert_private_input(expectation_path, repository_root, "offline verification expectation", MAX_HEADER_BYTES)
-        _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory"), (trusted_root, "trusted root"), (expectation_path, "offline expectation"), *([(authorization_public_key, "authorization public key"), (authorization_allowlist_path, "authorization allowlist"), (authorization_journal_path, "authorization journal")] if candidate_delivery else [])])
+        _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory"), (trusted_root, "trusted root"), (expectation_path, "offline expectation"), *([(authorization_policy_path, "authorization policy")] if candidate_delivery else [])])
         expectation = _read_json_file(expectation_path, MAX_HEADER_BYTES, "offline verification expectation")
         _require(isinstance(expectation, dict), "offline verification expectation must be an object")
         snapshot = provenance.open_zip_snapshot(service_zip, directory=attempt)
@@ -1387,16 +1409,13 @@ def receive_command(args: argparse.Namespace) -> int:
             candidate_context_result = None
             candidate_context_digest = None
             if candidate_delivery:
-                assert authorization_public_key is not None and authorization_allowlist_path is not None and authorization_journal_path is not None
                 _require(candidate_context_path is not None, "candidate verification context is missing")
-                _assert_private_input(authorization_public_key, repository_root, "independently configured authorization public key", provenance.MAX_AUTHORIZATION_PUBLIC_KEY_BYTES)
-                _assert_private_input(authorization_allowlist_path, repository_root, "independently configured authorization revision allowlist", MAX_HEADER_BYTES)
-                _assert_external_directory(authorization_journal_path, repository_root, "authorization replay journal")
+                assert authorization_policy_path is not None
+                trust, allowlist, authorization_journal_path = _load_receiver_authorization_policy(authorization_policy_path, repository_root, receiving_root, publication_root, expected_identity)
+                authorization_public_key = trust.public_key_path
                 candidate_context_result, candidate_context_digest, _ = _candidate_context_file(candidate_context_path, expected_identity)
                 envelope = _read_json_file(files["authorization-envelope.json"], provenance.MAX_AUTHORIZATION_RECORD_BYTES, "authorization envelope")
                 _require(files["authorization-envelope.json"].read_bytes() == provenance._canonical_json(envelope) + b"\n", "authorization envelope is not canonical")
-                trust = provenance.AuthorizationTrustConfig(authorization_public_key, args.authorization_key_id, args.authorization_key_fingerprint, repository_root)
-                allowlist = _candidate_revision_allowlist(authorization_allowlist_path)
                 authorization = provenance.verify_signed_authorization_record(envelope, trust, expected_identity, allowlist)
                 _require(authorization.scope == "forward-release" and authorization.context == provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT and authorization.verification_context_sha256 == candidate_context_digest, "candidate authorization is not an independently approved forward authorization bound to the exact verification context")
                 _candidate_context_file(candidate_context_path, expected_identity, authorization)
@@ -1418,7 +1437,7 @@ def receive_command(args: argparse.Namespace) -> int:
                         _require(_payload_matches(destination, expected_identity, expected_bundle, expected_authorization, expected_verification, expected_context), "conflicting existing candidate publication or incomplete publication")
                     journal.reserve(envelope, expected_identity, allowlist, trust, operation="forward-release")
                 destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle, expected_authorization=expected_authorization, expected_verification=expected_verification, expected_candidate_context=expected_context, staging_owner=payload_owner)
-                _register_retained_delivery(publication_root, repository_root, destination, expected_identity, authorization_reserved=candidate_delivery, candidate_evidence_verified=candidate_delivery)
+                _register_retained_delivery(publication_root, repository_root, destination, expected_identity, authorization_envelope=envelope if candidate_delivery else None, authorization_journal=journal if candidate_delivery else None, authorization_revision_allowlist=allowlist if candidate_delivery else None, authorization_trust=trust if candidate_delivery else None, authorization_operation="forward-release" if candidate_delivery else None, excluded_roots=(receiving_root,))
             result = DeliveryResult("retry-success" if retry else "published", str(destination), _identity_digest(expected_identity), expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes, expected_identity.archive_sha256, expected_identity.archive_bytes, True, candidate_delivery)
             print(json.dumps(asdict(result), sort_keys=True))
             return 0
@@ -1436,11 +1455,7 @@ def parse_args() -> argparse.Namespace:
     receiver.add_argument("--expected-identity", required=True)
     receiver.add_argument("--trusted-root")
     receiver.add_argument("--offline-expectation")
-    receiver.add_argument("--authorization-public-key")
-    receiver.add_argument("--authorization-key-id")
-    receiver.add_argument("--authorization-key-fingerprint")
-    receiver.add_argument("--authorization-allowlist")
-    receiver.add_argument("--authorization-journal")
+    receiver.add_argument("--authorization-policy")
     return parser.parse_args()
 
 

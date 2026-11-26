@@ -473,7 +473,7 @@ class RetentionStore:
         _require(len(state["releases"]) < MAX_RELEASES, "retention release table is full")
         state["releases"][digest] = {"identity_sha256": digest, "identity": identity, "publication_name": publication_name, "roles": roles, "evidence": evidence, "reconciliation": {"authorization": None, "recovery": None}, "created_at": _now(), "retired_at": None}
 
-    def register_delivery(self, identity: dict[str, Any], publication: Path, *, authorization_reserved: bool = False, assume_locked: bool = False, candidate_evidence_verified: bool = False) -> None:
+    def register_delivery(self, identity: dict[str, Any], publication: Path, *, authorization_envelope: Any = None, authorization_journal: Any = None, authorization_revision_allowlist: Any = None, authorization_trust: Any = None, authorization_operation: str | None = None, assume_locked: bool = False, excluded_roots: tuple[Path, ...] = ()) -> None:
         _strict_identity(identity)
         digest = identity_digest(identity)
         _require(publication.parent == self.root and publication.name == f"release-{digest}", "retention publication is not exact identity-owned path")
@@ -485,6 +485,7 @@ class RetentionStore:
                 evidence[name] = _file_evidence(path, MAX_EVIDENCE_BYTES if name != "artifact-service.zip" else provenance.MAX_ARTIFACT_BYTES, f"retained {name}")
         _require("artifact-service.zip" in evidence, "retained publication is missing the original artifact-service ZIP")
         _require(evidence["artifact-service.zip"] == {"sha256": identity["artifact_service_zip_sha256"], "bytes": identity["artifact_service_zip_bytes"]}, "retained artifact does not match the immutable release identity")
+        release_path = publication
         verification_names = {"attestation-bundle.json", "verification-expectation.json", "verification-receipt.json", "trusted-root.jsonl"}
         if "attestation-bundle.json" in evidence:
             _require(verification_names.issubset(evidence), "attested retention requires independently retained expectation, receipt, and trust root")
@@ -494,7 +495,7 @@ class RetentionStore:
             _require(isinstance(receipt, dict) and receipt.get("status") == "verified-provenance-only" and receipt.get("authenticated") is True, "verification receipt is not authenticated provenance evidence")
             root_digest, root_bytes = provenance._sha256_file(publication / "trusted-root.jsonl", provenance.MAX_BUNDLE_BYTES, "retained trusted root")
             _require(expectation.get("trusted_root_sha256") == root_digest and expectation.get("trusted_root_bytes") == root_bytes, "retained trust root is not bound to the verification expectation")
-        if identity["artifact_class"] == provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS and candidate_evidence_verified:
+        if identity["artifact_class"] == provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
             required_candidate = {"artifact-service.zip", "attestation-bundle.json", "authorization-envelope.json", "independent-verification-context.json", "verification-expectation.json", "verification-receipt.json", "trusted-root.jsonl"}
             _require(required_candidate.issubset(evidence), "candidate retention evidence is incomplete")
             context_path = publication / "independent-verification-context.json"
@@ -513,7 +514,14 @@ class RetentionStore:
             record = authorization.get("record") if isinstance(authorization, dict) else None
             lifecycle = record.get("authorization") if isinstance(record, dict) else None
             _require(isinstance(lifecycle, dict) and lifecycle.get("verification_context_sha256") == context_digest, "candidate authorization is not bound to retained verification context")
-        roles = ["pending"] + (["reserved"] if authorization_reserved else [])
+            _require(authorization_envelope is not None and authorization_journal is not None and authorization_revision_allowlist is not None and authorization_trust is not None and authorization_operation == "forward-release", "candidate retention requires the exact authorization and durable replay reservation")
+            try:
+                authorization_journal.assert_reserved(authorization_envelope, provenance.TrustedReleaseIdentity(**identity), authorization_revision_allowlist, authorization_trust, operation=authorization_operation)
+            except (TypeError, provenance.ProvenanceError) as error:
+                _fail(f"candidate retention replay reservation is invalid: {error}")
+        else:
+            _require(authorization_envelope is None and authorization_journal is None and authorization_revision_allowlist is None and authorization_trust is None and authorization_operation is None, "development retention cannot carry candidate authorization custody")
+        roles = ["pending"] + (["reserved"] if identity["artifact_class"] == provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS else [])
         def apply() -> None:
             state = self.load()
             existing = state["releases"].get(digest)
@@ -523,9 +531,7 @@ class RetentionStore:
                 return
             _require(existing["identity"] == identity and existing["evidence"] == evidence, "retention retry has conflicting release or evidence metadata")
             _require("retired" not in existing["roles"], "retired release cannot be silently reactivated")
-            if authorization_reserved and "reserved" not in existing["roles"]:
-                existing["roles"].append("reserved")
-                self._save(state)
+            _require(existing["roles"] == roles, "retention retry has conflicting authorization custody state")
         if assume_locked:
             apply()
         else:
@@ -805,7 +811,7 @@ class RetentionStore:
                 os.close(release_fd)
             os.close(parent_fd)
 
-    def verify_retained_offline(self, identity_sha256: str, *, trusted_root: Path, trusted_root_version: str, verifier_version: str | None = None, authorization_public_key: Path | None = None, authorization_key_id: str | None = None, authorization_key_fingerprint: str | None = None, authorization_allowlist: Path | None = None) -> dict[str, Any]:
+    def verify_retained_offline(self, identity_sha256: str, *, trusted_root: Path, trusted_root_version: str, verifier_version: str | None = None, authorization_public_key: Path | None = None, authorization_key_id: str | None = None, authorization_key_fingerprint: str | None = None, authorization_allowlist: Path | None = None, excluded_roots: tuple[Path, ...] = ()) -> dict[str, Any]:
         """Re-verify retained evidence without reserving or consuming authority.
 
         Candidate authorization is checked against the owner-supplied key and
@@ -814,7 +820,7 @@ class RetentionStore:
         """
         _require(isinstance(trusted_root_version, str) and len(trusted_root_version) == 16 and all(char in "0123456789abcdef" for char in trusted_root_version), "independent trusted-root version is malformed")
         _require(trusted_root.is_absolute() and trusted_root.is_file() and not trusted_root.is_symlink(), "independent trusted root is unavailable")
-        for base in (self.root, self.repository_root):
+        for base in (self.root, self.repository_root, *excluded_roots):
             try:
                 trusted_root.resolve().relative_to(base.resolve())
             except ValueError:
@@ -843,13 +849,14 @@ class RetentionStore:
                 for path, label in ((authorization_public_key, "historical authorization public key"), (authorization_allowlist, "historical authorization revision allowlist")):
                     assert path is not None
                     _require(path.is_absolute() and not path.is_symlink(), f"{label} is unavailable")
-                    try:
-                        path.resolve().relative_to(self.repository_root.resolve())
-                    except ValueError:
-                        pass
-                    else:
-                        _fail(f"{label} must be outside the mutable checkout")
-                context_path = path = self.root / record["publication_name"] / "independent-verification-context.json"
+                    for base in (self.root, self.repository_root, *excluded_roots):
+                        try:
+                            path.resolve().relative_to(base.resolve())
+                        except ValueError:
+                            continue
+                        _fail(f"{label} must be outside mutable retention, checkout, and receiver roots")
+                release_path = self.root / record["publication_name"]
+                context_path = release_path / "independent-verification-context.json"
                 context_raw = context_path.read_bytes()
                 _require(context_raw == provenance._canonical_json(_read_json(context_path, MAX_EVIDENCE_BYTES, "retained candidate verification context")) + b"\n", "retained candidate verification context is not canonical")
                 context = _read_json(context_path, MAX_EVIDENCE_BYTES, "retained candidate verification context")
@@ -874,10 +881,10 @@ class RetentionStore:
                 except (TypeError, provenance.ProvenanceError) as error:
                     _fail(f"retained candidate authorization is invalid: {error}")
                 _require(historical_authorization.scope == "forward-release" and historical_authorization.context == provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT and historical_authorization.verification_context_sha256 == context_digest, "retained candidate authorization is not bound to the historical verification context")
-            outer_digest, outer_bytes = provenance._sha256_file(path / "artifact-service.zip", provenance.MAX_ARTIFACT_BYTES, "retained artifact-service ZIP")
+            outer_digest, outer_bytes = provenance._sha256_file(release_path / "artifact-service.zip", provenance.MAX_ARTIFACT_BYTES, "retained artifact-service ZIP")
             _require(outer_digest == identity["artifact_service_zip_sha256"] and outer_bytes == identity["artifact_service_zip_bytes"], "retained outer artifact does not match the immutable release identity")
-            expectation = _read_json(path / "verification-expectation.json", MAX_EVIDENCE_BYTES, "retained verification expectation")
-            receipt = _read_json(path / "verification-receipt.json", MAX_EVIDENCE_BYTES, "retained verification receipt")
+            expectation = _read_json(release_path / "verification-expectation.json", MAX_EVIDENCE_BYTES, "retained verification expectation")
+            receipt = _read_json(release_path / "verification-receipt.json", MAX_EVIDENCE_BYTES, "retained verification receipt")
             _require(isinstance(expectation, dict) and expectation.get("contract") == "clashcookies.retained-verification-expectation" and expectation.get("version") == 1, "retained verification expectation is not bound")
             _require(expectation.get("identity_sha256") == identity_sha256, "retained verification expectation identity is not bound")
             try:
@@ -885,13 +892,13 @@ class RetentionStore:
             except (TypeError, provenance.ProvenanceError) as error:
                 _fail(f"retained verification expectation does not match the immutable release identity: {error}")
             _require(isinstance(receipt, dict) and receipt.get("status") == "verified-provenance-only" and receipt.get("authenticated") is True, "retained verification receipt is not an authenticated receipt")
-            retained_root_digest, retained_root_bytes = provenance._sha256_file(path / "trusted-root.jsonl", provenance.MAX_BUNDLE_BYTES, "retained trusted root")
+            retained_root_digest, retained_root_bytes = provenance._sha256_file(release_path / "trusted-root.jsonl", provenance.MAX_BUNDLE_BYTES, "retained trusted root")
             root_digest, root_bytes = provenance._sha256_file(trusted_root, provenance.MAX_BUNDLE_BYTES, "independent trusted root")
             _require(expectation.get("trusted_root_sha256") == root_digest == retained_root_digest and expectation.get("trusted_root_bytes") == root_bytes == retained_root_bytes and expectation.get("trusted_root_version") == trusted_root_version, "trusted-root version, fingerprint, or retained snapshot does not match the verification expectation")
             with tempfile.TemporaryDirectory(prefix="retained-verify-", dir=self.root) as directory_name:
                 temporary = Path(directory_name)
                 archive_path = temporary / identity["archive_name"]
-                with ZipFile(path / "artifact-service.zip") as service:
+                with ZipFile(release_path / "artifact-service.zip") as service:
                     _require(identity["archive_name"] in service.namelist(), "retained artifact is missing the authenticated archive")
                     with service.open(identity["archive_name"]) as source, archive_path.open("wb") as target:
                         remaining = provenance.MAX_ARCHIVE_BYTES
@@ -903,12 +910,15 @@ class RetentionStore:
                             remaining -= len(chunk)
                         _require(source.read(1) == b"", "retained archive exceeds the verification limit")
                 actual_version = verifier_version or expectation.get("verifier_version", provenance.SUPPORTED_GH_VERSION)
-                verified = provenance.run_gh_attestation_verify(archive_path, bundle=path / "attestation-bundle.json", repository=expectation["repository"], signer_workflow=expectation["signer_workflow"], signer_revision=expectation["signer_revision"], source_ref=expectation["source_ref"], source_sha=expectation["source_sha"], verifier_version=actual_version, custom_trusted_root=trusted_root, offline=True, repository_root=self.repository_root, excluded_roots=(self.repository_root, self.root))
+                verified = provenance.run_gh_attestation_verify(archive_path, bundle=release_path / "attestation-bundle.json", repository=expectation["repository"], signer_workflow=expectation["signer_workflow"], signer_revision=expectation["signer_revision"], source_ref=expectation["source_ref"], source_sha=expectation["source_sha"], verifier_version=actual_version, custom_trusted_root=trusted_root, offline=True, repository_root=self.repository_root, excluded_roots=(self.repository_root, self.root, *excluded_roots))
                 _require(verified.get("_trustedRootSha256") == root_digest and verified.get("_trustedRootBytes") == root_bytes, "offline verifier did not report the independently pinned trusted-root snapshot")
                 authenticated = provenance.validate_verified_result(verified, archive_name=identity["archive_name"], archive_digest=identity["archive_sha256"], archive_bytes=identity["archive_bytes"], expected=expectation, run_metadata=None, require_run_metadata=False)
                 fresh_receipt = authenticated.diagnostic_json()
                 _require(receipt == fresh_receipt, "retained verification receipt does not match reverified authenticated provenance")
-                return fresh_receipt
+                result = dict(fresh_receipt)
+                if candidate_delivery:
+                    result["authorizationDiagnostic"] = {"historicalSignatureValid": True, "historicalLifecycleValidAtIssuedAt": True, "deliveryTimeValidity": "not-evaluated", "replayStatus": "not-evaluated", "replayMutation": "none"}
+                return result
 
 
 def gc_command(publication_root: Path, repository_root: Path, *, execute: bool, max_deletions: int, recover: bool = False) -> dict[str, Any]:

@@ -327,7 +327,6 @@ def candidate_run_metadata(request: object | None = None) -> dict[str, object]:
         "path": request.signer_workflow,
         "created_at": "2026-11-25T19:45:14Z",
         "run_started_at": "2026-11-25T19:45:15Z",
-        "completed_at": "2026-11-25T19:48:13Z",
         "updated_at": "2026-11-25T19:48:13Z",
         "head_sha": request.run_head_sha,
         "head_branch": "main",
@@ -339,12 +338,13 @@ def candidate_run_metadata(request: object | None = None) -> dict[str, object]:
 
 def candidate_jobs() -> list[dict[str, object]]:
     """Return the bounded mandatory job/step evidence required for candidate intake."""
+    request = main_selection_request()
     required = {
-        "Build SHA-bound runtime artifact": ["Build runtime artifact in pinned Linux environment"],
-        "Generate authenticated runtime artifact attestation": ["Generate GitHub-native provenance attestation"],
-        "Retrieve and validate runtime artifact": ["Validate retrieved bytes and safely extract", "Produce non-authoritative production-candidate evidence", "Exercise extracted runtime without install, compile, or Prisma regeneration"],
+        "Build SHA-bound runtime artifact": ["Build runtime artifact in pinned Linux environment", "Publish development validation artifact"],
+        "Generate authenticated runtime artifact attestation": ["Download built artifact into the signer job", "Generate GitHub-native provenance attestation", "Publish attestation bundle for independent verification"],
+        "Retrieve and validate runtime artifact": ["Download published artifact into a fresh job", "Download authenticated attestation bundle into a fresh job", "Select exact artifact-service ZIP and inner archive", "Exercise real API and ZIP negative mutations", "Validate retrieved bytes and safely extract", "Produce non-authoritative production-candidate evidence", "Publish non-authoritative production-candidate evidence", "Run candidate authorization and custody fixture regressions", "Exercise extracted runtime without install, compile, or Prisma regeneration"],
     }
-    return [{"id": index, "name": name, "status": "completed", "conclusion": "success", "started_at": "2026-11-25T19:45:16Z", "completed_at": "2026-11-25T19:48:12Z", "run_attempt": RUN_ATTEMPT, "steps": [{"name": step, "status": "completed", "conclusion": "success"} for step in steps]} for index, (name, steps) in enumerate(required.items(), 1)]
+    return [{"id": index, "name": name, "status": "completed", "conclusion": "success", "run_id": request.run_id, "run_attempt": RUN_ATTEMPT, "head_sha": request.source_sha, "started_at": "2026-11-25T19:45:16Z", "completed_at": "2026-11-25T19:48:12Z", "steps": [{"name": step, "status": "completed", "conclusion": "success"} for step in steps]} for index, (name, steps) in enumerate(required.items(), 1)]
 
 
 def authoritative_evidence_for(identity: object) -> object:
@@ -1169,6 +1169,18 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         missing[2]["steps"] = missing[2]["steps"][:-1]
         with self.assertRaisesRegex(provenance.ProvenanceError, "mandatory step"):
             provenance.validate_completed_candidate_run(request, candidate_run_metadata(request), missing)
+        unsupported_run_field = candidate_run_metadata(request)
+        unsupported_run_field["completed_at"] = unsupported_run_field["updated_at"]
+        with self.assertRaisesRegex(provenance.ProvenanceError, "run-level completed_at"):
+            provenance.validate_completed_candidate_run(request, unsupported_run_field, candidate_jobs())
+        duplicate_job_id = candidate_jobs()
+        duplicate_job_id[1]["id"] = duplicate_job_id[0]["id"]
+        with self.assertRaisesRegex(provenance.ProvenanceError, "job ID is duplicated"):
+            provenance.validate_completed_candidate_run(request, candidate_run_metadata(request), duplicate_job_id)
+        wrong_job_attempt = candidate_jobs()
+        wrong_job_attempt[0]["run_attempt"] = RUN_ATTEMPT + 1
+        with self.assertRaisesRegex(provenance.ProvenanceError, "exact run attempt"):
+            provenance.validate_completed_candidate_run(request, candidate_run_metadata(request), wrong_job_attempt)
 
     def test_exact_attempt_job_pagination_is_bounded_and_complete(self) -> None:
         responses = [{"total_count": 3, "jobs": candidate_jobs()[:2]}, {"total_count": 3, "jobs": candidate_jobs()[2:]}]
@@ -1190,6 +1202,43 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(provenance._canonical_json(context) + b"\n").hexdigest(), context_digest)
         with self.assertRaises(provenance.ProvenanceError):
             provenance.prepare_owner_authorization_record(identity, authorization_id="candidate-auth", issued_at="2026-11-25T12:00:00Z", expires_at="2026-11-26T12:00:00Z", signing_key_id="owner-key")
+
+    @unittest.skipUnless(shutil.which("openssl"), "OpenSSL Ed25519 regression requires OpenSSL")
+    def test_cli_prepare_openssl_sign_assemble_and_verify_binds_exact_record_bytes(self) -> None:
+        identity = trusted_identity()
+        with TemporaryDirectory() as directory_name:
+            root = Path(directory_name)
+            checkout = root / "checkout"
+            custody = root / "custody"
+            checkout.mkdir(mode=0o700)
+            custody.mkdir(mode=0o700)
+            identity_path = checkout / "candidate-identity.json"
+            identity_path.write_bytes(provenance._canonical_json(provenance._authorization_identity_payload(identity)) + b"\n")
+            record_path = custody / "authorization-record.json"
+            signature_path = custody / "authorization-record.sig"
+            envelope_path = custody / "authorization-envelope.json"
+            private_key = custody / "owner-private.pem"
+            public_key = custody / "owner-public.pem"
+            der_key = custody / "owner-public.der"
+            allowlist_path = custody / "revision-allowlist.json"
+            allowlist_path.write_bytes(provenance._canonical_json({"producer_workflow": provenance.RELEASE_PRODUCER_WORKFLOW, "producer_revisions": [identity.producer_revision], "signer_workflow": provenance.RELEASE_SIGNER_WORKFLOW, "signer_revisions": [identity.signer_revision]}) + b"\n")
+            context_digest = "e" * 64
+            base = [sys.executable, str(SCRIPT), "--authorization-identity", str(identity_path), "--authorization-id", "cli-auth-1", "--authorization-issued-at", "2026-11-25T12:00:00Z", "--authorization-expires-at", "2026-11-26T12:00:00Z", "--authorization-key-id", "owner-key", "--verification-context-sha256", context_digest]
+            prepared = subprocess.run([*base, "--prepare-authorization", "--authorization-output", str(record_path)], check=False, capture_output=True, text=True)
+            self.assertEqual(prepared.returncode, 0, prepared.stderr or prepared.stdout)
+            record_bytes = record_path.read_bytes()
+            self.assertEqual(record_bytes, provenance._canonical_json(json.loads(record_bytes)))
+            self.assertFalse(record_bytes.endswith(b"\n"))
+            subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(private_key)], check=True, capture_output=True)
+            subprocess.run(["openssl", "pkey", "-in", str(private_key), "-pubout", "-out", str(public_key)], check=True, capture_output=True)
+            subprocess.run(["openssl", "pkeyutl", "-sign", "-rawin", "-inkey", str(private_key), "-in", str(record_path), "-out", str(signature_path)], check=True, capture_output=True)
+            subprocess.run(["openssl", "pkey", "-pubin", "-in", str(public_key), "-outform", "DER", "-out", str(der_key)], check=True, capture_output=True)
+            fingerprint = hashlib.sha256(der_key.read_bytes()).hexdigest()
+            assembled = subprocess.run([sys.executable, str(SCRIPT), "--assemble-authorization", "--authorization-record", str(record_path), "--authorization-signature", str(signature_path), "--authorization-output", str(envelope_path), "--authorization-identity", str(identity_path), "--authorization-public-key", str(public_key), "--authorization-repository-root", str(checkout), "--authorization-key-id", "owner-key", "--authorization-key-fingerprint", fingerprint, "--authorization-allowlist", str(allowlist_path), "--authorization-verification-now", "2026-11-25T13:00:00Z"], check=False, capture_output=True, text=True)
+            self.assertEqual(assembled.returncode, 0, assembled.stderr or assembled.stdout)
+            self.assertTrue(envelope_path.read_bytes().endswith(b"\n"))
+            envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+            self.assertEqual(envelope["record"]["authorization"]["verification_context_sha256"], context_digest)
 
 
 if __name__ == "__main__":

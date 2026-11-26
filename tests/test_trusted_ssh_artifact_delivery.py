@@ -94,7 +94,7 @@ def synthetic_canonical_identity() -> delivery.provenance.TrustedReleaseIdentity
         platform=delivery.provenance.RELEASE_PLATFORM,
         image=delivery.provenance.RELEASE_IMAGE,
         image_digest=delivery.provenance.RELEASE_IMAGE.split("@", 1)[1],
-        authorization_context="owner-approved-main-release",
+        authorization_context=delivery.provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT,
     )
 
 
@@ -242,9 +242,9 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             expected.write_bytes(delivery.provenance._canonical_json(delivery._identity_payload(identity)) + b"\n")
             args = SimpleNamespace(
                 repository_root=str(checkout), receiving_root=str(root / "receiving"), publication_root=str(root / "publication"), expected_identity=str(expected),
-                authorization_public_key=None, authorization_allowlist=None, authorization_journal=None, authorization_key_id=None, authorization_key_fingerprint=None,
+                authorization_policy=None,
             )
-            with self.assertRaisesRegex(delivery.DeliveryError, "explicit authorization custody"):
+            with self.assertRaisesRegex(delivery.DeliveryError, "receiver-side authorization policy"):
                 delivery.receive_command(args)
 
     def test_snapshot_copy_uses_the_zip_snapshot_sha256_contract(self) -> None:
@@ -555,6 +555,24 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 archive_bytes=len(inner),
             )
             delivery.provenance.validate_trusted_release_identity(identity)
+            context = {
+                "contract": delivery.provenance.CANDIDATE_VERIFICATION_CONTEXT_CONTRACT,
+                "version": delivery.provenance.CANDIDATE_VERIFICATION_CONTEXT_VERSION,
+                "authoritative": False,
+                "independentlyCompleted": True,
+                "identitySha256": delivery.provenance._identity_fingerprint(identity),
+                "sourceSha": identity.source_sha,
+                "artifactClass": identity.artifact_class,
+                "run": {"id": identity.run_id, "attempt": identity.run_attempt, "status": "completed", "conclusion": "success", "createdAt": "2026-11-25T19:45:14Z", "startedAt": "2026-11-25T19:45:15Z", "updatedAt": "2026-11-25T19:48:13Z", "jobCompletionBoundary": "2026-11-25T19:48:12Z"},
+                "jobs": [
+                    {"id": index, "runId": identity.run_id, "runAttempt": identity.run_attempt, "headSha": identity.source_sha, "name": name, "status": "completed", "conclusion": "success", "steps": [{"name": step, "status": "completed", "conclusion": "success"} for step in steps]}
+                    for index, (name, steps) in enumerate(delivery.provenance.CANDIDATE_REQUIRED_JOBS.items(), 1)
+                ],
+            }
+            delivery.provenance.validate_candidate_verification_context(context, identity)
+            context_path = root / "independent-verification-context.json"
+            context_path.write_bytes(delivery.provenance._canonical_json(context) + b"\n")
+            context_digest = hashlib.sha256(context_path.read_bytes()).hexdigest()
             authorization = delivery.provenance.IndependentReleaseAuthorization(
                 authorization_id="delivery-test-auth", context=identity.authorization_context, scope="forward-release",
                 repository=identity.repository, repository_id=identity.repository_id, repository_owner_id=identity.repository_owner_id,
@@ -568,7 +586,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 platform=identity.platform, image=identity.image, image_digest=identity.image_digest,
                 issued_at="2026-11-25T12:00:00Z", expires_at="2026-11-26T12:00:00Z", retry_key="delivery-test-auth",
                 recovery_context=None, signing_key_id="test-key",
-                verification=delivery.provenance.AuthorizationVerificationReceipt("test", "f" * 64, "2026-11-25T12:00:00Z", "test-key", key_fingerprint="1" * 64),
+                verification=delivery.provenance.AuthorizationVerificationReceipt("test", "f" * 64, "2026-11-25T12:00:00Z", "test-key", key_fingerprint="1" * 64), verification_context_sha256=context_digest,
             )
             material = root / "key-material"
             material.mkdir(mode=0o700)
@@ -596,49 +614,62 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 path.mkdir(mode=0o700)
             journal = delivery.provenance.AuthorizationReplayJournal(journal_root, repository_root=checkout)
             now = datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc)
+            attestation_bundle = root / "attestation-bundle.json"
+            attestation_bundle.write_text(json.dumps({"synthetic": True}), encoding="utf-8")
+            trusted_root = root / "trusted-root.jsonl"
+            trusted_root.write_text("synthetic trusted root\n", encoding="utf-8")
+            trusted_root_digest, trusted_root_bytes = delivery.provenance._sha256_file(trusted_root, delivery.provenance.MAX_BUNDLE_BYTES, "synthetic trusted root")
+            verification_expectation = {"contract": "clashcookies.retained-verification-expectation", "version": 1, "identity_sha256": delivery._identity_digest(identity), "repository": identity.repository, "repository_id": str(identity.repository_id), "repository_owner_id": str(identity.repository_owner_id), "source_ref": identity.source_ref, "source_sha": identity.source_sha, "event": identity.event, "producer_workflow": identity.producer_workflow, "producer_revision": identity.producer_revision, "signer_workflow": identity.signer_workflow, "signer_revision": identity.signer_revision, "run_id": identity.run_id, "run_attempt": identity.run_attempt, "artifact_class": identity.artifact_class, "platform": identity.platform, "image": identity.image, "image_digest": identity.image_digest, "archive_name": identity.archive_name, "archive_sha256": identity.archive_sha256, "archive_bytes": identity.archive_bytes, "trusted_root_sha256": trusted_root_digest, "trusted_root_bytes": trusted_root_bytes, "trusted_root_version": trusted_root_digest[:16], "verifier_version": delivery.provenance.SUPPORTED_GH_VERSION}
+            verification_receipt = {"status": "verified-provenance-only", "authenticated": True, "synthetic": True}
+            (material / "revision-allowlist.json").write_bytes(delivery.provenance._canonical_json({"producer_workflow": identity.producer_workflow, "producer_revisions": [identity.producer_revision], "signer_workflow": identity.signer_workflow, "signer_revisions": [identity.signer_revision]}) + b"\n")
+            delivery_kwargs = {"attestation_bundle": attestation_bundle, "candidate_verification_context": context_path, "verification_expectation": verification_expectation, "verification_receipt": verification_receipt, "trusted_root": trusted_root, "trusted_root_expected": (trusted_root_digest, trusted_root_bytes)}
             with patch.object(delivery, "_publish_payload", side_effect=delivery.DeliveryError("interrupted after reservation")), self.assertRaises(delivery.DeliveryError):
-                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
-            result = delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
+                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now, **delivery_kwargs)
+            result = delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now, **delivery_kwargs)
             self.assertEqual(result.status, "published")
-            retry = delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
+            retry = delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now, **delivery_kwargs)
             self.assertEqual(retry.status, "retry-success")
+            store = delivery.retention.RetentionStore(publication, repository_root=checkout, require_durable=False)
+            synthetic_authenticated = SimpleNamespace(diagnostic_json=lambda: verification_receipt)
+            with patch.object(delivery.provenance, "run_gh_attestation_verify", return_value={"_trustedRootSha256": trusted_root_digest, "_trustedRootBytes": trusted_root_bytes}), patch.object(delivery.provenance, "validate_verified_result", return_value=synthetic_authenticated):
+                offline = store.verify_retained_offline(result.identity_sha256, trusted_root=trusted_root, trusted_root_version=trusted_root_digest[:16], authorization_public_key=public_key, authorization_key_id="test-key", authorization_key_fingerprint=trust.expected_public_key_sha256, authorization_allowlist=material / "revision-allowlist.json", excluded_roots=(receiving,))
+            self.assertEqual(offline["authorizationDiagnostic"], {"historicalSignatureValid": True, "historicalLifecycleValidAtIssuedAt": True, "deliveryTimeValidity": "not-evaluated", "replayStatus": "not-evaluated", "replayMutation": "none"})
             destination = Path(result.publication)
             original_zip = (destination / "artifact-service.zip").read_bytes()
             (destination / "artifact-service.zip").write_bytes(b"tampered")
             with self.assertRaises(delivery.DeliveryError):
-                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
+                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now, **delivery_kwargs)
             (destination / "artifact-service.zip").write_bytes(original_zip)
             identity_bytes = (destination / "identity.json").read_bytes()
             (destination / "identity.json").write_bytes(b"{}")
             with self.assertRaises(delivery.DeliveryError):
-                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
+                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now, **delivery_kwargs)
             (destination / "identity.json").write_bytes(identity_bytes)
             authorization_bytes = (destination / "authorization-envelope.json").read_bytes()
             (destination / "authorization-envelope.json").write_bytes(b"tampered")
             with self.assertRaises(delivery.DeliveryError):
-                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
+                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now, **delivery_kwargs)
             (destination / "authorization-envelope.json").write_bytes(authorization_bytes)
             with patch.object(delivery, "_fsync_existing_publication", side_effect=OSError("directory fsync failure")), self.assertRaisesRegex(delivery.retention.RetentionError, "directory fsync failure"):
-                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
-            durable_retry = delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
+                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now, **delivery_kwargs)
+            durable_retry = delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now, **delivery_kwargs)
             self.assertEqual(durable_retry.status, "retry-success")
             with ThreadPoolExecutor(max_workers=2) as executor:
-                outcomes = list(executor.map(lambda _index: delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now), range(2)))
+                outcomes = list(executor.map(lambda _index: delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now, **delivery_kwargs), range(2)))
             self.assertEqual({item.status for item in outcomes}, {"retry-success"})
             expired_journal_root = root / "expired-journal"
             expired_journal_root.mkdir(mode=0o700)
             expired_journal = delivery.provenance.AuthorizationReplayJournal(expired_journal_root, repository_root=checkout)
             with self.assertRaises(delivery.provenance.ProvenanceError):
-                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=expired_journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=datetime(2026, 11, 27, 12, 0, tzinfo=timezone.utc))
+                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=expired_journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=datetime(2026, 11, 27, 12, 0, tzinfo=timezone.utc), **delivery_kwargs)
             conflicting_authorization = replace(authorization, scope="recovery-release", recovery_context="synthetic-conflict")
             conflicting = signed_envelope(conflicting_authorization)
             with self.assertRaises(delivery.provenance.ProvenanceError):
-                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=conflicting, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, operation="recovery-release", now=now)
+                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=conflicting, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, operation="recovery-release", now=now, **delivery_kwargs)
             tampered = {"contract": envelope["contract"], "version": envelope["version"], "record": envelope["record"], "signature": dict(envelope["signature"])}
             tampered["signature"]["value"] = base64.b64encode(b"\0" * 64).decode("ascii")
             with self.assertRaises(delivery.provenance.ProvenanceError):
-                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=tampered, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
-            store = delivery.retention.RetentionStore(publication, repository_root=checkout, require_durable=False)
+                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=tampered, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now, **delivery_kwargs)
             store.consume_reserved_authorization(result.identity_sha256, envelope, allowlist, trust, journal, operation="forward-release", now=now)
             record = store.load()["releases"][result.identity_sha256]
             self.assertEqual(record["reconciliation"]["authorization"], "consumed")
@@ -647,7 +678,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             with self.assertRaises(delivery.provenance.ProvenanceError):
                 journal.consume(envelope, identity, allowlist, trust, operation="forward-release", now=now)
             with self.assertRaises(delivery.provenance.ProvenanceError):
-                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
+                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now, **delivery_kwargs)
 
     def test_endpoint_rejects_destination_and_remote_command_injection(self) -> None:
         with TemporaryDirectory() as root_name:
