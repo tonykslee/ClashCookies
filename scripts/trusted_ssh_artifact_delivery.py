@@ -55,11 +55,15 @@ MAX_VALIDATOR_EXPANDED_BYTES = 2 * 1024 * 1024 * 1024
 MAX_CHECKSUM_BYTES = 512
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_SIDECAR_BYTES = MAX_CHECKSUM_BYTES + MAX_MANIFEST_BYTES
+MAX_REPLAY_RECORD_BYTES = provenance.MAX_ARTIFACT_JSON_BYTES
+MAX_CANDIDATE_CONTEXT_COPIES = 2
+MAX_REPLAY_JOURNAL_COPIES = 2
+MAX_REPLAY_JOURNAL_INODES = 3  # lock, durable entry, and one atomic-replace temporary
 # This is a simultaneous-capacity admission bound, not an expected-use
 # estimate.  It covers the framed input, attempt snapshot, publication copy,
 # retained-publication verification snapshot, bundle/root snapshots, archive
 # snapshots, extracted archive/sidecars, and validator expansion.
-MAX_TEMPORARY_BYTES = (4 * MAX_SERVICE_ZIP_BYTES) + (3 * provenance.MAX_BUNDLE_BYTES) + (2 * provenance.MAX_ARCHIVE_BYTES) + MAX_SIDECAR_BYTES + MAX_VALIDATOR_EXPANDED_BYTES
+MAX_TEMPORARY_BYTES = (4 * MAX_SERVICE_ZIP_BYTES) + (3 * provenance.MAX_BUNDLE_BYTES) + (2 * provenance.MAX_ARCHIVE_BYTES) + MAX_SIDECAR_BYTES + (MAX_CANDIDATE_CONTEXT_COPIES * MAX_VERIFICATION_CONTEXT_BYTES) + (MAX_REPLAY_JOURNAL_COPIES * MAX_REPLAY_RECORD_BYTES) + MAX_VALIDATOR_EXPANDED_BYTES
 DEFAULT_DATABASE_HEADROOM_BYTES = 512 * 1024 * 1024
 DEFAULT_HOST_HEADROOM_BYTES = 256 * 1024 * 1024
 DEFAULT_INCREMENTAL_PRESERVATION_BYTES = provenance.MAX_ARCHIVE_BYTES
@@ -850,8 +854,9 @@ def _publication_payload(staging: Path, identity: Any, service_zip_snapshot: pro
     return bundle_result, authorization_result, verification_result, candidate_context_result
 
 
-def _assert_delivery_storage(receiving_root: Path, limits: DeliveryLimits, publication_root: Path | None = None) -> None:
-    for root in (receiving_root, publication_root):
+def _assert_delivery_storage(receiving_root: Path, limits: DeliveryLimits, publication_root: Path | None = None, *, additional_paths: tuple[Path, ...] = ()) -> None:
+    admission_paths = tuple(path for path in (receiving_root, publication_root, *additional_paths) if path is not None)
+    for root in admission_paths:
         if root is None:
             continue
         try:
@@ -861,13 +866,15 @@ def _assert_delivery_storage(receiving_root: Path, limits: DeliveryLimits, publi
         _require(free >= limits.max_temporary_bytes, "delivery storage does not have enough bounded temporary capacity")
     if publication_root is not None:
         assessment = retention.assess_storage(
-            [receiving_root, publication_root],
+            list(admission_paths),
             temporary_bytes=limits.max_temporary_bytes,
-            persistent_bytes=limits.max_service_zip_bytes + (3 * limits.max_bundle_bytes) + limits.max_authorization_bytes,
+            persistent_bytes=limits.max_service_zip_bytes + (4 * limits.max_bundle_bytes) + limits.max_authorization_bytes + MAX_REPLAY_RECORD_BYTES,
             preserved_runtime_bytes=retention.retained_bytes(publication_root),
             incremental_preservation_bytes=limits.incremental_preservation_bytes,
             database_headroom_bytes=limits.database_headroom_bytes,
             host_headroom_bytes=limits.host_headroom_bytes,
+            temporary_inodes=retention.DEFAULT_TEMP_INODES + MAX_CANDIDATE_CONTEXT_COPIES + MAX_REPLAY_JOURNAL_COPIES,
+            persistent_inodes=retention.DEFAULT_PERSISTENT_INODES + 1 + MAX_REPLAY_JOURNAL_INODES,
         )
         _require(assessment.status == "PASS", "delivery storage admission is insufficient for bounded temporary and retained evidence capacity")
 
@@ -1131,10 +1138,10 @@ def publish_synthetic_authorized_delivery_for_test(
     _assert_external_directory(receiving_root, repository_root, "receiving workspace")
     _assert_external_directory(publication_root, repository_root, "publication directory")
     _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory")])
-    _assert_delivery_storage(receiving_root, DeliveryLimits(), publication_root)
+    _assert_delivery_storage(receiving_root, DeliveryLimits(), publication_root, additional_paths=(journal.root,))
     _assert_private_input(service_zip, repository_root, "received artifact-service ZIP", MAX_SERVICE_ZIP_BYTES)
     with _receiver_lock(receiving_root), retention.activity_lock(publication_root), _initialized_retention(publication_root, repository_root), _owned_temp_directory(receiving_root, "clashcookies-synthetic-delivery-") as attempt_owner:
-        _assert_delivery_storage(receiving_root, DeliveryLimits(), publication_root)
+        _assert_delivery_storage(receiving_root, DeliveryLimits(), publication_root, additional_paths=(journal.root,))
         attempt = attempt_owner.path
         assert attempt is not None
         snapshot = provenance.open_zip_snapshot(service_zip, directory=attempt)
@@ -1451,6 +1458,7 @@ def receive_command(args: argparse.Namespace) -> int:
                 _require(authorization.scope == "forward-release" and authorization.context == provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT and authorization.verification_context_sha256 == candidate_context_digest and authorization.delivery_destination == str(publication_root), "candidate authorization is not an independently approved forward authorization bound to the exact verification context and receiver destination")
                 _candidate_context_file(candidate_context_path, expected_identity, authorization)
                 journal = provenance.AuthorizationReplayJournal(authorization_journal_path, repository_root=repository_root)
+                _assert_delivery_storage(receiving_root, limits, publication_root, additional_paths=(authorization_journal_path,))
             _attempt_bytes(attempt, limits.max_temporary_bytes)
             with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload_owner:
                 payload = payload_owner.path

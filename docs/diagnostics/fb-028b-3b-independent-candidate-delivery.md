@@ -53,8 +53,8 @@ The fixture tests use synthetic provenance only where stated. The mandatory Linu
 
 ## Review-finding matrix
 
-Implemented: exact-run/job/step correlation, canonical context-only owner signing input, receiver-owned trust and configuration, typed authenticated provenance, exact envelope custody, stable bounded evidence reads, historical no-mutation diagnostics, and candidate-shaped Linux/OpenSSH coverage.
+Implemented: exact-run/job/step correlation, canonical context-only owner signing input, receiver-owned trust and configuration, typed authenticated provenance, exact envelope custody, stable bounded evidence reads, historical no-mutation diagnostics, candidate-shaped Linux/OpenSSH coverage, and storage admission for context copies plus receiver-owned replay-journal bytes/inodes.
 
 Demonstrated locally: affected Python suites pass on Windows with platform-gated Linux cases skipped; the OpenSSL CLI fixture now keeps the trusted public-key file private. The Linux/OpenSSH candidate harness is wired into mandatory PR/dev CI but cannot be demonstrated on this Windows checkout.
 
-Unverified here: the next remote CI result and genuine GitHub attestation execution. The supplied validation report also identified an unrelated Native Prisma query-engine panic (exit 134) in run `45872460928`; Docker lifecycle passed and Prisma was not refactored. The supplied run `45872461024` validation failure was the POSIX public-key fixture-permission issue addressed by the test fix.
+Unverified here: the next remote CI result and genuine GitHub attestation execution. The supplied Artifact Round Trip run `45875885943` exposed the candidate expected-identity fixture permission issue and the lost-ack wrapper-name mismatch; both are addressed by private fixture modes and an executable named `ssh` inside the `ssh-drop-ack` directory. The supplied Standard CI run `45875885946` passed. The earlier report also identified an unrelated Native Prisma query-engine panic (exit 134) in run `45872460928`; Docker lifecycle passed and Prisma was not refactored.
