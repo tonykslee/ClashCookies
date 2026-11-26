@@ -36,6 +36,7 @@ from typing import BinaryIO, Iterator, Any
 from zipfile import ZipFile, BadZipFile
 
 import runtime_artifact_provenance as provenance
+import durable_artifact_retention as retention
 
 
 DELIVERY_CONTRACT = "clashcookies.trusted-ssh-artifact-delivery"
@@ -792,6 +793,19 @@ def _assert_delivery_storage(receiving_root: Path, limits: DeliveryLimits, publi
         except OSError as error:
             _fail(f"delivery storage availability cannot be checked: {error}")
         _require(free >= limits.max_temporary_bytes, "delivery storage does not have enough bounded temporary capacity")
+    if publication_root is not None:
+        assessment = retention.assess_storage(
+            [receiving_root, publication_root],
+            temporary_bytes=limits.max_temporary_bytes,
+            persistent_bytes=limits.max_service_zip_bytes + limits.max_bundle_bytes + limits.max_authorization_bytes,
+            preserved_runtime_bytes=retention.retained_bytes(publication_root),
+        )
+        _require(assessment.status == "PASS", "delivery storage admission is insufficient for bounded temporary and retained evidence capacity")
+
+
+def _register_retained_delivery(publication_root: Path, repository_root: Path, destination: Path, identity: Any, *, authorization_reserved: bool) -> None:
+    store = retention.RetentionStore(publication_root, repository_root=repository_root)
+    store.register_delivery(_identity_payload(identity), destination, authorization_reserved=authorization_reserved, assume_locked=True)
 
 
 class _OwnedTempDirectory:
@@ -906,7 +920,8 @@ def publish_development_delivery(
     _assert_private_input(service_zip, repository_root, "received artifact-service ZIP", limits.max_service_zip_bytes)
     _assert_private_input(attestation_bundle, repository_root, "received attestation bundle", limits.max_bundle_bytes)
     _assert_private_input(trusted_root, repository_root, "independently configured trusted root", limits.max_bundle_bytes)
-    with _receiver_lock(receiving_root), _owned_temp_directory(receiving_root, "clashcookies-delivery-") as attempt_owner:
+    with _receiver_lock(receiving_root), retention.activity_lock(publication_root), _owned_temp_directory(receiving_root, "clashcookies-delivery-") as attempt_owner:
+        _assert_delivery_storage(receiving_root, limits, publication_root)
         attempt = attempt_owner.path
         assert attempt is not None
         snapshot = provenance.open_zip_snapshot(service_zip, directory=attempt)
@@ -941,6 +956,7 @@ def publish_development_delivery(
                 assert payload is not None
                 expected_bundle, _ = _publication_payload(payload, expected_identity, snapshot, attestation_bundle)
                 destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle, staging_owner=payload_owner)
+                _register_retained_delivery(publication_root, repository_root, destination, expected_identity, authorization_reserved=False)
         finally:
             provenance.close_zip_snapshot(snapshot)
     return DeliveryResult("retry-success" if retry else "published", str(destination), _identity_digest(expected_identity), expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes, expected_identity.archive_sha256, expected_identity.archive_bytes, True, False)
@@ -973,7 +989,8 @@ def publish_synthetic_authorized_delivery_for_test(
     _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory")])
     _assert_delivery_storage(receiving_root, DeliveryLimits(), publication_root)
     _assert_private_input(service_zip, repository_root, "received artifact-service ZIP", MAX_SERVICE_ZIP_BYTES)
-    with _receiver_lock(receiving_root), _owned_temp_directory(receiving_root, "clashcookies-synthetic-delivery-") as attempt_owner:
+    with _receiver_lock(receiving_root), retention.activity_lock(publication_root), _owned_temp_directory(receiving_root, "clashcookies-synthetic-delivery-") as attempt_owner:
+        _assert_delivery_storage(receiving_root, DeliveryLimits(), publication_root)
         attempt = attempt_owner.path
         assert attempt is not None
         snapshot = provenance.open_zip_snapshot(service_zip, directory=attempt)
@@ -986,6 +1003,7 @@ def publish_synthetic_authorized_delivery_for_test(
                 assert payload is not None
                 _, expected_authorization = _publication_payload(payload, expected_identity, snapshot, None, authorization_envelope)
                 destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_authorization=expected_authorization, staging_owner=payload_owner)
+                _register_retained_delivery(publication_root, repository_root, destination, expected_identity, authorization_reserved=True)
         finally:
             provenance.close_zip_snapshot(snapshot)
     return DeliveryResult("retry-success" if retry else "published", str(destination), _identity_digest(expected_identity), expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes, expected_identity.archive_sha256, expected_identity.archive_bytes, False, True)
@@ -1203,7 +1221,8 @@ def receive_command(args: argparse.Namespace) -> int:
     _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory"), (expected_identity_path, "expected identity")])
     limits = DeliveryLimits()
     _assert_delivery_storage(receiving_root, limits, publication_root)
-    with _receiver_deadline(limits.max_elapsed_seconds) as deadline, _receiver_lock(receiving_root), _owned_temp_directory(receiving_root, "clashcookies-receive-") as attempt_owner:
+    with _receiver_deadline(limits.max_elapsed_seconds) as deadline, _receiver_lock(receiving_root), retention.activity_lock(publication_root), _owned_temp_directory(receiving_root, "clashcookies-receive-") as attempt_owner:
+        _assert_delivery_storage(receiving_root, limits, publication_root)
         attempt = attempt_owner.path
         assert attempt is not None
         identity_payload, files, frame_destination = _read_frame(sys.stdin.buffer, attempt, limits, deadline)
@@ -1255,6 +1274,7 @@ def receive_command(args: argparse.Namespace) -> int:
                 assert payload is not None
                 expected_bundle, _ = _publication_payload(payload, expected_identity, snapshot, files["attestation-bundle.json"])
                 destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle, staging_owner=payload_owner)
+                _register_retained_delivery(publication_root, repository_root, destination, expected_identity, authorization_reserved=False)
             result = DeliveryResult("retry-success" if retry else "published", str(destination), _identity_digest(expected_identity), expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes, expected_identity.archive_sha256, expected_identity.archive_bytes, True, False)
             print(json.dumps(asdict(result), sort_keys=True))
             return 0

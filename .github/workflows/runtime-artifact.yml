@@ -152,6 +152,9 @@ jobs:
       - name: Run trusted SSH delivery boundary regressions
         run: python -m unittest discover -s tests -p 'test_trusted_ssh_artifact_delivery.py' -v
 
+      - name: Run durable retention and readiness regressions
+        run: python -m unittest discover -s tests -p 'test_durable_artifact_retention.py' -v
+
       - name: Acquire independently trusted offline verification root
         env:
           GH_TOKEN: ${{ github.token }}

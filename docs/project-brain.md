@@ -212,6 +212,13 @@ Rules:
 
 # Deployment Model
 
+## FB-028B-3 retention/readiness checkpoint (repository-verified, 2026-11-25)
+
+- Implemented on the feature branch: identity-bound durable retention metadata, first-legacy rollback baseline representation, shared delivery/retention/GC locking, atomic metadata durability, bounded dry-run/explicit GC, shared-filesystem byte/inode admission, conservative interrupted-operation handling, and sanitized repository-local readiness assessment.
+- Retained evidence remains independent of GitHub Actions expiry. Authorization private keys, trusted roots, replay journals, and historical verification evidence remain distinct custody domains; no production key, credential, trust anchor, or VM change was created.
+- Production eligibility, runtime activation, wrapper installation, live VM access, and `dev`→`main` promotion remain disabled/NO-GO. Current live VM compatibility, installed wrapper identity, native ABI, health, scheduler singleton, trust custody, and actual resource headroom are not repository-verified.
+- FB-027 kernel-backed deployment locking, candidate ownership, bounded cleanup, health gates, rollback preservation, and resource admission remain the deployment authority. Authenticated artifact retention must coordinate with detached-volume cleanup by using exact ownership labels/metadata and must never broaden cleanup to unknown resources.
+
 Current production and staging deployments are droplet-based.
 
 - Production runs in active polling mode.
