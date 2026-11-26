@@ -809,15 +809,21 @@ class RetentionStore:
             _require(required.issubset(evidence), "retained offline verification evidence is incomplete")
             path = self.root / record["publication_name"]
             self._verify_owned_release(path, record)
+            identity = record["identity"]
+            outer_digest, outer_bytes = provenance._sha256_file(path / "artifact-service.zip", provenance.MAX_ARTIFACT_BYTES, "retained artifact-service ZIP")
+            _require(outer_digest == identity["artifact_service_zip_sha256"] and outer_bytes == identity["artifact_service_zip_bytes"], "retained outer artifact does not match the immutable release identity")
             expectation = _read_json(path / "verification-expectation.json", MAX_EVIDENCE_BYTES, "retained verification expectation")
             receipt = _read_json(path / "verification-receipt.json", MAX_EVIDENCE_BYTES, "retained verification receipt")
             _require(isinstance(expectation, dict) and expectation.get("contract") == "clashcookies.retained-verification-expectation" and expectation.get("version") == 1, "retained verification expectation is not bound")
             _require(expectation.get("identity_sha256") == identity_sha256, "retained verification expectation identity is not bound")
+            try:
+                provenance.validate_expectation_identity_binding(provenance.TrustedReleaseIdentity(**identity), expectation)
+            except (TypeError, provenance.ProvenanceError) as error:
+                _fail(f"retained verification expectation does not match the immutable release identity: {error}")
             _require(isinstance(receipt, dict) and receipt.get("status") == "verified-provenance-only" and receipt.get("authenticated") is True, "retained verification receipt is not an authenticated receipt")
             retained_root_digest, retained_root_bytes = provenance._sha256_file(path / "trusted-root.jsonl", provenance.MAX_BUNDLE_BYTES, "retained trusted root")
             root_digest, root_bytes = provenance._sha256_file(trusted_root, provenance.MAX_BUNDLE_BYTES, "independent trusted root")
             _require(expectation.get("trusted_root_sha256") == root_digest == retained_root_digest and expectation.get("trusted_root_bytes") == root_bytes == retained_root_bytes and expectation.get("trusted_root_version") == trusted_root_version, "trusted-root version, fingerprint, or retained snapshot does not match the verification expectation")
-            identity = record["identity"]
             with tempfile.TemporaryDirectory(prefix="retained-verify-", dir=self.root) as directory_name:
                 temporary = Path(directory_name)
                 archive_path = temporary / identity["archive_name"]

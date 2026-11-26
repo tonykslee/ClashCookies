@@ -597,19 +597,10 @@ def _validate_inner_archive(archive: Path, checksum: Path, manifest: Path, ident
 
 def _validate_provenance_binding(identity: Any, expectation: dict[str, Any], verified: Any) -> None:
     """Bind the independent delivery identity, verifier expectation, and receipt as one tuple."""
-    fields = (
-        "repository", "repository_id", "repository_owner_id", "source_ref", "source_sha", "event",
-        "producer_workflow", "producer_revision", "signer_workflow", "signer_revision", "run_id", "run_attempt", "artifact_class", "platform",
-        "image", "image_digest",
-    )
-    for field in fields:
-        expected_value = expectation.get(field)
-        identity_value = getattr(identity, field if field != "signer_workflow" else "signer_workflow")
-        _require(expected_value is not None, f"offline expectation omits delivery identity field {field}")
-        _require(str(expected_value) == str(identity_value), f"offline expectation {field} does not match the delivery identity")
-    for field in ("archive_name", "archive_sha256", "archive_bytes", "artifact_service_zip_sha256", "artifact_service_zip_bytes", "artifact_id", "artifact_name"):
-        if field in expectation:
-            _require(str(expectation[field]) == str(getattr(identity, field)), f"offline expectation {field} does not match the delivery identity")
+    try:
+        provenance.validate_expectation_identity_binding(identity, expectation)
+    except provenance.ProvenanceError as error:
+        _fail(str(error))
     for field in ("repository", "source_ref", "source_sha", "event", "signer_workflow", "signer_revision", "run_id", "run_attempt", "artifact_class", "platform", "image", "image_digest", "archive_name", "archive_sha256", "archive_bytes"):
         if hasattr(verified, field):
             _require(str(getattr(verified, field)) == str(getattr(identity, field)), f"verified provenance {field} does not match the delivery identity")

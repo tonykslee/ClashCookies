@@ -341,6 +341,10 @@ class TrustedSshDeliveryTests(unittest.TestCase):
         expectation["source_sha"] = "0" * 40
         with self.assertRaisesRegex(delivery.DeliveryError, "source_sha"):
             delivery._validate_provenance_binding(identity, expectation, verified)
+        expectation["source_sha"] = identity.source_sha
+        expectation["archive_bytes"] = identity.archive_bytes + 1
+        with self.assertRaisesRegex(delivery.DeliveryError, "archive_bytes"):
+            delivery._validate_provenance_binding(identity, expectation, verified)
 
     @unittest.skipUnless(os.name == "posix", "stalled input regression requires POSIX pipes")
     def test_stalled_receiver_input_hits_deadline_and_lock_releases(self) -> None:
@@ -519,7 +523,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             with self.assertRaises(delivery.DeliveryError):
                 delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
             (destination / "authorization-envelope.json").write_bytes(authorization_bytes)
-            with patch.object(delivery, "_fsync_existing_publication", side_effect=OSError("directory fsync failure")), self.assertRaises(OSError):
+            with patch.object(delivery, "_fsync_existing_publication", side_effect=OSError("directory fsync failure")), self.assertRaisesRegex(delivery.retention.RetentionError, "directory fsync failure"):
                 delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
             durable_retry = delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
             self.assertEqual(durable_retry.status, "retry-success")
