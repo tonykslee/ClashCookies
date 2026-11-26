@@ -8,6 +8,7 @@ import json
 import getpass
 import errno
 import os
+import pickle
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -247,6 +248,51 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(delivery.DeliveryError, "receiver-side authorization policy"):
                 delivery.receive_command(args)
+
+    def test_delivery_storage_admission_includes_candidate_context_and_journal_bounds(self) -> None:
+        with TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            receiving = root / "receiving"
+            publication = root / "publication"
+            journal = root / "journal"
+            for path in (receiving, publication, journal):
+                path.mkdir(mode=0o700)
+            captured: dict[str, object] = {}
+
+            def observe(paths: list[Path], **kwargs: object) -> delivery.retention.StorageAssessment:
+                captured["paths"] = paths
+                captured.update(kwargs)
+                return delivery.retention.StorageAssessment("PASS", (), 0, 0)
+
+            with patch.object(delivery.shutil, "disk_usage", return_value=SimpleNamespace(free=10**18)), patch.object(delivery.retention, "assess_storage", side_effect=observe):
+                delivery._assert_delivery_storage(receiving, delivery.DeliveryLimits(max_temporary_bytes=123), publication, additional_paths=(journal,))
+            self.assertIn(journal, captured["paths"])
+            self.assertEqual(captured["persistent_bytes"], delivery.MAX_SERVICE_ZIP_BYTES + (4 * delivery.MAX_BUNDLE_BYTES) + delivery.provenance.MAX_AUTHORIZATION_RECORD_BYTES + delivery.MAX_REPLAY_RECORD_BYTES)
+            self.assertGreater(captured["temporary_inodes"], delivery.retention.DEFAULT_TEMP_INODES)
+            self.assertGreater(captured["persistent_inodes"], delivery.retention.DEFAULT_PERSISTENT_INODES)
+
+    @unittest.skipUnless(os.name == "posix", "journal filesystem admission regression requires POSIX statvfs")
+    def test_delivery_storage_admission_blocks_insufficient_journal_bytes_and_inodes(self) -> None:
+        with TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            receiving = root / "receiving"
+            publication = root / "publication"
+            journal = root / "journal"
+            for path in (receiving, publication, journal):
+                path.mkdir(mode=0o700)
+            real_stat = delivery.retention.os.stat
+            real_statvfs = delivery.retention.os.statvfs
+
+            def fake_stat(path: object, *args: object, **kwargs: object) -> object:
+                return SimpleNamespace(st_dev=2 if Path(path).resolve() == journal.resolve() else 1)
+
+            def fake_statvfs(path: object) -> object:
+                constrained = Path(path).resolve() == journal.resolve()
+                return SimpleNamespace(f_bavail=0 if constrained else 10**9, f_frsize=1, f_favail=0 if constrained else 10**9)
+
+            with patch.object(delivery.shutil, "disk_usage", return_value=SimpleNamespace(free=10**18)), patch.object(delivery.retention.os, "stat", side_effect=fake_stat), patch.object(delivery.retention.os, "statvfs", side_effect=fake_statvfs):
+                with self.assertRaisesRegex(delivery.DeliveryError, "storage admission"):
+                    delivery._assert_delivery_storage(receiving, delivery.DeliveryLimits(max_temporary_bytes=1), publication, additional_paths=(journal,))
 
     def test_snapshot_copy_uses_the_zip_snapshot_sha256_contract(self) -> None:
         with TemporaryDirectory() as root_name:
@@ -605,8 +651,9 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             publication = root / "publication"
             journal_root = root / "journal"
             now = datetime.now(timezone.utc).replace(microsecond=0)
-            authorization_issued = (now - timedelta(minutes=30)).isoformat().replace("+00:00", "Z")
-            authorization_expires = (now + timedelta(hours=24)).isoformat().replace("+00:00", "Z")
+            authorization_issued_at = now - timedelta(minutes=30)
+            authorization_issued = authorization_issued_at.isoformat().replace("+00:00", "Z")
+            authorization_expires = (authorization_issued_at + timedelta(hours=24)).isoformat().replace("+00:00", "Z")
             authorization = delivery.provenance.IndependentReleaseAuthorization(
                 authorization_id="delivery-test-auth", context=identity.authorization_context, scope="forward-release",
                 repository=identity.repository, repository_id=identity.repository_id, repository_owner_id=identity.repository_owner_id,
@@ -656,6 +703,106 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             (material / "revision-allowlist.json").write_bytes(delivery.provenance._canonical_json({"producer_workflow": identity.producer_workflow, "producer_revisions": [identity.producer_revision], "signer_workflow": identity.signer_workflow, "signer_revisions": [identity.signer_revision]}) + b"\n")
             (material / "revision-allowlist.json").chmod(0o600)
             delivery_kwargs = {"attestation_bundle": attestation_bundle, "candidate_verification_context": context_path, "verification_expectation": verification_expectation, "verification_receipt": verification_receipt, "trusted_root": trusted_root, "trusted_root_expected": (trusted_root_digest, trusted_root_bytes)}
+            interruption_child = """
+import os
+import pickle
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import trusted_ssh_artifact_delivery as delivery
+
+with open(sys.argv[2], "rb") as stream:
+    data = pickle.load(stream)
+journal = delivery.provenance.AuthorizationReplayJournal(data["journal"], repository_root=data["repository_root"])
+stage = data["stage"]
+if stage == "reservation":
+    original = journal.reserve
+    def crash(*args, **kwargs):
+        original(*args, **kwargs)
+        os._exit(75)
+    journal.reserve = crash
+elif stage == "publication":
+    original = delivery._publish_payload
+    def crash(*args, **kwargs):
+        result = original(*args, **kwargs)
+        os._exit(75)
+    delivery._publish_payload = crash
+else:
+    original = delivery._register_retained_delivery
+    def crash(*args, **kwargs):
+        original(*args, **kwargs)
+        os._exit(75)
+    delivery._register_retained_delivery = crash
+
+delivery.publish_synthetic_authorized_delivery_for_test(
+    service_zip=data["service_zip"],
+    expected_identity=data["identity"],
+    authorization_envelope=data["envelope"],
+    trust=data["trust"],
+    revision_allowlist=data["allowlist"],
+    journal=journal,
+    repository_root=data["repository_root"],
+    receiving_root=data["receiving_root"],
+    publication_root=data["publication_root"],
+    now=data["now"],
+    **data["delivery_kwargs"],
+)
+"""
+            for stage in ("reservation", "publication", "registration"):
+                with self.subTest(interruption_stage=stage):
+                    stage_root = root / f"interrupted-{stage}"
+                    stage_root.mkdir(mode=0o700)
+                    stage_receiving = stage_root / "receiving"
+                    stage_publication = stage_root / "publication"
+                    stage_journal_root = stage_root / "journal"
+                    for stage_path in (stage_receiving, stage_publication, stage_journal_root):
+                        stage_path.mkdir(mode=0o700)
+                    stage_authorization = replace(
+                        authorization,
+                        authorization_id=f"delivery-test-{stage}",
+                        retry_key=f"delivery-test-{stage}",
+                        delivery_destination=str(stage_publication),
+                    )
+                    stage_envelope = signed_envelope(stage_authorization)
+                    stage_input = stage_root / "input.pkl"
+                    with stage_input.open("wb") as stream:
+                        pickle.dump(
+                            {
+                                "stage": stage,
+                                "service_zip": service_zip,
+                                "identity": identity,
+                                "envelope": stage_envelope,
+                                "trust": trust,
+                                "allowlist": allowlist,
+                                "journal": stage_journal_root,
+                                "repository_root": checkout,
+                                "receiving_root": stage_receiving,
+                                "publication_root": stage_publication,
+                                "now": now,
+                                "delivery_kwargs": delivery_kwargs,
+                            },
+                            stream,
+                        )
+                    interrupted = subprocess.run(
+                        [sys.executable, "-c", interruption_child, str(SCRIPT.parent), str(stage_input)],
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(interrupted.returncode, 75, interrupted.stderr or interrupted.stdout)
+                    recovered = delivery.publish_synthetic_authorized_delivery_for_test(
+                        service_zip=service_zip,
+                        expected_identity=identity,
+                        authorization_envelope=stage_envelope,
+                        trust=trust,
+                        revision_allowlist=allowlist,
+                        journal=delivery.provenance.AuthorizationReplayJournal(stage_journal_root, repository_root=checkout),
+                        repository_root=checkout,
+                        receiving_root=stage_receiving,
+                        publication_root=stage_publication,
+                        now=now,
+                        **delivery_kwargs,
+                    )
+                    self.assertIn(recovered.status, {"published", "retry-success"})
             with patch.object(delivery, "_publish_payload", side_effect=delivery.DeliveryError("interrupted after reservation")), self.assertRaises(delivery.DeliveryError):
                 delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now, **delivery_kwargs)
             result = delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now, **delivery_kwargs)
@@ -845,12 +992,12 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             known_hosts.touch(mode=0o600)
             known_hosts.chmod(0o600)
             config = root / "sshd_config"
+            receiver_env = " ".join([f"PYTHONPATH={SCRIPT.parent}", f"CC_RECEIVER_REPOSITORY_ROOT={checkout}", f"CC_RECEIVER_RECEIVING_ROOT={receiving}", f"CC_RECEIVER_PUBLICATION_ROOT={publication}", f"CC_RECEIVER_EXPECTED_IDENTITY={identity_path}", f"CC_RECEIVER_TRUSTED_ROOT={trusted_root}", f"CC_RECEIVER_OFFLINE_EXPECTATION={expectation}", f"CC_RECEIVER_ATTESTATION_CLI={gh_wrapper}"])
             config.write_text("\n".join([
                 f"Port {port}", "ListenAddress 127.0.0.1", f"HostKey {server_key}",
                 f"AuthorizedKeysFile {authorized}", "PasswordAuthentication no", "KbdInteractiveAuthentication no",
                 "PubkeyAuthentication yes", "UsePAM no", "StrictModes no", "LogLevel QUIET",
-                "PermitUserEnvironment no", f"SetEnv PYTHONPATH={SCRIPT.parent}",
-                f"SetEnv CC_RECEIVER_REPOSITORY_ROOT={checkout}", f"SetEnv CC_RECEIVER_RECEIVING_ROOT={receiving}", f"SetEnv CC_RECEIVER_PUBLICATION_ROOT={publication}", f"SetEnv CC_RECEIVER_EXPECTED_IDENTITY={identity_path}", f"SetEnv CC_RECEIVER_TRUSTED_ROOT={trusted_root}", f"SetEnv CC_RECEIVER_OFFLINE_EXPECTATION={expectation}", f"SetEnv CC_RECEIVER_ATTESTATION_CLI={gh_wrapper}",
+                "PermitUserEnvironment no", f"SetEnv {receiver_env}",
             ]) + "\n", encoding="utf-8")
             config.chmod(0o600)
             server_command = [shutil.which("sshd"), "-D", "-e", "-f", str(config)]
@@ -932,6 +1079,18 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 ], check=False, capture_output=True, text=True)
                 self.assertEqual(remote_version.returncode, 0, remote_version.stderr)
                 self.assertIn("gh version " + delivery.provenance.SUPPORTED_GH_VERSION, remote_version.stdout)
+                environment_probe = "import json,os; print(json.dumps({key: os.environ.get(key) for key in " + repr(list(delivery.RECEIVER_CONFIG_ENV.values())) + "}, sort_keys=True))"
+                remote_environment = subprocess.run([
+                    "ssh", "-F", "none", "-T", "-o", "BatchMode=yes", "-o", "RequestTTY=no",
+                    "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known_hosts}",
+                    "-o", f"IdentityFile={client_key}", "-o", "IdentitiesOnly=yes", "-o", f"Port={port}",
+                    f"{user}@127.0.0.1", "python3", "-c", shlex.quote(environment_probe),
+                ], check=False, capture_output=True, text=True)
+                self.assertEqual(remote_environment.returncode, 0, remote_environment.stderr)
+                self.assertEqual(json.loads(remote_environment.stdout), {variable: expected for variable, expected in {
+                    "CC_RECEIVER_REPOSITORY_ROOT": str(checkout), "CC_RECEIVER_RECEIVING_ROOT": str(receiving), "CC_RECEIVER_PUBLICATION_ROOT": str(publication),
+                    "CC_RECEIVER_EXPECTED_IDENTITY": str(identity_path), "CC_RECEIVER_TRUSTED_ROOT": str(trusted_root), "CC_RECEIVER_OFFLINE_EXPECTATION": str(expectation), "CC_RECEIVER_ATTESTATION_CLI": str(gh_wrapper),
+                }.items()})
                 result = deliver()
                 self.assertEqual(result.status, "published")
                 self.assertEqual(Path(result.publication, "artifact-service.zip").read_bytes(), service_zip.read_bytes())
@@ -1114,6 +1273,8 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             envelope_path.write_bytes(delivery.provenance._canonical_json(envelope) + b"\n")
             journal = root / "authorization-journal"
             journal.mkdir(mode=0o700)
+            candidate_trust = delivery.provenance.AuthorizationTrustConfig(public_key, "candidate-test-key", key_fingerprint, checkout)
+            candidate_allowlist = delivery.provenance.AuthorizationRevisionAllowlist(candidate_identity.producer_workflow, (producer_revision,), candidate_identity.signer_workflow, (signer_revision,))
             policy_path = root / "receiver-authorization-policy.json"
             policy_path.write_bytes(delivery.provenance._canonical_json({"contract": "clashcookies.receiver-authorization-policy", "version": 1, "repository": candidate_identity.repository, "destination": str(root / "publication"), "artifact_class": candidate_identity.artifact_class, "authorization_context": delivery.provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT, "public_key_path": str(public_key), "key_id": "candidate-test-key", "key_fingerprint": key_fingerprint, "allowlist_path": str(allowlist), "journal_path": str(journal)}))
 
@@ -1146,25 +1307,69 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             port.close()
             user = getpass.getuser()
             config = root / "sshd_config"
-            set_env = [f"SetEnv PYTHONPATH={SCRIPT.parent}", f"SetEnv CC_RECEIVER_REPOSITORY_ROOT={checkout}", f"SetEnv CC_RECEIVER_RECEIVING_ROOT={receiving}", f"SetEnv CC_RECEIVER_PUBLICATION_ROOT={publication}", f"SetEnv CC_RECEIVER_EXPECTED_IDENTITY={identity_path}", f"SetEnv CC_RECEIVER_TRUSTED_ROOT={trusted_root}", f"SetEnv CC_RECEIVER_OFFLINE_EXPECTATION={root / 'expectation.json'}", f"SetEnv CC_RECEIVER_ATTESTATION_CLI={gh_wrapper}", f"SetEnv CC_RECEIVER_AUTHORIZATION_POLICY={policy_path}", f"SetEnv CC_SYNTHETIC_VERIFIER_OUTPUT={verifier_output}"]
+            set_env = "SetEnv " + " ".join([f"PYTHONPATH={SCRIPT.parent}", f"CC_RECEIVER_REPOSITORY_ROOT={checkout}", f"CC_RECEIVER_RECEIVING_ROOT={receiving}", f"CC_RECEIVER_PUBLICATION_ROOT={publication}", f"CC_RECEIVER_EXPECTED_IDENTITY={identity_path}", f"CC_RECEIVER_TRUSTED_ROOT={trusted_root}", f"CC_RECEIVER_OFFLINE_EXPECTATION={root / 'expectation.json'}", f"CC_RECEIVER_ATTESTATION_CLI={gh_wrapper}", f"CC_RECEIVER_AUTHORIZATION_POLICY={policy_path}", f"CC_SYNTHETIC_VERIFIER_OUTPUT={verifier_output}"])
             (root / "expectation.json").write_bytes(json.dumps(expectation, sort_keys=True, separators=(",", ":")).encode())
             for private_input in (service_zip, context_path, envelope_path, identity_path, trusted_root, bundle, verifier_output, policy_path, allowlist, root / "expectation.json"):
                 private_input.chmod(0o600)
-            config.write_text("\n".join([f"Port {port_number}", "ListenAddress 127.0.0.1", f"HostKey {server_key}", f"AuthorizedKeysFile {authorized}", "PasswordAuthentication no", "KbdInteractiveAuthentication no", "PubkeyAuthentication yes", "UsePAM no", "StrictModes no", "LogLevel QUIET", "PermitUserEnvironment no", *set_env]) + "\n", encoding="utf-8")
+            config.write_text("\n".join([f"Port {port_number}", "ListenAddress 127.0.0.1", f"HostKey {server_key}", f"AuthorizedKeysFile {authorized}", "PasswordAuthentication no", "KbdInteractiveAuthentication no", "PubkeyAuthentication yes", "UsePAM no", "StrictModes no", "LogLevel QUIET", "PermitUserEnvironment no", set_env]) + "\n", encoding="utf-8")
             config.chmod(0o600)
             server = subprocess.Popen([shutil.which("sshd"), "-D", "-e", "-f", str(config)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
-                for _ in range(60):
-                    probe = subprocess.run(["ssh", "-F", "none", "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", f"IdentityFile={client_key}", "-o", "IdentitiesOnly=yes", "-p", str(port_number), f"{user}@127.0.0.1", "true"], capture_output=True)
-                    if probe.returncode == 0:
-                        break
-                    time.sleep(0.1)
-                else:
+                def wait_for_candidate_server() -> None:
+                    for _ in range(60):
+                        probe = subprocess.run(["ssh", "-F", "none", "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", f"IdentityFile={client_key}", "-o", "IdentitiesOnly=yes", "-p", str(port_number), f"{user}@127.0.0.1", "true"], capture_output=True)
+                        if probe.returncode == 0:
+                            return
+                        time.sleep(0.1)
                     self.fail("candidate disposable sshd did not become ready")
+
+                wait_for_candidate_server()
                 known_hosts.write_text(f"[127.0.0.1]:{port_number} {server_pub[0]} {server_pub[1]}\n", encoding="utf-8")
                 known_hosts.chmod(0o600)
                 endpoint = delivery.SshDeliveryEndpoint(host="127.0.0.1", user=user, known_hosts=known_hosts, identity_file=client_key, destination=str(publication), remote_repository_root=str(checkout), remote_receiving_root=str(receiving), remote_publication_root=str(publication), remote_expected_identity=str(identity_path), remote_trusted_root=str(trusted_root), remote_offline_expectation=str(root / "expectation.json"), remote_attestation_cli=str(gh_wrapper), remote_authorization_policy=str(policy_path), port=port_number, execution_timeout_seconds=delivery.MAX_RECEIVING_SECONDS)
                 deliver = lambda: delivery.deliver_exact_artifact_over_ssh(endpoint, service_zip, candidate_identity, checkout, attestation_bundle=bundle, authorization_envelope=envelope_path, candidate_verification_context=context_path)
+                normal = deliver()
+                self.assertEqual(normal.status, "published")
+                publication_path = publication / f"release-{delivery._identity_digest(candidate_identity)}"
+                self.assertTrue(publication_path.is_dir(), "normal candidate delivery did not publish")
+                store = delivery.retention.RetentionStore(publication, repository_root=checkout, require_durable=False)
+                retained_state = store.load()
+                retained_record = retained_state["releases"][normal.identity_sha256]
+                self.assertEqual(retained_record["identity"], delivery._identity_payload(candidate_identity))
+                self.assertEqual(set(retained_record["evidence"]), {"artifact-service.zip", "attestation-bundle.json", "authorization-envelope.json", "independent-verification-context.json", "verification-expectation.json", "verification-receipt.json", "trusted-root.jsonl"})
+                self.assertEqual(retained_record["roles"], ["pending", "reserved"])
+                delivery.provenance.AuthorizationReplayJournal(journal, repository_root=checkout).assert_reserved(envelope, candidate_identity, candidate_allowlist, candidate_trust, operation="forward-release")
+
+                lost_root = root / "lost-ack-custody"
+                lost_receiving = lost_root / "receiving"
+                lost_publication = lost_root / "publication"
+                lost_journal = lost_root / "authorization-journal"
+                for path in (lost_receiving, lost_publication, lost_journal):
+                    path.mkdir(parents=True, mode=0o700)
+                lost_record = json.loads(json.dumps(authorization_record))
+                lost_record["authorization"]["authorization_id"] = "candidate-ssh-lost-ack"
+                lost_record["authorization"]["retry_key"] = "candidate-ssh-lost-ack"
+                lost_record["authorization"]["destination"] = str(lost_publication)
+                lost_record_path = material / "lost-ack-record.json"
+                lost_signature_path = material / "lost-ack-record.sig"
+                lost_record_path.write_bytes(delivery.provenance._canonical_json(lost_record))
+                subprocess.run(["openssl", "pkeyutl", "-sign", "-rawin", "-inkey", str(private_key), "-in", str(lost_record_path), "-out", str(lost_signature_path)], check=True, capture_output=True)
+                lost_envelope = delivery.provenance.assemble_owner_authorization_envelope(lost_record, lost_signature_path.read_bytes(), "candidate-test-key")
+                lost_envelope_path = lost_root / "authorization-envelope.json"
+                lost_envelope_path.write_bytes(delivery.provenance._canonical_json(lost_envelope) + b"\n")
+                lost_envelope_path.chmod(0o600)
+                lost_policy_path = lost_root / "receiver-authorization-policy.json"
+                lost_policy_path.write_bytes(delivery.provenance._canonical_json({"contract": "clashcookies.receiver-authorization-policy", "version": 1, "repository": candidate_identity.repository, "destination": str(lost_publication), "artifact_class": candidate_identity.artifact_class, "authorization_context": delivery.provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT, "public_key_path": str(public_key), "key_id": "candidate-test-key", "key_fingerprint": key_fingerprint, "allowlist_path": str(allowlist), "journal_path": str(lost_journal)}))
+                lost_policy_path.chmod(0o600)
+                lost_receiver_env = "SetEnv " + " ".join([f"PYTHONPATH={SCRIPT.parent}", f"CC_RECEIVER_REPOSITORY_ROOT={checkout}", f"CC_RECEIVER_RECEIVING_ROOT={lost_receiving}", f"CC_RECEIVER_PUBLICATION_ROOT={lost_publication}", f"CC_RECEIVER_EXPECTED_IDENTITY={identity_path}", f"CC_RECEIVER_TRUSTED_ROOT={trusted_root}", f"CC_RECEIVER_OFFLINE_EXPECTATION={root / 'expectation.json'}", f"CC_RECEIVER_ATTESTATION_CLI={gh_wrapper}", f"CC_RECEIVER_AUTHORIZATION_POLICY={lost_policy_path}", f"CC_SYNTHETIC_VERIFIER_OUTPUT={verifier_output}"])
+                config.write_text("\n".join([f"Port {port_number}", "ListenAddress 127.0.0.1", f"HostKey {server_key}", f"AuthorizedKeysFile {authorized}", "PasswordAuthentication no", "KbdInteractiveAuthentication no", "PubkeyAuthentication yes", "UsePAM no", "StrictModes no", "LogLevel QUIET", "PermitUserEnvironment no", lost_receiver_env]) + "\n", encoding="utf-8")
+                config.chmod(0o600)
+                server.terminate()
+                server.wait(timeout=5)
+                server = subprocess.Popen([shutil.which("sshd"), "-D", "-e", "-f", str(config)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                wait_for_candidate_server()
+                lost_endpoint = delivery.SshDeliveryEndpoint(host="127.0.0.1", user=user, known_hosts=known_hosts, identity_file=client_key, destination=str(lost_publication), remote_repository_root=str(checkout), remote_receiving_root=str(lost_receiving), remote_publication_root=str(lost_publication), remote_expected_identity=str(identity_path), remote_trusted_root=str(trusted_root), remote_offline_expectation=str(root / "expectation.json"), remote_attestation_cli=str(gh_wrapper), remote_authorization_policy=str(lost_policy_path), port=port_number, execution_timeout_seconds=delivery.MAX_RECEIVING_SECONDS)
+                lost_deliver = lambda: delivery.deliver_exact_artifact_over_ssh(lost_endpoint, service_zip, candidate_identity, checkout, attestation_bundle=bundle, authorization_envelope=lost_envelope_path, candidate_verification_context=context_path)
                 drop_directory = root / "ssh-drop-ack"
                 drop_directory.mkdir(mode=0o700)
                 drop_ssh = drop_directory / "ssh"
@@ -1173,27 +1378,30 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 drop_ssh.chmod(0o700)
                 with patch.dict(os.environ, {"PATH": str(drop_directory) + os.pathsep + os.environ["PATH"]}):
                     with self.assertRaises(delivery.DeliveryError):
-                        deliver()
-                publication_path = publication / f"release-{delivery._identity_digest(candidate_identity)}"
-                self.assertTrue(publication_path.is_dir(), "receiver did not complete publication before the acknowledgment was lost")
-                self.assertTrue((publication_path / "retention-state.json").is_file(), "receiver did not durably register publication before the acknowledgment was lost")
-                first = deliver()
-                self.assertEqual(first.status, "retry-success")
-                self.assertTrue((Path(first.publication) / "authorization-envelope.json").is_file())
-                final = deliver()
+                        lost_deliver()
+                lost_publication_path = lost_publication / f"release-{delivery._identity_digest(candidate_identity)}"
+                self.assertTrue(lost_publication_path.is_dir(), "receiver did not complete publication before the acknowledgment was lost")
+                lost_store = delivery.retention.RetentionStore(lost_publication, repository_root=checkout, require_durable=False)
+                lost_state = lost_store.load()
+                lost_record_state = lost_state["releases"][delivery._identity_digest(candidate_identity)]
+                self.assertEqual(lost_record_state["identity"], delivery._identity_payload(candidate_identity))
+                self.assertEqual(lost_record_state["roles"], ["pending", "reserved"])
+                delivery.provenance.AuthorizationReplayJournal(lost_journal, repository_root=checkout).assert_reserved(lost_envelope, candidate_identity, candidate_allowlist, candidate_trust, operation="forward-release")
+                final = lost_deliver()
                 self.assertEqual(final.status, "retry-success")
                 trusted_root_digest = hashlib.sha256(trusted_root.read_bytes()).hexdigest()
-                historical = delivery.retention.RetentionStore(publication, repository_root=checkout, require_durable=False).verify_retained_offline(
-                    final.identity_sha256,
-                    trusted_root=trusted_root,
-                    trusted_root_version=trusted_root_digest[:16],
-                    verifier_version=delivery.provenance.SUPPORTED_GH_VERSION,
-                    authorization_public_key=public_key,
-                    authorization_key_id="candidate-test-key",
-                    authorization_key_fingerprint=key_fingerprint,
-                    authorization_allowlist=allowlist,
-                    excluded_roots=(receiving,),
-                )
+                with patch.dict(os.environ, {"GH_ATTESTATION_CLI": str(gh_wrapper), "CC_SYNTHETIC_VERIFIER_OUTPUT": str(verifier_output)}, clear=False):
+                    historical = lost_store.verify_retained_offline(
+                        final.identity_sha256,
+                        trusted_root=trusted_root,
+                        trusted_root_version=trusted_root_digest[:16],
+                        verifier_version=delivery.provenance.SUPPORTED_GH_VERSION,
+                        authorization_public_key=public_key,
+                        authorization_key_id="candidate-test-key",
+                        authorization_key_fingerprint=key_fingerprint,
+                        authorization_allowlist=allowlist,
+                        excluded_roots=(lost_receiving,),
+                    )
                 self.assertEqual(historical["authorizationDiagnostic"]["replayMutation"], "none")
             finally:
                 server.terminate()
