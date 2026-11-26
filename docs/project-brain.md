@@ -226,6 +226,13 @@ Rules:
 - Owner approval is a separate external Ed25519 signing procedure with an explicit immutable revision allowlist, distinct owner-approved candidate context, key ID/fingerprint, bounded forward validity, and durable replay reservation before atomic candidate publication. The receiver requires explicit custody paths and retains ZIP, attestation, authorization, verification context, expectation, receipt, and trusted-root evidence; it never consumes authorization or activates production.
 - Historical offline retention verification checks the signed record at its issuance time and the retained context without GitHub access, fresh authority, journal reservation, or consumption. Candidate delivery, promotion, runtime activation, and production eligibility remain disabled/NO-GO; no trust root, private key, VM state, production credential, or deployment default was created.
 
+## FB-028B-3c immutable preparation checkpoint (repository-verified, 2026-11-26)
+
+- `scripts/immutable_runtime_preparation.py` now consumes only one exact retained production-candidate identity. It re-runs retained official-verifier evidence, verifies current signed authorization and the existing replay reservation without consuming it, reuses the hardened archive validator, and publishes a complete identity-addressed runtime outside the checkout.
+- The first legacy rollback runtime is preserved from an explicit bounded source map describing observed container, checkout revision, digest-pinned image, startup boundary, and all packaged runtime inputs. Source mutation, incomplete/ambiguous identity, unsafe entry types, and image conflicts block; the protected baseline remains unauthenticated and distinct from candidate releases. Existing v1 retention state remains compatible; genuine legacy custody is recorded separately without replacing the placeholder or overwriting a known-good baseline.
+- Preparation rechecks simultaneous byte/inode admission under the existing retention lock and supports FB-027 deployment-lock coordination before Docker/runtime discovery. Stable retries reuse verified material; interrupted or conflicting publication remains recovery-protected. No active/previous pointer, workflow, wrapper, migration, image store, authorization lifecycle, VM, credential, or production eligibility path changed.
+- Windows checks cover repository behavior only. Linux fsync/no-replacement, Docker mounts, pinned-image/native ABI, disposable PostgreSQL, and exact-head CI evidence remain required. The detailed contract and handoff boundary are in `docs/diagnostics/fb-028b-3c-immutable-runtime-preparation.md`.
+
 Current production and staging deployments are droplet-based.
 
 - Production runs in active polling mode.

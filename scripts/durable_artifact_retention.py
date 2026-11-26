@@ -33,6 +33,7 @@ RETENTION_VERSION = 1
 STATE_FILENAME = "retention-state.json"
 LOCK_FILENAME = ".artifact-retention.lock"
 LEGACY_BASELINE_ID = "legacy-runtime-baseline"
+LEGACY_BASELINE_METADATA_FILENAME = "legacy-runtime-baseline.json"
 MAX_STATE_BYTES = 1024 * 1024
 MAX_RELEASES = 128
 MAX_GC_DELETIONS = 16
@@ -419,12 +420,110 @@ class RetentionStore:
         else:
             _fail("publication root must be outside the mutable checkout")
         self.state_path = publication_root / STATE_FILENAME
+        self.legacy_baseline_path = publication_root / LEGACY_BASELINE_METADATA_FILENAME
 
     def load(self) -> dict[str, Any]:
         if not self.state_path.exists():
             _fail("retention metadata is missing; explicit initialization is required")
         state = _read_json(self.state_path, MAX_STATE_BYTES, "retention metadata")
         return _validate_state(state)
+
+    def legacy_baseline_status(self) -> dict[str, Any]:
+        """Return durable legacy custody, preserving the v1 placeholder contract.
+
+        The original retention state intentionally contains only an
+        unauthenticated placeholder.  A real legacy capture is recorded in a
+        separate, identity-bound file so loading or upgrading v1 state can
+        never silently adopt or replace runtime material.
+        """
+        if not self.legacy_baseline_path.exists():
+            return {
+                "id": LEGACY_BASELINE_ID,
+                "authenticated": False,
+                "protected": True,
+                "status": "placeholder",
+            }
+        record = _read_json(self.legacy_baseline_path, MAX_STATE_BYTES, "legacy baseline metadata")
+        _require(isinstance(record, dict), "legacy baseline metadata is malformed")
+        required = {"contract", "version", "id", "authenticated", "protected", "status", "runtime_path", "integrity", "identity"}
+        _require(set(record) == required, "legacy baseline metadata has missing or unexpected fields")
+        _require(record["contract"] == "clashcookies.legacy-runtime-baseline" and record["version"] == 1, "legacy baseline metadata contract is unsupported")
+        _require(record["id"] == LEGACY_BASELINE_ID and record["authenticated"] is False and record["protected"] is True and record["status"] == "preserved-verified", "legacy baseline metadata is not an unauthenticated protected capture")
+        _require(isinstance(record["runtime_path"], str) and Path(record["runtime_path"]).is_absolute(), "legacy baseline runtime path is malformed")
+        _require(isinstance(record["identity"], dict) and record["identity"], "legacy baseline identity is missing")
+        integrity = record["integrity"]
+        _require(isinstance(integrity, dict) and set(integrity) == {"tree_sha256", "bytes", "entries"} and provenance.SHA256_RE.fullmatch(str(integrity["tree_sha256"])) is not None and type(integrity["bytes"]) is int and integrity["bytes"] > 0 and type(integrity["entries"]) is int and integrity["entries"] > 0, "legacy baseline integrity is malformed")
+        runtime = Path(record["runtime_path"])
+        for base in (self.root, self.repository_root):
+            try:
+                runtime.resolve().relative_to(base.resolve())
+            except ValueError:
+                continue
+            _fail("preserved legacy runtime must be outside retention and checkout roots")
+        _safe_directory(runtime, "preserved legacy runtime")
+        return record
+
+    def register_legacy_baseline(self, record: dict[str, Any], *, assume_locked: bool = False) -> dict[str, Any]:
+        """Publish the first real legacy baseline without replacement.
+
+        This metadata is deliberately outside the release table and remains
+        unauthenticated.  A conflicting existing capture is always rejected.
+        """
+        _require(isinstance(record, dict), "legacy baseline record is malformed")
+        expected = {"contract", "version", "id", "authenticated", "protected", "status", "runtime_path", "integrity", "identity"}
+        _require(set(record) == expected, "legacy baseline record has missing or unexpected fields")
+        _require(record["id"] == LEGACY_BASELINE_ID and record["authenticated"] is False and record["protected"] is True and record["status"] == "preserved-verified", "legacy baseline record must remain unauthenticated and protected")
+        runtime = Path(record["runtime_path"])
+        for base in (self.root, self.repository_root):
+            try:
+                runtime.resolve().relative_to(base.resolve())
+            except ValueError:
+                continue
+            _fail("preserved legacy runtime must be outside retention and checkout roots")
+        _safe_directory(runtime, "preserved legacy runtime")
+        payload = _canonical(record) + b"\n"
+
+        def apply() -> dict[str, Any]:
+            if self.legacy_baseline_path.exists():
+                existing = self.legacy_baseline_status()
+                _require(existing == record, "existing legacy baseline conflicts with the requested capture")
+                return existing
+            temporary = self.root / f".{LEGACY_BASELINE_METADATA_FILENAME}.tmp-{os.getpid()}-{time.time_ns()}"
+            descriptor = None
+            try:
+                descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                written = 0
+                while written < len(payload):
+                    written += os.write(descriptor, payload[written:])
+                os.fsync(descriptor)
+                os.close(descriptor)
+                descriptor = None
+                try:
+                    if os.name == "posix":
+                        os.link(temporary, self.legacy_baseline_path)
+                        temporary.unlink(missing_ok=True)
+                    else:
+                        if self.legacy_baseline_path.exists():
+                            _fail("legacy baseline appeared during publication")
+                        os.rename(temporary, self.legacy_baseline_path)
+                except FileExistsError:
+                    temporary.unlink(missing_ok=True)
+                    existing = self.legacy_baseline_status()
+                    _require(existing == record, "existing legacy baseline conflicts with the requested capture")
+                    return existing
+                _fsync_directory(self.root, required=self.require_durable)
+                return record
+            except OSError as error:
+                _fail(f"legacy baseline metadata publication failed: {error}")
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+                temporary.unlink(missing_ok=True)
+
+        if assume_locked:
+            return apply()
+        with activity_lock(self.root):
+            return apply()
 
     def initialize(self, *, assume_locked: bool = False) -> None:
         """Create the first state only when the publication root is demonstrably empty."""
@@ -549,7 +648,20 @@ class RetentionStore:
         def apply() -> None:
             state = self.load()
             _require(identity_sha256 in state["releases"], "retention operation reference is invalid")
-            _require(operation_id not in state["operations"], "retention operation already exists")
+            existing = state["operations"].get(operation_id)
+            if existing is not None:
+                _require(existing["release_sha256"] == identity_sha256 and existing["kind"] == kind, "retention operation already exists with conflicting ownership")
+                record = state["releases"][identity_sha256]
+                changed = False
+                if "in-flight" not in record["roles"]:
+                    record["roles"].append("in-flight")
+                    changed = True
+                if recovery_required and "recovery-protected" not in record["roles"]:
+                    record["roles"].append("recovery-protected")
+                    changed = True
+                if changed:
+                    self._save(state)
+                return
             state["operations"][operation_id] = {"release_sha256": identity_sha256, "kind": kind, "started_at": _now()}
             record = state["releases"][identity_sha256]
             if "in-flight" not in record["roles"]:

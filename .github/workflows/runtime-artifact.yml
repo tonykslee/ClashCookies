@@ -159,6 +159,12 @@ jobs:
       - name: Run durable retention and readiness regressions
         run: python -m unittest discover -s tests -p 'test_durable_artifact_retention.py' -v
 
+      - name: Run immutable preparation and legacy custody regressions
+        env:
+          CC_REAL_PREPARATION_DOCKER: "1"
+          RUNTIME_ARTIFACT_IMAGE: node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5
+        run: python -m unittest discover -s tests -p 'test_immutable_runtime_preparation.py' -v
+
       - name: Acquire independently trusted offline verification root
         env:
           GH_TOKEN: ${{ github.token }}
