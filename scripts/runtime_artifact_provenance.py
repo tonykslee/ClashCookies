@@ -2021,7 +2021,7 @@ def load_owner_approval_context(path: Path, identity: TrustedReleaseIdentity) ->
     require_string(attestation["verifier"], "context.attestation.verifier")
     require_string(attestation["verifierVersion"], "context.attestation.verifierVersion")
     archive_validation = context.get("archiveValidation")
-    require(isinstance(archive_validation, dict) and set(archive_validation) == {"status", "archiveSha256", "archiveBytes", "extracted"} and archive_validation.get("status") == "hardened-validated" and archive_validation.get("archiveSha256") == identity.archive_sha256 and archive_validation.get("archiveBytes") == identity.archive_bytes and archive_validation.get("extracted") is True, "independent context lacks hardened archive validation")
+    require(isinstance(archive_validation, dict) and set(archive_validation) == {"status", "archiveName", "archiveSha256", "archiveBytes", "extracted"} and archive_validation.get("status") == "hardened-validated" and archive_validation.get("archiveName") == identity.archive_name and archive_validation.get("archiveSha256") == identity.archive_sha256 and archive_validation.get("archiveBytes") == identity.archive_bytes and archive_validation.get("extracted") is True, "independent context lacks hardened archive validation")
     require(type(archive_validation["archiveBytes"]) is int and archive_validation["archiveBytes"] > 0, "independent context archive validation bytes are malformed")
     _validate_candidate_workflow_identity(context.get("workflowIdentity"), identity)
     verification_completed_at = require_string(context.get("verificationCompletedAt"), "verificationCompletedAt")

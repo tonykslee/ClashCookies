@@ -117,6 +117,27 @@ def candidate_run_metadata(identity: delivery.provenance.TrustedReleaseIdentity)
     }
 
 
+def retained_candidate_context(identity: delivery.provenance.TrustedReleaseIdentity, archive_validation: dict[str, object], now: datetime) -> dict[str, object]:
+    """Build retained evidence around the validator result used by owner preparation."""
+    stamp = lambda value: value.isoformat().replace("+00:00", "Z")
+    created = now - timedelta(minutes=7)
+    started = now - timedelta(minutes=6)
+    boundary = now - timedelta(minutes=2)
+    updated = now - timedelta(minutes=1)
+    return {
+        "contract": delivery.provenance.CANDIDATE_VERIFICATION_CONTEXT_CONTRACT,
+        "version": delivery.provenance.CANDIDATE_VERIFICATION_CONTEXT_VERSION,
+        "authoritative": False,
+        "independentlyCompleted": True,
+        "run": {"id": identity.run_id, "attempt": identity.run_attempt, "status": "completed", "conclusion": "success", "createdAt": stamp(created), "startedAt": stamp(started), "updatedAt": stamp(updated), "jobCompletionBoundary": stamp(boundary)},
+        "jobs": [{"id": index, "runId": identity.run_id, "runAttempt": identity.run_attempt, "headSha": identity.source_sha, "name": name, "status": "completed", "conclusion": "success", "startedAt": stamp(started), "completedAt": stamp(boundary), "steps": [{"name": step, "status": "completed", "conclusion": "success"} for step in steps]} for index, (name, steps) in enumerate(delivery.provenance.CANDIDATE_REQUIRED_JOBS.items(), 1)],
+        "attestation": {"status": "official-verifier-authenticated", "authenticated": True, "verifier": "isolated-synthetic-verifier", "verifierVersion": delivery.provenance.SUPPORTED_GH_VERSION, "subjectDigest": identity.archive_sha256},
+        "archiveValidation": archive_validation,
+        "workflowIdentity": {"producerWorkflow": identity.producer_workflow, "producerRevision": identity.producer_revision, "signerWorkflow": identity.signer_workflow, "signerRevision": identity.signer_revision, "policy": "immutable-owner-allowlist"},
+        "verificationCompletedAt": stamp(now),
+    }
+
+
 def build_candidate_validator_fixture(root: Path, source_service_zip: Path, source_identity: delivery.provenance.TrustedReleaseIdentity) -> dict[str, object]:
     """Build an explicitly synthetic candidate archive from the real dev artifact shape."""
     with ZipFile(source_service_zip) as source_service:
@@ -1253,6 +1274,25 @@ delivery.publish_synthetic_authorized_delivery_for_test(
             self.assertEqual(result["status"], "hardened-validated")
             self.assertTrue(result["extracted"])
             self.assertTrue((workspace / "extracted-runtime" / "dist" / "ClashCookies.js").is_file())
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+            context, context_digest = delivery.provenance.independent_candidate_verification_context(retained_candidate_context(identity, result, now), identity)
+            context_path = root / "owner-candidate-context.json"
+            context_path.write_bytes(delivery.provenance._canonical_json(context) + b"\n")
+            retained, retained_digest, verification_completed_at = delivery.provenance.load_owner_approval_context(context_path, identity)
+            self.assertEqual(retained["archiveValidation"], result)
+            self.assertEqual(retained_digest, context_digest)
+            record = delivery.provenance.prepare_owner_authorization_record(
+                identity,
+                authorization_id="owner-local-composed",
+                issued_at=verification_completed_at,
+                expires_at=(now + timedelta(hours=24)).isoformat().replace("+00:00", "Z"),
+                signing_key_id="isolated-test-owner",
+                verification_context_sha256=retained_digest,
+                delivery_destination="/srv/candidate",
+                verification_completed_at=verification_completed_at,
+            )
+            self.assertEqual(record["authorization"]["verification_context_sha256"], retained_digest)
+            self.assertEqual(record["release"]["archive_name"], identity.archive_name)
 
     @unittest.skipUnless(os.environ.get("CC_REAL_RECEIVER") == "1", "candidate validator integration is enabled only by mandatory Linux CI")
     def test_receiver_candidate_archive_validation_uses_real_hardened_validator(self) -> None:
@@ -1392,7 +1432,7 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                 "run": {"id": run_id, "attempt": run_attempt, "status": "completed", "conclusion": "success", "createdAt": (now - timedelta(minutes=7)).isoformat().replace("+00:00", "Z"), "startedAt": (now - timedelta(minutes=6)).isoformat().replace("+00:00", "Z"), "updatedAt": verification_completed, "jobCompletionBoundary": completion_boundary},
                 "jobs": [{"id": index, "runId": run_id, "runAttempt": run_attempt, "headSha": source_sha, "name": name, "status": "completed", "conclusion": "success", "startedAt": (now - timedelta(minutes=6)).isoformat().replace("+00:00", "Z"), "completedAt": completion_boundary, "steps": [{"name": step, "status": "completed", "conclusion": "success"} for step in steps]} for index, (name, steps) in enumerate(delivery.provenance.CANDIDATE_REQUIRED_JOBS.items(), 1)],
                 "attestation": {"status": "official-verifier-authenticated", "authenticated": True, "verifier": "synthetic-harness", "verifierVersion": delivery.provenance.SUPPORTED_GH_VERSION, "subjectDigest": archive_digest},
-                "archiveValidation": {"status": "hardened-validated", "archiveSha256": archive_digest, "archiveBytes": len(candidate_archive_bytes), "extracted": True},
+                "archiveValidation": {"status": "hardened-validated", "archiveName": candidate_identity.archive_name, "archiveSha256": archive_digest, "archiveBytes": len(candidate_archive_bytes), "extracted": True},
                 "workflowIdentity": {"producerWorkflow": candidate_identity.producer_workflow, "producerRevision": producer_revision, "signerWorkflow": candidate_identity.signer_workflow, "signerRevision": signer_revision, "policy": "immutable-owner-allowlist"},
                 "verificationCompletedAt": verification_completed,
             }

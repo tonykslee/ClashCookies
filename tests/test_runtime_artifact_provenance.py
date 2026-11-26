@@ -1221,7 +1221,7 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         missing_owner_evidence = copy.deepcopy(base)
         missing_owner_evidence.update({
             "attestation": {"status": "official-verifier-authenticated", "authenticated": True, "verifier": "official-gh", "verifierVersion": provenance.SUPPORTED_GH_VERSION, "subjectDigest": identity.archive_sha256},
-            "archiveValidation": {"status": "hardened-validated", "archiveSha256": identity.archive_sha256, "archiveBytes": identity.archive_bytes, "extracted": True},
+            "archiveValidation": {"status": "hardened-validated", "archiveName": identity.archive_name, "archiveSha256": identity.archive_sha256, "archiveBytes": identity.archive_bytes, "extracted": True},
             "verificationCompletedAt": "2026-11-25T19:50:00Z",
         })
         with TemporaryDirectory() as directory:
@@ -1272,7 +1272,7 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             allowlist_path = custody / "revision-allowlist.json"
             allowlist_path.write_bytes(provenance._canonical_json({"producer_workflow": provenance.RELEASE_PRODUCER_WORKFLOW, "producer_revisions": [identity.producer_revision], "signer_workflow": provenance.RELEASE_SIGNER_WORKFLOW, "signer_revisions": [identity.signer_revision]}) + b"\n")
             context, _ = provenance.independent_candidate_verification_context(provenance.validate_completed_candidate_run(main_selection_request(), candidate_run_metadata(), candidate_jobs()), identity)
-            context.update({"attestation": {"status": "official-verifier-authenticated", "authenticated": True, "verifier": "official-gh", "verifierVersion": provenance.SUPPORTED_GH_VERSION, "subjectDigest": identity.archive_sha256}, "archiveValidation": {"status": "hardened-validated", "archiveSha256": identity.archive_sha256, "archiveBytes": identity.archive_bytes, "extracted": True}, "workflowIdentity": {"producerWorkflow": identity.producer_workflow, "producerRevision": identity.producer_revision, "signerWorkflow": identity.signer_workflow, "signerRevision": identity.signer_revision, "policy": "immutable-owner-allowlist"}, "verificationCompletedAt": "2026-11-25T19:50:00Z"})
+            context.update({"attestation": {"status": "official-verifier-authenticated", "authenticated": True, "verifier": "official-gh", "verifierVersion": provenance.SUPPORTED_GH_VERSION, "subjectDigest": identity.archive_sha256}, "archiveValidation": {"status": "hardened-validated", "archiveName": identity.archive_name, "archiveSha256": identity.archive_sha256, "archiveBytes": identity.archive_bytes, "extracted": True}, "workflowIdentity": {"producerWorkflow": identity.producer_workflow, "producerRevision": identity.producer_revision, "signerWorkflow": identity.signer_workflow, "signerRevision": identity.signer_revision, "policy": "immutable-owner-allowlist"}, "verificationCompletedAt": "2026-11-25T19:50:00Z"})
             context_path.write_bytes(provenance._canonical_json(context) + b"\n")
             now = datetime.now(timezone.utc).replace(microsecond=0)
             issued = now - timedelta(minutes=1)
