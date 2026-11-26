@@ -1294,10 +1294,15 @@ def validate_authenticated_provenance_binding(provenance: AuthenticatedProvenanc
     require(provenance.receipt.run_invocation_uri.endswith(f"/actions/runs/{identity.run_id}/attempts/{identity.run_attempt}"), "authenticated provenance receipt run mismatch")
 
 
-def _gh_executable() -> str:
-    """Return the workflow-pinned executable when validation supplies one."""
-    executable = os.environ.get("GH_ATTESTATION_CLI", "gh")
-    require(isinstance(executable, str) and executable != "", "official GitHub CLI executable is missing")
+def _gh_executable(environment: dict[str, str] | None = None) -> str:
+    """Return the explicitly configured verifier, never an implicit offline fallback."""
+    source = os.environ if environment is None else environment
+    executable = source.get("GH_ATTESTATION_CLI")
+    if executable is None and environment is None:
+        executable = "gh"
+    require(isinstance(executable, str) and executable != "", "official GitHub CLI executable is missing from the verifier environment")
+    if environment is not None:
+        require(Path(executable).is_absolute(), f"offline verifier executable must be an absolute configured path: {executable}")
     return executable
 
 
@@ -1400,14 +1405,16 @@ def run_bounded(command: list[str], *, timeout_seconds: int, max_output_bytes: i
 
 def verify_gh_version(expected_version: str = SUPPORTED_GH_VERSION, timeout_seconds: int = 10, environment: dict[str, str] | None = None) -> str:
     """Require the recorded official GitHub CLI version before accepting evidence."""
+    executable = _gh_executable(environment)
     try:
-        result = run_bounded([_gh_executable(), "version"], timeout_seconds=timeout_seconds, max_output_bytes=4096, label="official GitHub CLI version", environment=environment)
+        result = run_bounded([executable, "version"], timeout_seconds=timeout_seconds, max_output_bytes=4096, label="official GitHub CLI version", environment=environment)
     except (OSError, subprocess.TimeoutExpired) as error:
         fail(f"official GitHub CLI version check unavailable or timed out: {error}")
     require(result.returncode == 0, "official GitHub CLI version check failed")
     require(len(result.stdout) <= 4096 and len(result.stderr) <= 4096, "official GitHub CLI version output exceeds the limit")
     match = re.search(r"gh version (\d+\.\d+\.\d+)", result.stdout)
-    require(match is not None and match.group(1) == expected_version, f"unsupported GitHub CLI version; expected {expected_version}")
+    observed = match.group(1) if match is not None else (result.stdout.strip()[:120] or "unreported")
+    require(match is not None and match.group(1) == expected_version, f"unsupported GitHub CLI version; expected {expected_version}, observed {observed}, executable {executable}")
     return match.group(1)
 
 
@@ -1492,8 +1499,9 @@ def run_gh_attestation_verify(
             shutil.rmtree(environment["GH_CONFIG_DIR"], ignore_errors=True)
         raise
     cli_signer_workflow = signer_workflow if "/" in signer_workflow.split(".github/", 1)[0] else f"{repository}/{signer_workflow}"
+    executable = _gh_executable(environment)
     command = [
-        _gh_executable(),
+        executable,
         "attestation",
         "verify",
         str(archive),

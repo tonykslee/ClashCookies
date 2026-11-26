@@ -90,6 +90,7 @@ class SshDeliveryEndpoint:
     remote_expected_identity: str = ""
     remote_trusted_root: str = ""
     remote_offline_expectation: str = ""
+    remote_attestation_cli: str = ""
     port: int = 22
     connect_timeout_seconds: int = 10
     execution_timeout_seconds: int = MAX_RECEIVING_SECONDS
@@ -344,6 +345,7 @@ def _validate_endpoint(endpoint: SshDeliveryEndpoint, repository_root: Path) -> 
     strict_remote_path(endpoint.destination, "SSH destination")
     for value, label in ((endpoint.remote_repository_root, "remote repository root"), (endpoint.remote_receiving_root, "remote receiving root"), (endpoint.remote_publication_root, "remote publication root"), (endpoint.remote_expected_identity, "remote expected identity"), (endpoint.remote_trusted_root, "remote trusted root"), (endpoint.remote_offline_expectation, "remote offline expectation")):
         strict_remote_path(value, label)
+    strict_remote_path(endpoint.remote_attestation_cli, "remote attestation verifier")
     _require(endpoint.destination == endpoint.remote_publication_root, "SSH destination does not match the explicit receiver publication directory")
 
 
@@ -997,6 +999,7 @@ def _ssh_stream(endpoint: SshDeliveryEndpoint, repository_root: Path, header: by
         "--trusted-root", endpoint.remote_trusted_root,
         "--offline-expectation", endpoint.remote_offline_expectation,
     ]
+    command[command.index("python3"):command.index("python3")] = ["env", f"GH_ATTESTATION_CLI={endpoint.remote_attestation_cli}"]
     try:
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=(os.name == "posix"))
     except OSError as error:

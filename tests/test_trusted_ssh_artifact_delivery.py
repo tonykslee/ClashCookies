@@ -34,7 +34,6 @@ assert SPEC and SPEC.loader
 delivery = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = delivery
 SPEC.loader.exec_module(delivery)
-from tests.test_runtime_artifact_provenance import trusted_identity
 
 
 def development_identity() -> object:
@@ -66,7 +65,42 @@ def development_identity() -> object:
     )
 
 
+def synthetic_canonical_identity() -> delivery.provenance.TrustedReleaseIdentity:
+    source_sha = "1" * 40
+    return delivery.provenance.TrustedReleaseIdentity(
+        repository=delivery.provenance.RELEASE_REPOSITORY,
+        repository_id=delivery.provenance.RELEASE_REPOSITORY_ID,
+        repository_owner_id=delivery.provenance.RELEASE_REPOSITORY_OWNER_ID,
+        source_ref=delivery.provenance.RELEASE_SOURCE_REF,
+        source_sha=source_sha,
+        event=delivery.provenance.RELEASE_EVENT,
+        producer_workflow=delivery.provenance.RELEASE_PRODUCER_WORKFLOW,
+        producer_revision="a" * 40,
+        signer_workflow=delivery.provenance.RELEASE_SIGNER_WORKFLOW,
+        signer_revision="b" * 40,
+        run_id=12345,
+        run_attempt=1,
+        artifact_id=67890,
+        artifact_name=delivery.provenance.expected_artifact_name(12345, 1),
+        artifact_class=delivery.provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS,
+        artifact_service_zip_sha256="c" * 64,
+        artifact_service_zip_bytes=1,
+        archive_name=f"clashcookies-runtime-{source_sha}.tar.gz",
+        archive_sha256="d" * 64,
+        archive_bytes=1,
+        platform=delivery.provenance.RELEASE_PLATFORM,
+        image=delivery.provenance.RELEASE_IMAGE,
+        image_digest=delivery.provenance.RELEASE_IMAGE.split("@", 1)[1],
+        authorization_context="owner-approved-main-release",
+    )
+
+
 class TrustedSshDeliveryTests(unittest.TestCase):
+    def test_synthetic_authorization_fixture_uses_delivery_provenance_module(self) -> None:
+        identity = synthetic_canonical_identity()
+        self.assertIs(type(identity), delivery.provenance.TrustedReleaseIdentity)
+        delivery.provenance.validate_trusted_release_identity(identity)
+
     def test_snapshot_copy_uses_the_zip_snapshot_sha256_contract(self) -> None:
         with TemporaryDirectory() as root_name:
             root = Path(root_name)
@@ -222,7 +256,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             host="receiver", user="owner", known_hosts=Path("/tmp/known_hosts"), identity_file=Path("/tmp/id"),
             destination="/srv/evidence", remote_repository_root="/srv/repo", remote_receiving_root="/srv/receive",
             remote_publication_root="/srv/evidence", remote_expected_identity="/srv/identity.json",
-            remote_trusted_root="/srv/root.jsonl", remote_offline_expectation="/srv/expectation.json",
+            remote_trusted_root="/srv/root.jsonl", remote_offline_expectation="/srv/expectation.json", remote_attestation_cli="/srv/gh-network-disabled",
         )
         acknowledgment = {
             "status": "published", "publication": "/srv/evidence/release-" + "0" * 64,
@@ -325,7 +359,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             artifact = root / "artifact.bin"
             artifact.write_bytes(b"x" * (8 * 1024 * 1024))
             header = json.dumps({"files": [{"name": "artifact-service.zip", "bytes": artifact.stat().st_size, "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest()}]}).encode()
-            endpoint = delivery.SshDeliveryEndpoint("127.0.0.1", getpass.getuser(), known_hosts, identity_file, str(root / "publication"), "/tmp/repo", "/tmp/receiving", str(root / "publication"), "/tmp/identity.json", "/tmp/trusted-root", "/tmp/expectation", port=22, execution_timeout_seconds=1)
+            endpoint = delivery.SshDeliveryEndpoint("127.0.0.1", getpass.getuser(), known_hosts, identity_file, str(root / "publication"), "/tmp/repo", "/tmp/receiving", str(root / "publication"), "/tmp/identity.json", "/tmp/trusted-root", "/tmp/expectation", remote_attestation_cli="/tmp/gh-network-disabled", port=22, execution_timeout_seconds=1)
             old_path = os.environ.get("PATH", "")
             with patch.dict(os.environ, {"PATH": str(root) + os.pathsep + old_path}):
                 for mode, expected_error in (("silent", "timed out"), ("excessive", "output exceeds"), ("disconnect", "stream failed"), ("hostkey", "Host key verification failed")):
@@ -343,7 +377,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             root.chmod(0o700)
             checkout = root / "checkout"
             checkout.mkdir(mode=0o700)
-            canonical_identity = trusted_identity()
+            canonical_identity = synthetic_canonical_identity()
             inner_name = canonical_identity.archive_name
             inner = b"synthetic archive bytes"
             service_zip = root / "artifact-service.zip"
@@ -470,11 +504,12 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 remote_expected_identity="/srv/identity.json",
                 remote_trusted_root="/srv/root.pem",
                 remote_offline_expectation="/srv/expectation.json",
+                remote_attestation_cli="/srv/gh-network-disabled",
             )
             with self.assertRaises(delivery.DeliveryError):
                 delivery._validate_endpoint(endpoint, root)
             valid = replace(endpoint, remote_publication_root="/srv/evidence")
-            for field in ("remote_repository_root", "remote_receiving_root", "remote_publication_root", "remote_expected_identity", "remote_trusted_root", "remote_offline_expectation"):
+            for field in ("remote_repository_root", "remote_receiving_root", "remote_publication_root", "remote_expected_identity", "remote_trusted_root", "remote_offline_expectation", "remote_attestation_cli"):
                 with self.subTest(field=field):
                     unsafe = replace(valid, **{field: "/srv/ok;echo-pwned"})
                     with self.assertRaisesRegex(delivery.DeliveryError, "normalized absolute path"):
@@ -503,7 +538,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                     return delivery.provenance.subprocess.CompletedProcess(command, 0, "gh version 2.89.0\n", "")
                 return delivery.provenance.subprocess.CompletedProcess(command, 0, "[{}]", "")
 
-            with patch.dict(delivery.provenance.os.environ, {"GH_TOKEN": "must-not-leak", "GH_CONFIG_DIR": str(root / "cached")}, clear=False), patch.object(delivery.provenance, "run_bounded", side_effect=fake_run):
+            with patch.dict(delivery.provenance.os.environ, {"GH_TOKEN": "must-not-leak", "GH_CONFIG_DIR": str(root / "cached"), "GH_ATTESTATION_CLI": str(base / "pinned-gh")}, clear=False), patch.object(delivery.provenance, "run_bounded", side_effect=fake_run):
                 delivery.provenance.run_gh_attestation_verify(
                     archive,
                     bundle=bundle,
@@ -521,6 +556,16 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             self.assertIn("--bundle", verify_command)
             self.assertIn("--custom-trusted-root", verify_command)
             self.assertNotIn(str(trusted_root), verify_command)
+
+    def test_offline_verifier_requires_explicit_configuration_and_reports_observed_version(self) -> None:
+        with self.assertRaisesRegex(delivery.provenance.ProvenanceError, "executable is missing"):
+            delivery.provenance.verify_gh_version(environment={"GH_ATTESTATION_CLI": ""})
+        configured = str(Path.cwd() / "pinned-gh")
+        observed = delivery.provenance.subprocess.CompletedProcess([], 0, "gh version 2.88.0\n", "")
+        with patch.object(delivery.provenance, "run_bounded", return_value=observed):
+            with self.assertRaises(delivery.provenance.ProvenanceError) as context:
+                delivery.provenance.verify_gh_version(environment={"GH_ATTESTATION_CLI": configured})
+        self.assertIn(f"expected 2.89.0, observed 2.88.0, executable {configured}", str(context.exception))
 
     @unittest.skipUnless(os.environ.get("CC_REAL_RECEIVER") == "1", "real receiver integration is enabled only by mandatory Linux CI")
     def test_real_openssh_receiver_and_exclusive_host_pinning(self) -> None:
@@ -567,7 +612,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 f"Port {port}", "ListenAddress 127.0.0.1", f"HostKey {server_key}",
                 f"AuthorizedKeysFile {authorized}", "PasswordAuthentication no", "KbdInteractiveAuthentication no",
                 "PubkeyAuthentication yes", "UsePAM no", "StrictModes no", "LogLevel QUIET",
-                "PermitUserEnvironment no", f"SetEnv PYTHONPATH={SCRIPT.parent}", f"SetEnv GH_ATTESTATION_CLI={gh_wrapper}",
+                "PermitUserEnvironment no", f"SetEnv PYTHONPATH={SCRIPT.parent}",
             ]) + "\n", encoding="utf-8")
             config.chmod(0o600)
             server_command = [shutil.which("sshd"), "-D", "-e", "-f", str(config)]
@@ -588,7 +633,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                     host="127.0.0.1", user=user, known_hosts=known_hosts, identity_file=client_key,
                     destination=str(publication), remote_repository_root=str(checkout), remote_receiving_root=str(receiving),
                     remote_publication_root=str(publication), remote_expected_identity=str(identity_path),
-                    remote_trusted_root=str(trusted_root), remote_offline_expectation=str(expectation), port=port,
+                    remote_trusted_root=str(trusted_root), remote_offline_expectation=str(expectation), remote_attestation_cli=str(gh_wrapper), port=port,
                     execution_timeout_seconds=delivery.MAX_RECEIVING_SECONDS,
                 )
 
@@ -638,6 +683,17 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 assert_no_receiver_activity()
                 known_hosts.write_text(f"[127.0.0.1]:{port} {server_pub[0]} {server_pub[1]}\n", encoding="utf-8")
                 known_hosts.chmod(0o600)
+                local_version = subprocess.run([str(gh_cli), "version"], check=False, capture_output=True, text=True)
+                self.assertEqual(local_version.returncode, 0, local_version.stderr)
+                self.assertIn("gh version " + delivery.provenance.SUPPORTED_GH_VERSION, local_version.stdout)
+                remote_version = subprocess.run([
+                    "ssh", "-F", "none", "-T", "-o", "BatchMode=yes", "-o", "RequestTTY=no",
+                    "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known_hosts}",
+                    "-o", f"IdentityFile={client_key}", "-o", "IdentitiesOnly=yes", "-o", f"Port={port}",
+                    f"{user}@127.0.0.1", shlex.quote(str(gh_wrapper)) + " version",
+                ], check=False, capture_output=True, text=True)
+                self.assertEqual(remote_version.returncode, 0, remote_version.stderr)
+                self.assertIn("gh version " + delivery.provenance.SUPPORTED_GH_VERSION, remote_version.stdout)
                 result = deliver()
                 self.assertEqual(result.status, "published")
                 self.assertEqual(Path(result.publication, "artifact-service.zip").read_bytes(), service_zip.read_bytes())
