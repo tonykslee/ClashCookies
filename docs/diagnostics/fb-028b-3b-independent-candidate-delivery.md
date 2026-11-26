@@ -1,0 +1,60 @@
+# FB-028B-3b independent candidate-delivery diagnostic
+
+This diagnostic describes the owner-local boundary for a production-shaped runtime candidate. It is an evidence and custody procedure only; it does not issue production authority, activate a release, consume authorization, merge a pull request, or deploy.
+
+## Owner-local intake
+
+1. Read the exact development or main-push run ID and attempt number from the supplied handoff. Query `actions/runs/{run_id}/attempts/{run_attempt}` and the paginated `actions/runs/{run_id}/attempts/{run_attempt}/jobs` route. The attempt response is authoritative for `updated_at`; GitHub does not provide a run-level `completed_at` on this route. Job `completed_at` values must be inside the run window, bound to the same run, attempt, and source SHA, and the latest mandatory job completion becomes the retained completion boundary.
+2. Retrieve every artifact-service page and select only the exact attempt-qualified artifact name. Verify the service ZIP digest and byte count from the API against the downloaded ZIP, then verify the inner runtime archive digest and byte count. Do not use a latest-by-name lookup.
+3. Download the exact attestation upload and its JSON bundle. Run the pinned official GitHub attestation verifier against the exact archive and bundle, then run the repository hardened archive validator against the same bytes. The verification context records the run, job, mandatory-step, artifact, attestation, and archive evidence but remains non-authoritative.
+
+The owner signs only the canonical authorization record prepared from the identity and the SHA-256 of the canonical verification-context bytes. The record is signed as the exact bytes emitted by `--prepare-authorization`; that file has no implicit newline. The envelope is assembled and independently verified before it is handed to the receiver.
+
+Example disposable owner-local signing sequence:
+
+```bash
+python scripts/runtime_artifact_provenance.py \
+  --prepare-authorization \
+  --authorization-identity /owner-custody/candidate-identity.json \
+  --authorization-output /owner-custody/authorization-record.json \
+  --authorization-id candidate-2026-11-26-001 \
+  --authorization-issued-at 2026-11-26T12:00:00Z \
+  --authorization-expires-at 2026-11-27T12:00:00Z \
+  --authorization-key-id owner-ed25519-2026 \
+  --authorization-verification-context /owner-custody/independent-verification-context.json \
+  --authorization-destination /receiver/publication
+openssl pkeyutl -sign -rawin -inkey /owner-custody/owner-private.pem \
+  -in /owner-custody/authorization-record.json \
+  -out /owner-custody/authorization-record.sig
+python scripts/runtime_artifact_provenance.py \
+  --assemble-authorization \
+  --authorization-record /owner-custody/authorization-record.json \
+  --authorization-signature /owner-custody/authorization-record.sig \
+  --authorization-output /owner-custody/authorization-envelope.json \
+  --authorization-identity /owner-custody/candidate-identity.json \
+  --authorization-public-key /owner-custody/owner-public.pem \
+  --authorization-repository-root /owner-checkout \
+  --authorization-key-id owner-ed25519-2026 \
+  --authorization-key-fingerprint <sha256-of-public-key-der> \
+  --authorization-allowlist /owner-custody/revision-allowlist.json
+```
+
+## Receiver-owned custody
+
+The receiver accepts only a policy path selected by its own `CC_RECEIVER_AUTHORIZATION_POLICY` environment variable. The policy binds the repository, publication destination, candidate class, owner-approved authorization context, external Ed25519 public key, immutable producer/signer revision allowlist, and external replay-journal directory. These paths must not overlap the checkout, receiving workspace, publication root, or policy file. Sender-supplied key paths, fingerprints, allowlists, and journal paths are not accepted.
+
+Candidate frames contain exactly `artifact-service.zip`, `attestation-bundle.json`, `authorization-envelope.json`, and `independent-verification-context.json`. The receiver verifies the ZIP and archive, runs the official verifier offline with its configured trust root, validates the hardened archive contract, verifies the external signature and context digest, reserves the exact authorization in the durable replay journal, and atomically publishes the complete retained evidence. Retries require byte-identical identity and evidence; a missing or conflicting reservation fails closed.
+
+## Historical offline verification
+
+Retention reopens the retained ZIP and attestation bundle and re-runs the official offline verifier against the independently supplied trusted-root snapshot. For candidates it also verifies the signed authorization at its historical issuance time and rebinds it to the retained context. This operation does not reserve, consume, refresh, or mutate replay state. Its diagnostic distinguishes historical signature/lifecycle validity from delivery-time validity and replay status, which are deliberately reported as not evaluated.
+
+The fixture tests use synthetic provenance only where stated. The mandatory Linux/PR-dev candidate receiver regression uses a real OpenSSH boundary, the hardened validator, real Ed25519/OpenSSL signing, receiver-owned custody, durable replay reservation, retry/lost-ack behavior, and historical retention inputs; only the verifier output is a test-harness seam. It is not evidence of a completed main-push candidate or production authorization. Genuine GitHub attestation remains a separate CI requirement.
+
+## Review-finding matrix
+
+Implemented: exact-run/job/step correlation, canonical context-only owner signing input, receiver-owned trust and configuration, typed authenticated provenance, exact envelope custody, stable bounded evidence reads, historical no-mutation diagnostics, candidate-shaped Linux/OpenSSH coverage, storage admission for context copies plus receiver-owned replay-journal bytes/inodes, and subprocess restart coverage at reservation, publication, and registration boundaries.
+
+Demonstrated locally: affected Python suites pass on Windows with platform-gated Linux cases skipped; the OpenSSL CLI fixtures now keep expected identities and synthetic evidence private; the candidate flow proves normal publication before an isolated fresh-root lost-ack retry; retention state is checked at the publication root; historical verification uses an isolated synthetic verifier seam; and targeted context/journal admission tests pass. The Linux/OpenSSH candidate harness is wired into mandatory PR/dev CI but cannot be demonstrated on this Windows checkout because no usable WSL distribution is available.
+
+Unverified here: the next remote CI result and genuine GitHub attestation execution. The supplied Artifact Round Trip run `45879405318` exposed the candidate expected-identity fixture permission issue, the lost-ack wrapper-name mismatch, and the candidate delivery diagnostics gap; these are addressed by private fixture modes, a real `ssh` executable in the `ssh-drop-ack` directory, normal-first delivery diagnostics, and a fresh isolated lost-ack custody root. The supplied Standard CI run `45879405277` passed. The earlier report also identified an unrelated Native Prisma query-engine panic (exit 134) in run `45872460928`; Docker lifecycle passed and Prisma was not refactored.

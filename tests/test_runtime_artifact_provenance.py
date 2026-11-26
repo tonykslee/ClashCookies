@@ -15,7 +15,7 @@ import struct
 import subprocess
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -311,7 +311,40 @@ def main_selection_request() -> object:
         pull_request_head_ref=None,
         pull_request_base_sha=None,
         pull_request_base_ref=None,
+        producer_revision=SIGNER_SHA,
     )
+
+
+def candidate_run_metadata(request: object | None = None) -> dict[str, object]:
+    """Return a completed exact main-push attempt for independent intake tests."""
+    request = request or main_selection_request()
+    return {
+        "id": request.run_id,
+        "run_attempt": request.run_attempt,
+        "event": "push",
+        "status": "completed",
+        "conclusion": "success",
+        "path": request.signer_workflow,
+        "created_at": "2026-11-25T19:45:14Z",
+        "run_started_at": "2026-11-25T19:45:15Z",
+        "updated_at": "2026-11-25T19:48:13Z",
+        "head_sha": request.run_head_sha,
+        "head_branch": "main",
+        "repository": {"full_name": request.repository, "id": request.repository_id, "owner": {"id": request.repository_owner_id}},
+        "head_repository": {"full_name": request.repository, "id": request.repository_id, "owner": {"id": request.repository_owner_id}},
+        "pull_requests": [],
+    }
+
+
+def candidate_jobs() -> list[dict[str, object]]:
+    """Return the bounded mandatory job/step evidence required for candidate intake."""
+    request = main_selection_request()
+    required = {
+        "Build SHA-bound runtime artifact": ["Build runtime artifact in pinned Linux environment", "Publish development validation artifact"],
+        "Generate authenticated runtime artifact attestation": ["Download built artifact into the signer job", "Generate GitHub-native provenance attestation", "Publish attestation bundle for independent verification"],
+        "Retrieve and validate runtime artifact": ["Download published artifact into a fresh job", "Download authenticated attestation bundle into a fresh job", "Select exact artifact-service ZIP and inner archive", "Exercise real API and ZIP negative mutations", "Validate retrieved bytes and safely extract", "Produce non-authoritative production-candidate evidence", "Publish non-authoritative production-candidate evidence", "Run candidate authorization and custody fixture regressions", "Exercise extracted runtime without install, compile, or Prisma regeneration"],
+    }
+    return [{"id": index, "name": name, "status": "completed", "conclusion": "success", "run_id": request.run_id, "run_attempt": RUN_ATTEMPT, "head_sha": request.source_sha, "started_at": "2026-11-25T19:45:16Z", "completed_at": "2026-11-25T19:48:12Z", "steps": [{"name": step, "status": "completed", "conclusion": "success"} for step in steps]} for index, (name, steps) in enumerate(required.items(), 1)]
 
 
 def authoritative_evidence_for(identity: object) -> object:
@@ -1122,6 +1155,146 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         result = provenance.evaluate_synthetic_production_policy_fixture({"fixtureKind": "wrong", "synthetic": True})
         self.assertFalse(result.eligible)
         self.assertEqual(result.reason_code, "invalid-synthetic-fixture")
+
+    def test_completed_candidate_requires_exact_successful_jobs_and_steps(self) -> None:
+        request = main_selection_request()
+        context = provenance.validate_completed_candidate_run(request, candidate_run_metadata(request), candidate_jobs(), now=datetime(2026, 11, 25, 20, 0, tzinfo=timezone.utc))
+        self.assertFalse(context["authoritative"])
+        self.assertTrue(context["independentlyCompleted"])
+        failed = candidate_jobs()
+        failed[1]["conclusion"] = "failure"
+        with self.assertRaisesRegex(provenance.ProvenanceError, "did not succeed"):
+            provenance.validate_completed_candidate_run(request, candidate_run_metadata(request), failed)
+        missing = candidate_jobs()
+        missing[2]["steps"] = missing[2]["steps"][:-1]
+        with self.assertRaisesRegex(provenance.ProvenanceError, "mandatory step"):
+            provenance.validate_completed_candidate_run(request, candidate_run_metadata(request), missing)
+        unsupported_run_field = candidate_run_metadata(request)
+        unsupported_run_field["completed_at"] = unsupported_run_field["updated_at"]
+        with self.assertRaisesRegex(provenance.ProvenanceError, "run-level completed_at"):
+            provenance.validate_completed_candidate_run(request, unsupported_run_field, candidate_jobs())
+        duplicate_job_id = candidate_jobs()
+        duplicate_job_id[1]["id"] = duplicate_job_id[0]["id"]
+        with self.assertRaisesRegex(provenance.ProvenanceError, "job ID is duplicated"):
+            provenance.validate_completed_candidate_run(request, candidate_run_metadata(request), duplicate_job_id)
+        wrong_job_attempt = candidate_jobs()
+        wrong_job_attempt[0]["run_attempt"] = RUN_ATTEMPT + 1
+        with self.assertRaisesRegex(provenance.ProvenanceError, "exact run attempt"):
+            provenance.validate_completed_candidate_run(request, candidate_run_metadata(request), wrong_job_attempt)
+
+    def test_retained_verification_context_rejects_duplicate_chronology_boundary_and_workflow_drift(self) -> None:
+        identity = trusted_identity()
+        base, _ = provenance.independent_candidate_verification_context(
+            provenance.validate_completed_candidate_run(main_selection_request(), candidate_run_metadata(), candidate_jobs()),
+            identity,
+        )
+        cases = []
+
+        duplicate_job_id = copy.deepcopy(base)
+        duplicate_job_id["jobs"][1]["id"] = duplicate_job_id["jobs"][0]["id"]
+        cases.append((duplicate_job_id, "job ID is duplicated"))
+
+        duplicate_step = copy.deepcopy(base)
+        duplicate_step["jobs"][0]["steps"][1]["name"] = duplicate_step["jobs"][0]["steps"][0]["name"]
+        cases.append((duplicate_step, "step is duplicated"))
+
+        contradictory_job_time = copy.deepcopy(base)
+        contradictory_job_time["jobs"][0]["completedAt"] = "2026-11-25T19:45:15Z"
+        cases.append((contradictory_job_time, "timestamp chronology is contradictory"))
+
+        incorrect_boundary = copy.deepcopy(base)
+        incorrect_boundary["run"]["jobCompletionBoundary"] = "2026-11-25T19:48:11Z"
+        cases.append((incorrect_boundary, "completion boundary is not the exact maximum"))
+
+        early_verification = copy.deepcopy(base)
+        early_verification["verificationCompletedAt"] = "2026-11-25T19:48:11Z"
+        cases.append((early_verification, "verification completion is before mandatory job completion"))
+
+        contradictory_workflow = copy.deepcopy(base)
+        contradictory_workflow["workflowIdentity"] = {"producerWorkflow": "wrong.yml", "producerRevision": identity.producer_revision, "signerWorkflow": identity.signer_workflow, "signerRevision": identity.signer_revision, "policy": "immutable-owner-allowlist"}
+        cases.append((contradictory_workflow, "workflow path is contradictory"))
+
+        for candidate, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(provenance.ProvenanceError, message):
+                provenance.validate_candidate_verification_context(candidate, identity)
+
+        missing_owner_evidence = copy.deepcopy(base)
+        missing_owner_evidence.update({
+            "attestation": {"status": "official-verifier-authenticated", "authenticated": True, "verifier": "official-gh", "verifierVersion": provenance.SUPPORTED_GH_VERSION, "subjectDigest": identity.archive_sha256},
+            "archiveValidation": {"status": "hardened-validated", "archiveName": identity.archive_name, "archiveSha256": identity.archive_sha256, "archiveBytes": identity.archive_bytes, "extracted": True},
+            "verificationCompletedAt": "2026-11-25T19:50:00Z",
+        })
+        with TemporaryDirectory() as directory:
+            context_path = Path(directory) / "independent-verification-context.json"
+            context_path.write_bytes(provenance._canonical_json(missing_owner_evidence) + b"\n")
+            with self.assertRaisesRegex(provenance.ProvenanceError, "missing or unexpected evidence"):
+                provenance.load_owner_approval_context(context_path, identity)
+
+    def test_exact_attempt_job_pagination_is_bounded_and_complete(self) -> None:
+        responses = [{"total_count": 3, "jobs": candidate_jobs()[:2]}, {"total_count": 3, "jobs": candidate_jobs()[2:]}]
+        with patch.object(provenance, "_run_gh_api_json", side_effect=responses) as api:
+            jobs = provenance.fetch_exact_run_attempt_jobs(REPOSITORY, RUN_ID, RUN_ATTEMPT)
+        self.assertEqual(len(jobs), 3)
+        self.assertIn("/attempts/2/jobs?per_page=100&page=1", api.call_args_list[0].args[0])
+        with patch.object(provenance, "_run_gh_api_json", return_value={"total_count": 257, "jobs": []}), self.assertRaisesRegex(provenance.ProvenanceError, "unbounded"):
+            provenance.fetch_exact_run_attempt_jobs(REPOSITORY, RUN_ID, RUN_ATTEMPT)
+
+    def test_owner_candidate_authorization_is_separate_from_selection_context(self) -> None:
+        identity = trusted_identity()
+        context, context_digest = provenance.independent_candidate_verification_context(
+            provenance.validate_completed_candidate_run(main_selection_request(), candidate_run_metadata(), candidate_jobs()), identity
+        )
+        record = provenance.prepare_owner_authorization_record(identity, authorization_id="candidate-auth", issued_at="2026-11-25T20:00:00Z", expires_at="2026-11-26T20:00:00Z", signing_key_id="owner-key", verification_context_sha256=context_digest, delivery_destination="/srv/candidate", verification_completed_at="2026-11-25T19:48:13Z")
+        self.assertEqual(record["authorization"]["context"], provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT)
+        self.assertEqual(record["release"]["authorization_context"], provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT)
+        self.assertEqual(hashlib.sha256(provenance._canonical_json(context) + b"\n").hexdigest(), context_digest)
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.prepare_owner_authorization_record(identity, authorization_id="candidate-auth", issued_at="2026-11-25T20:00:00Z", expires_at="2026-11-26T20:00:00Z", signing_key_id="owner-key", delivery_destination="/srv/candidate", verification_completed_at="2026-11-25T19:48:13Z")
+
+    @unittest.skipUnless(shutil.which("openssl"), "OpenSSL Ed25519 regression requires OpenSSL")
+    def test_cli_prepare_openssl_sign_assemble_and_verify_binds_exact_record_bytes(self) -> None:
+        identity = trusted_identity()
+        with TemporaryDirectory() as directory_name:
+            root = Path(directory_name)
+            checkout = root / "checkout"
+            custody = root / "custody"
+            checkout.mkdir(mode=0o700)
+            custody.mkdir(mode=0o700)
+            identity_path = checkout / "candidate-identity.json"
+            identity_path.write_bytes(provenance._canonical_json(provenance._authorization_identity_payload(identity)) + b"\n")
+            record_path = custody / "authorization-record.json"
+            context_path = custody / "independent-verification-context.json"
+            signature_path = custody / "authorization-record.sig"
+            envelope_path = custody / "authorization-envelope.json"
+            private_key = custody / "owner-private.pem"
+            public_key = custody / "owner-public.pem"
+            der_key = custody / "owner-public.der"
+            allowlist_path = custody / "revision-allowlist.json"
+            allowlist_path.write_bytes(provenance._canonical_json({"producer_workflow": provenance.RELEASE_PRODUCER_WORKFLOW, "producer_revisions": [identity.producer_revision], "signer_workflow": provenance.RELEASE_SIGNER_WORKFLOW, "signer_revisions": [identity.signer_revision]}) + b"\n")
+            context, _ = provenance.independent_candidate_verification_context(provenance.validate_completed_candidate_run(main_selection_request(), candidate_run_metadata(), candidate_jobs()), identity)
+            context.update({"attestation": {"status": "official-verifier-authenticated", "authenticated": True, "verifier": "official-gh", "verifierVersion": provenance.SUPPORTED_GH_VERSION, "subjectDigest": identity.archive_sha256}, "archiveValidation": {"status": "hardened-validated", "archiveName": identity.archive_name, "archiveSha256": identity.archive_sha256, "archiveBytes": identity.archive_bytes, "extracted": True}, "workflowIdentity": {"producerWorkflow": identity.producer_workflow, "producerRevision": identity.producer_revision, "signerWorkflow": identity.signer_workflow, "signerRevision": identity.signer_revision, "policy": "immutable-owner-allowlist"}, "verificationCompletedAt": "2026-11-25T19:50:00Z"})
+            context_path.write_bytes(provenance._canonical_json(context) + b"\n")
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+            issued = now - timedelta(minutes=1)
+            expires = issued + timedelta(hours=24)
+            base = [sys.executable, str(SCRIPT), "--authorization-identity", str(identity_path), "--authorization-id", "cli-auth-1", "--authorization-issued-at", issued.isoformat().replace("+00:00", "Z"), "--authorization-expires-at", expires.isoformat().replace("+00:00", "Z"), "--authorization-key-id", "owner-key", "--authorization-verification-context", str(context_path), "--authorization-destination", "/srv/candidate"]
+            prepared = subprocess.run([*base, "--prepare-authorization", "--authorization-output", str(record_path)], check=False, capture_output=True, text=True)
+            self.assertEqual(prepared.returncode, 0, prepared.stderr or prepared.stdout)
+            record_bytes = record_path.read_bytes()
+            self.assertEqual(record_bytes, provenance._canonical_json(json.loads(record_bytes)))
+            self.assertFalse(record_bytes.endswith(b"\n"))
+            subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(private_key)], check=True, capture_output=True)
+            subprocess.run(["openssl", "pkey", "-in", str(private_key), "-pubout", "-out", str(public_key)], check=True, capture_output=True)
+            public_key.chmod(0o600)
+            subprocess.run(["openssl", "pkeyutl", "-sign", "-rawin", "-inkey", str(private_key), "-in", str(record_path), "-out", str(signature_path)], check=True, capture_output=True)
+            subprocess.run(["openssl", "pkey", "-pubin", "-in", str(public_key), "-outform", "DER", "-out", str(der_key)], check=True, capture_output=True)
+            fingerprint = hashlib.sha256(der_key.read_bytes()).hexdigest()
+            assembled = subprocess.run([sys.executable, str(SCRIPT), "--assemble-authorization", "--authorization-record", str(record_path), "--authorization-signature", str(signature_path), "--authorization-output", str(envelope_path), "--authorization-identity", str(identity_path), "--authorization-public-key", str(public_key), "--authorization-repository-root", str(checkout), "--authorization-key-id", "owner-key", "--authorization-key-fingerprint", fingerprint, "--authorization-allowlist", str(allowlist_path)], check=False, capture_output=True, text=True)
+            self.assertEqual(assembled.returncode, 0, assembled.stderr or assembled.stdout)
+            self.assertTrue(envelope_path.read_bytes().endswith(b"\n"))
+            envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+            self.assertEqual(envelope["record"]["authorization"]["verification_context_sha256"], hashlib.sha256(context_path.read_bytes()).hexdigest())
+            self.assertEqual(envelope["record"]["authorization"]["destination"], "/srv/candidate")
 
 
 if __name__ == "__main__":

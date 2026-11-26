@@ -7,11 +7,13 @@ import argparse
 import base64
 import binascii
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
+import importlib.util
 import json
 import os
+import posixpath
 import queue
 import re
 import stat
@@ -22,6 +24,7 @@ import time
 import tempfile
 import shutil
 import signal
+import sys
 import uuid
 from zipfile import BadZipFile, ZipFile
 from pathlib import Path
@@ -74,7 +77,9 @@ CANDIDATE_EVIDENCE_CONTRACT = "clashcookies.production-candidate-evidence"
 CANDIDATE_EVIDENCE_VERSION = 1
 CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT = "production-candidate-selection-only"
 PRODUCTION_CANDIDATE_AUTHORIZATION_CONTEXT = CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT
+OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT = "owner-approved-production-candidate-delivery-v1"
 ARTIFACT_NAME_TEMPLATE = "runtime-artifact-{run_id}-{run_attempt}"
+ATTESTATION_ARTIFACT_NAME_TEMPLATE = "runtime-artifact-attestation-{run_id}-{run_attempt}"
 MAX_ARTIFACT_ENTRIES = 64
 MAX_INNER_ARCHIVE_BYTES = MAX_ARCHIVE_BYTES
 MAX_ARTIFACT_JSON_BYTES = 4 * 1024 * 1024
@@ -85,6 +90,32 @@ MAX_ZIP_COMMENT_BYTES = 4096
 MAX_ZIP_EXPANDED_BYTES = MAX_ARTIFACT_BYTES
 ZIP_EOCD_BYTES = 22
 ZIP_EOCD_SEARCH_BYTES = 65557
+MAX_ACTIONS_JOBS = 256
+MAX_ACTIONS_JOB_PAGES = 16
+CANDIDATE_VERIFICATION_CONTEXT_CONTRACT = "clashcookies.independent-candidate-verification"
+CANDIDATE_VERIFICATION_CONTEXT_VERSION = 1
+CANDIDATE_REQUIRED_JOBS = {
+    "Build SHA-bound runtime artifact": {
+        "Build runtime artifact in pinned Linux environment",
+        "Publish development validation artifact",
+    },
+    "Generate authenticated runtime artifact attestation": {
+        "Download built artifact into the signer job",
+        "Generate GitHub-native provenance attestation",
+        "Publish attestation bundle for independent verification",
+    },
+    "Retrieve and validate runtime artifact": {
+        "Download published artifact into a fresh job",
+        "Download authenticated attestation bundle into a fresh job",
+        "Select exact artifact-service ZIP and inner archive",
+        "Exercise real API and ZIP negative mutations",
+        "Validate retrieved bytes and safely extract",
+        "Produce non-authoritative production-candidate evidence",
+        "Publish non-authoritative production-candidate evidence",
+        "Run candidate authorization and custody fixture regressions",
+        "Exercise extracted runtime without install, compile, or Prisma regeneration",
+    },
+}
 
 
 class ProvenanceError(RuntimeError):
@@ -224,12 +255,7 @@ def validate_expectation_identity_binding(identity: Any, expectation: dict[str, 
 
 @dataclass(frozen=True)
 class IndependentReleaseAuthorization:
-    """Externally verified authorization record reserved for a future producer.
-
-    The record binds the complete release identity and has explicit expiry,
-    scope, retry, and recovery fields. It is not itself proof: the current
-    repository has no approved signed-record verifier or durable replay store.
-    """
+    """Externally verified authorization record reserved for a future producer."""
 
     authorization_id: str
     context: str
@@ -263,6 +289,8 @@ class IndependentReleaseAuthorization:
     recovery_context: str | None
     signing_key_id: str
     verification: AuthorizationVerificationReceipt
+    verification_context_sha256: str | None = None
+    delivery_destination: str | None = None
 
 
 @dataclass(frozen=True)
@@ -320,6 +348,7 @@ class ArtifactSelectionRequest:
     pull_request_head_ref: str | None
     pull_request_base_sha: str | None
     pull_request_base_ref: str | None
+    producer_revision: str | None = None
 
 
 @dataclass
@@ -479,6 +508,8 @@ def validate_selection_request(request: ArtifactSelectionRequest) -> None:
     source_sha = require_sha(request.source_sha, "selection.source_sha")
     require(request.signer_workflow == RELEASE_SIGNER_WORKFLOW, "selection signer workflow is not approved")
     require_sha(request.signer_revision, "selection.signer_revision")
+    if request.producer_revision is not None:
+        require_sha(request.producer_revision, "selection.producer_revision")
     require_int(request.run_id, "selection.run_id", 1)
     require_int(request.run_attempt, "selection.run_attempt", 1)
     require(request.artifact_name == expected_artifact_name(request.run_id, request.run_attempt), "selection artifact name is not attempt-qualified")
@@ -539,6 +570,26 @@ def _read_bounded_json(path: Path, label: str) -> Any:
         return json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         fail(f"{label} is malformed: {error}")
+
+
+def _read_bounded_bytes(path: Path, maximum: int, label: str) -> bytes:
+    """Read one bounded private input from a stable non-symlink descriptor."""
+    descriptor, expected_size = _open_nofollow_regular(path, maximum, label)
+    try:
+        payload = bytearray()
+        while len(payload) <= maximum:
+            chunk = os.read(descriptor, min(64 * 1024, maximum + 1 - len(payload)))
+            if not chunk:
+                break
+            payload.extend(chunk)
+        final_size = os.fstat(descriptor).st_size
+    except OSError as error:
+        fail(f"{label} is unavailable: {error}")
+    finally:
+        os.close(descriptor)
+    require(final_size == expected_size and len(payload) == expected_size, f"{label} changed during read")
+    require(len(payload) <= maximum, f"{label} exceeds the size limit")
+    return bytes(payload)
 
 
 def validate_artifact_api_response(response: Any) -> list[dict[str, Any]]:
@@ -614,6 +665,22 @@ def validate_authorization_revision_allowlist(allowlist: AuthorizationRevisionAl
             require_sha(revision, f"authorization.{path}")
 
 
+def authorization_revision_allowlist_from_json(value: Any) -> AuthorizationRevisionAllowlist:
+    """Parse the exact owner-supplied immutable revision policy shape."""
+    require(isinstance(value, dict) and set(value) == {"producer_workflow", "producer_revisions", "signer_workflow", "signer_revisions"}, "authorization revision allowlist is malformed")
+    try:
+        allowlist = AuthorizationRevisionAllowlist(
+            producer_workflow=value["producer_workflow"],
+            producer_revisions=tuple(value["producer_revisions"]),
+            signer_workflow=value["signer_workflow"],
+            signer_revisions=tuple(value["signer_revisions"]),
+        )
+    except (TypeError, KeyError) as error:
+        fail(f"authorization revision allowlist is malformed: {error}")
+    validate_authorization_revision_allowlist(allowlist)
+    return allowlist
+
+
 def _authorization_identity_payload(identity: TrustedReleaseIdentity) -> dict[str, Any]:
     """Return the exact identity fields carried by a signed authorization."""
     return {
@@ -669,6 +736,8 @@ def authorization_record_payload(authorization: IndependentReleaseAuthorization)
             "retry_key": authorization.retry_key,
             "recovery_context": authorization.recovery_context,
             "signing_key_id": authorization.signing_key_id,
+            "verification_context_sha256": authorization.verification_context_sha256,
+            "destination": authorization.delivery_destination,
         },
         "release": _authorization_identity_payload(TrustedReleaseIdentity(
             repository=authorization.repository,
@@ -702,6 +771,75 @@ def authorization_record_payload(authorization: IndependentReleaseAuthorization)
 def canonical_authorization_record(authorization: IndependentReleaseAuthorization) -> bytes:
     """Return the exact bytes that an owner signs with Ed25519."""
     return _canonical_json(authorization_record_payload(authorization))
+
+
+def prepare_owner_authorization_record(
+    identity: TrustedReleaseIdentity,
+    *,
+    authorization_id: str,
+    issued_at: str,
+    expires_at: str,
+    signing_key_id: str,
+    scope: str = "forward-release",
+    recovery_context: str | None = None,
+    verification_context_sha256: str | None = None,
+    delivery_destination: str | None = None,
+    verification_completed_at: str | None = None,
+) -> dict[str, Any]:
+    """Prepare the exact record bytes an owner may explicitly approve and sign.
+
+    This function never reads a private key, invokes a signer, or treats CI
+    success/diagnostic JSON as approval.  The returned payload is the only
+    object the external Ed25519 signing step should receive.
+    """
+    validate_trusted_release_identity(identity)
+    require_string(authorization_id, "authorization_id")
+    require_string(signing_key_id, "signing_key_id")
+    require(scope in {"forward-release", "recovery-release"}, "authorization scope is unsupported")
+    issued = _parse_timestamp(issued_at, "issued_at")
+    expires = _parse_timestamp(expires_at, "expires_at")
+    require(expires > issued, "authorization expiry must be after issuance")
+    if scope == "forward-release":
+        require(recovery_context is None, "forward authorization must not carry recovery context")
+        require((expires - issued).total_seconds() == AUTHORIZATION_FORWARD_VALIDITY_SECONDS, "forward authorization validity must be exactly 24 hours")
+    else:
+        require(isinstance(recovery_context, str) and recovery_context != "", "recovery authorization requires recovery context")
+    if verification_context_sha256 is not None:
+        require_digest(verification_context_sha256, "verification_context_sha256")
+    authorization_context = OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT if identity.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS else identity.authorization_context
+    if identity.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
+        require(scope == "forward-release", "candidate owner authorization must be a forward authorization")
+        require(verification_context_sha256 is not None, "candidate owner authorization must bind an independent verification context")
+        require(isinstance(delivery_destination, str) and delivery_destination.startswith("/") and posixpath.normpath(delivery_destination) == delivery_destination, "candidate owner authorization must bind an approved absolute destination")
+        require(isinstance(verification_completed_at, str), "candidate owner authorization must bind independent verification chronology")
+        require(issued >= _parse_timestamp(verification_completed_at, "verification_completed_at"), "authorization approval predates independent verification")
+    record = {
+        "contract": AUTHORIZATION_CONTRACT,
+        "version": AUTHORIZATION_CONTRACT_VERSION,
+        "authorization": {
+            "authorization_id": authorization_id,
+            "context": authorization_context,
+            "scope": scope,
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "retry_key": authorization_id,
+            "recovery_context": recovery_context,
+            "signing_key_id": signing_key_id,
+            "verification_context_sha256": verification_context_sha256,
+            "destination": delivery_destination,
+        },
+        "release": _authorization_identity_payload(replace(identity, authorization_context=authorization_context)),
+    }
+    _canonical_json(record)
+    return record
+
+
+def assemble_owner_authorization_envelope(record: Any, signature: bytes, key_id: str) -> dict[str, Any]:
+    """Assemble detached signature bytes supplied by an external owner signer."""
+    require(isinstance(record, dict), "authorization record must be an object")
+    require(isinstance(signature, bytes) and len(signature) == 64, "Ed25519 detached signature must be 64 bytes")
+    require_string(key_id, "authorization signing key ID")
+    return {"contract": AUTHORIZATION_CONTRACT, "version": AUTHORIZATION_CONTRACT_VERSION, "record": record, "signature": {"algorithm": AUTHORIZATION_SIGNATURE_ALGORITHM, "key_id": key_id, "value": base64.b64encode(signature).decode("ascii")}}
 
 
 def authorization_record_envelope(authorization: IndependentReleaseAuthorization, signature: bytes) -> dict[str, Any]:
@@ -741,7 +879,8 @@ def _authorization_from_payload(record: dict[str, Any], verification: Authorizat
     require(set(record) == {"contract", "version", "authorization", "release"}, "authorization record has missing or unexpected fields")
     authorization = record["authorization"]
     release = record["release"]
-    require(isinstance(authorization, dict) and set(authorization) == {"authorization_id", "context", "scope", "issued_at", "expires_at", "retry_key", "recovery_context", "signing_key_id"}, "authorization lifecycle fields are malformed")
+    lifecycle_fields = {"authorization_id", "context", "scope", "issued_at", "expires_at", "retry_key", "recovery_context", "signing_key_id"}
+    require(isinstance(authorization, dict) and set(authorization).issubset(lifecycle_fields | {"verification_context_sha256", "destination"}) and lifecycle_fields.issubset(authorization), "authorization lifecycle fields are malformed")
     require(isinstance(release, dict), "authorization release identity is malformed")
     require(authorization.get("context") == release.get("authorization_context"), "authorization context is not consistently bound")
     identity_fields = ("repository", "repository_id", "repository_owner_id", "source_ref", "source_sha", "event", "producer_workflow", "producer_revision", "signer_workflow", "signer_revision", "run_id", "run_attempt", "artifact_id", "artifact_name", "artifact_class", "artifact_service_zip_sha256", "artifact_service_zip_bytes", "archive_name", "archive_sha256", "archive_bytes", "platform", "image", "image_digest", "authorization_context")
@@ -759,6 +898,7 @@ def _authorization_from_payload(record: dict[str, Any], verification: Authorizat
             platform=release["platform"], image=release["image"], image_digest=release["image_digest"],
             issued_at=authorization["issued_at"], expires_at=authorization["expires_at"], retry_key=authorization["retry_key"],
             recovery_context=authorization["recovery_context"], signing_key_id=authorization["signing_key_id"], verification=verification,
+            verification_context_sha256=authorization.get("verification_context_sha256"), delivery_destination=authorization.get("destination"),
         )
     except (KeyError, TypeError) as error:
         fail(f"authorization record fields are malformed: {error}")
@@ -872,6 +1012,7 @@ def verify_signed_authorization_record(
     revision_allowlist: AuthorizationRevisionAllowlist,
     *,
     now: datetime | None = None,
+    historical: bool = False,
 ) -> IndependentReleaseAuthorization:
     """Verify an owner-signed Ed25519 record from one bounded trusted-key snapshot."""
     _validate_trust_config(trust)
@@ -899,7 +1040,10 @@ def verify_signed_authorization_record(
     require(isinstance(payload_auth, dict) and payload_auth.get("signing_key_id") == key_id, "authorization signing key is not bound to the record")
     verification = AuthorizationVerificationReceipt(AUTHORIZATION_VERIFIER, hashlib.sha256(canonical).hexdigest(), (now or _now_utc()).astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), key_id, AUTHORIZATION_SIGNATURE_ALGORITHM, key_fingerprint)
     authorization = _authorization_from_payload(verified_record, verification)
-    validate_independent_authorization(authorization, identity, revision_allowlist=revision_allowlist, now=now)
+    validation_now = now
+    if historical:
+        validation_now = _parse_timestamp(authorization.issued_at, "authorization.issued_at")
+    validate_independent_authorization(authorization, identity, revision_allowlist=revision_allowlist, now=validation_now)
     return authorization
 
 
@@ -1273,6 +1417,15 @@ class AuthorizationReplayJournal:
             finally:
                 self._remove_owned_temp(temporary)
 
+    def assert_reserved(self, envelope: Any, identity: TrustedReleaseIdentity, revision_allowlist: AuthorizationRevisionAllowlist, trust: AuthorizationTrustConfig, *, operation: str, now: datetime | None = None) -> None:
+        """Prove that the exact signed authorization already has a durable reservation."""
+        with self._locked():
+            authorization = self._verify_operation(envelope, identity, revision_allowlist, trust, operation, now)
+            current = (now or _now_utc()).astimezone(timezone.utc)
+            path = self._path(authorization)
+            require(self._entry_exists(path), "authorization replay reservation is missing")
+            self._check_existing(self._read(path), self._state(authorization, identity, operation, "reserved"), current)
+
 
 def validate_independent_authorization(authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, *, revision_allowlist: AuthorizationRevisionAllowlist | None = None, now: datetime | None = None) -> None:
     """Check binding, explicit revisions, and lifecycle semantics for a verified record."""
@@ -1281,7 +1434,12 @@ def validate_independent_authorization(authorization: IndependentReleaseAuthoriz
     require(revision_allowlist is not None, "authorization revision allowlist is required")
     validate_authorization_revision_allowlist(revision_allowlist)
     require_string(authorization.authorization_id, "authorization.authorization_id")
-    require(authorization.context == identity.authorization_context, "authorization context does not match release identity")
+    allowed_contexts = {identity.authorization_context}
+    if identity.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
+        allowed_contexts.add(OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT)
+    require(authorization.context in allowed_contexts, "authorization context does not match release identity")
+    if authorization.context == OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT:
+        require(isinstance(authorization.delivery_destination, str) and authorization.delivery_destination.startswith("/") and posixpath.normpath(authorization.delivery_destination) == authorization.delivery_destination, "owner-approved candidate authorization destination is invalid")
     require(authorization.scope in {"forward-release", "recovery-release"}, "authorization scope is unsupported")
     if authorization.scope == "forward-release":
         require(authorization.recovery_context is None, "forward authorization must not carry recovery context")
@@ -1297,6 +1455,8 @@ def validate_independent_authorization(authorization: IndependentReleaseAuthoriz
     require(authorization.signer_revision in revision_allowlist.signer_revisions, "authorization signer revision is not allowlisted")
     require(authorization.producer_workflow == revision_allowlist.producer_workflow and authorization.signer_workflow == revision_allowlist.signer_workflow, "authorization workflow is not allowlisted")
     require_string(authorization.signing_key_id, "authorization.signing_key_id")
+    if authorization.verification_context_sha256 is not None:
+        require_digest(authorization.verification_context_sha256, "authorization.verification_context_sha256")
     issued = _parse_timestamp(authorization.issued_at, "authorization.issued_at")
     expires = _parse_timestamp(authorization.expires_at, "authorization.expires_at")
     require(expires > issued, "authorization expiry must be after issuance")
@@ -1645,6 +1805,304 @@ def fetch_run_artifacts(repository: str, run_id: int, timeout_seconds: int = 30)
     return response
 
 
+def fetch_exact_run_attempt_jobs(repository: str, run_id: int, run_attempt: int, timeout_seconds: int = 30) -> list[dict[str, Any]]:
+    """Fetch every job from the exact attempt-scoped Actions API route.
+
+    The ordinary ``runs/{id}/jobs`` route is latest-attempt scoped and is not
+    acceptable for authorization.  Pagination is validated against
+    ``total_count`` before any job is considered evidence.
+    """
+    require_string(repository, "repository")
+    require_int(run_id, "run_id", 1)
+    require_int(run_attempt, "run_attempt", 1)
+    jobs: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    expected_total: int | None = None
+    for page in range(1, MAX_ACTIONS_JOB_PAGES + 1):
+        response = _run_gh_api_json(
+            f"repos/{repository}/actions/runs/{run_id}/attempts/{run_attempt}/jobs?per_page=100&page={page}",
+            label=f"authenticated exact-attempt job metadata page {page}",
+            timeout_seconds=timeout_seconds,
+        )
+        require(isinstance(response, dict), "exact-attempt job response must be an object")
+        total = response.get("total_count")
+        page_jobs = response.get("jobs")
+        require(type(total) is int and 0 <= total <= MAX_ACTIONS_JOBS, "exact-attempt job total_count is invalid or unbounded")
+        require(isinstance(page_jobs, list) and len(page_jobs) <= 100, "exact-attempt job page is malformed")
+        if expected_total is None:
+            expected_total = total
+        require(total == expected_total, "exact-attempt job pagination total changed")
+        for job in page_jobs:
+            require(isinstance(job, dict) and type(job.get("id")) is int and job["id"] > 0, "exact-attempt job entry is malformed")
+            require(job["id"] not in seen, "exact-attempt job pagination contains a duplicate")
+            seen.add(job["id"])
+            jobs.append(job)
+        if len(jobs) == expected_total:
+            return jobs
+        require(page_jobs, "exact-attempt job pagination ended before total_count")
+    fail("exact-attempt job pagination exceeded its bound")
+
+
+def _validate_job_chronology(job: dict[str, Any], run_metadata: dict[str, Any]) -> datetime:
+    """Keep job evidence inside the exact-attempt run/update window.
+
+    GitHub's attempt endpoint does not expose a run-level ``completed_at``.
+    The independently observable completion boundary is the latest mandatory
+    job completion, which must be no later than the run's ``updated_at``.
+    """
+    run_created = _parse_timestamp(run_metadata.get("created_at"), "run.created_at")
+    run_started = _parse_timestamp(run_metadata.get("run_started_at"), "run.run_started_at")
+    run_updated = _parse_timestamp(run_metadata.get("updated_at"), "run.updated_at")
+    started = _parse_timestamp(job.get("started_at"), "job.started_at")
+    completed = _parse_timestamp(job.get("completed_at"), "job.completed_at")
+    require(run_created <= run_started <= started <= completed <= run_updated, "exact-attempt job chronology is contradictory")
+    require(type(job.get("run_id")) is int and job.get("run_id") == run_metadata.get("id"), "job is not bound to the exact run")
+    require(type(job.get("run_attempt")) is int and job.get("run_attempt") == run_metadata.get("run_attempt"), "job is not bound to the exact run attempt")
+    return completed
+
+
+def validate_completed_candidate_run(request: ArtifactSelectionRequest, run_metadata: dict[str, Any], jobs: list[dict[str, Any]], *, now: datetime | None = None) -> dict[str, Any]:
+    """Independently prove that one exact main-push candidate attempt completed."""
+    validate_selection_request(request)
+    require(request.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS, "completed-run verification requires the candidate artifact class")
+    require(request.event == RELEASE_EVENT and request.source_ref == RELEASE_SOURCE_REF and request.run_head_ref == RELEASE_SOURCE_REF, "completed candidate run is not the approved main push")
+    require(request.producer_revision is not None, "completed candidate verification requires an independent producer revision")
+    require(request.producer_revision == request.signer_revision, "candidate producer and signer revisions are not the same immutable workflow revision")
+    validate_exact_run_attempt_request_metadata(run_metadata, request, now=now)
+    require(run_metadata.get("status") == "completed", "candidate workflow attempt is not completed")
+    require(run_metadata.get("conclusion") == "success", "candidate workflow attempt did not succeed")
+    require("completed_at" not in run_metadata, "candidate workflow attempt uses an unsupported run-level completed_at field")
+    updated_at = _parse_timestamp(run_metadata.get("updated_at"), "run.updated_at")
+    require(isinstance(jobs, list) and 0 < len(jobs) <= MAX_ACTIONS_JOBS, "candidate exact-attempt jobs are missing or unbounded")
+    by_name: dict[str, dict[str, Any]] = {}
+    job_completion_times: list[datetime] = []
+    for job in jobs:
+        require(isinstance(job, dict), "candidate exact-attempt job is malformed")
+        require(type(job.get("id")) is int and job["id"] > 0, "candidate exact-attempt job ID is malformed")
+        require(job["id"] not in {existing.get("id") for existing in by_name.values()}, "candidate exact-attempt job ID is duplicated")
+        name = require_string(job.get("name"), "job.name")
+        require(name in CANDIDATE_REQUIRED_JOBS, f"unexpected or ambiguous candidate job: {name}")
+        require(name not in by_name, f"candidate job is duplicated: {name}")
+        require(job.get("status") == "completed" and job.get("conclusion") == "success", f"candidate mandatory job did not succeed: {name}")
+        require(job.get("head_sha") == request.source_sha, f"candidate job head SHA does not match the exact main-push source: {name}")
+        job_completion_times.append(_validate_job_chronology(job, run_metadata))
+        steps = job.get("steps")
+        require(isinstance(steps, list) and len(steps) <= 128, f"candidate job steps are missing or unbounded: {name}")
+        step_by_name: dict[str, dict[str, Any]] = {}
+        for step in steps:
+            require(isinstance(step, dict), f"candidate job step is malformed: {name}")
+            step_name = require_string(step.get("name"), "job.step.name")
+            require(step_name not in step_by_name, f"candidate job step is duplicated: {name}/{step_name}")
+            step_by_name[step_name] = step
+            if step.get("name") in CANDIDATE_REQUIRED_JOBS[name]:
+                require(step.get("status") == "completed" and step.get("conclusion") == "success", f"candidate mandatory step did not succeed: {name}/{step_name}")
+        for step_name in CANDIDATE_REQUIRED_JOBS[name]:
+            step = step_by_name.get(step_name)
+            require(step is not None, f"candidate mandatory step is missing: {name}/{step_name}")
+            require(step.get("status") == "completed" and step.get("conclusion") == "success", f"candidate mandatory step was skipped: {name}/{step_name}")
+        by_name[name] = job
+    require(set(by_name) == set(CANDIDATE_REQUIRED_JOBS), "candidate build, signing, and validation jobs are incomplete")
+    return {
+        "contract": CANDIDATE_VERIFICATION_CONTEXT_CONTRACT,
+        "version": CANDIDATE_VERIFICATION_CONTEXT_VERSION,
+        "authoritative": False,
+        "independentlyCompleted": True,
+        "run": {
+            "id": request.run_id,
+            "attempt": request.run_attempt,
+            "status": run_metadata["status"],
+            "conclusion": run_metadata["conclusion"],
+            "createdAt": run_metadata["created_at"],
+            "startedAt": run_metadata["run_started_at"],
+            "updatedAt": run_metadata["updated_at"],
+            "jobCompletionBoundary": max(job_completion_times).isoformat().replace("+00:00", "Z"),
+        },
+        "jobs": [
+            {
+                "id": job["id"],
+                "runId": job["run_id"],
+                "runAttempt": job["run_attempt"],
+                "headSha": job["head_sha"],
+                "name": job["name"],
+                "status": job["status"],
+                "conclusion": job["conclusion"],
+                "startedAt": job["started_at"],
+                "completedAt": job["completed_at"],
+                "steps": [{"name": step["name"], "status": step["status"], "conclusion": step["conclusion"]} for step in job["steps"] if step["name"] in CANDIDATE_REQUIRED_JOBS[job["name"]]],
+            }
+            for job in sorted(by_name.values(), key=lambda item: item["name"])
+        ],
+    }
+
+
+def _validate_candidate_workflow_identity(value: Any, identity: TrustedReleaseIdentity) -> None:
+    """Bind retained producer/signer paths and revisions to the approved identity."""
+    require(isinstance(value, dict) and set(value) == {"producerWorkflow", "producerRevision", "signerWorkflow", "signerRevision", "policy"}, "candidate verification context workflow identity is missing or malformed")
+    require(value["producerWorkflow"] == identity.producer_workflow and value["signerWorkflow"] == identity.signer_workflow, "candidate verification context workflow path is contradictory")
+    require(value["producerRevision"] == identity.producer_revision and value["signerRevision"] == identity.signer_revision, "candidate verification context workflow revision is contradictory")
+    require(value["policy"] == "immutable-owner-allowlist", "candidate verification context workflow policy is contradictory")
+
+
+def validate_candidate_verification_context(context: Any, identity: TrustedReleaseIdentity) -> None:
+    """Validate retained completed-run context without treating it as authority."""
+    validate_trusted_release_identity(identity)
+    require(isinstance(context, dict), "candidate verification context must be an object")
+    allowed_keys = {"contract", "version", "authoritative", "independentlyCompleted", "identitySha256", "sourceSha", "artifactClass", "run", "jobs", "attestation", "archiveValidation", "workflowIdentity", "verificationCompletedAt"}
+    require(set(context).issubset(allowed_keys), "candidate verification context has unexpected evidence")
+    require(context.get("contract") == CANDIDATE_VERIFICATION_CONTEXT_CONTRACT and context.get("version") == CANDIDATE_VERIFICATION_CONTEXT_VERSION, "candidate verification context contract is unsupported")
+    require(context.get("authoritative") is False and context.get("independentlyCompleted") is True, "candidate verification context is not independent completed-run evidence")
+    require(context.get("identitySha256") == _identity_fingerprint(identity) and context.get("sourceSha") == identity.source_sha and context.get("artifactClass") == identity.artifact_class, "candidate verification context is not bound to the exact candidate identity")
+    run = context.get("run")
+    require(isinstance(run, dict) and set(run) == {"id", "attempt", "status", "conclusion", "createdAt", "startedAt", "updatedAt", "jobCompletionBoundary"}, "candidate verification context run evidence is missing or malformed")
+    require(type(run["id"]) is int and run["id"] == identity.run_id and type(run["attempt"]) is int and run["attempt"] == identity.run_attempt and run["status"] == "completed" and run["conclusion"] == "success", "candidate verification context run identity or completion is invalid")
+    run_created = _parse_timestamp(run["createdAt"], "context.run.createdAt")
+    run_started = _parse_timestamp(run["startedAt"], "context.run.startedAt")
+    run_updated = _parse_timestamp(run["updatedAt"], "context.run.updatedAt")
+    boundary = _parse_timestamp(run["jobCompletionBoundary"], "context.run.jobCompletionBoundary")
+    require(run_created <= run_started <= run_updated, "candidate verification context run timestamp chronology is contradictory")
+    jobs = context.get("jobs")
+    require(isinstance(jobs, list) and len(jobs) == len(CANDIDATE_REQUIRED_JOBS), "candidate verification context jobs are incomplete")
+    names: set[str] = set()
+    job_ids: set[int] = set()
+    completion_times: list[datetime] = []
+    for job in jobs:
+        require(isinstance(job, dict) and set(job) == {"id", "runId", "runAttempt", "headSha", "name", "status", "conclusion", "startedAt", "completedAt", "steps"}, "candidate verification context job evidence is missing or malformed")
+        job_id = job["id"]
+        require(type(job_id) is int and job_id > 0 and job_id not in job_ids, "candidate verification context job ID is duplicated or malformed")
+        job_ids.add(job_id)
+        name = require_string(job["name"], "context.job.name")
+        require(name in CANDIDATE_REQUIRED_JOBS and name not in names, f"candidate verification context job is duplicated or unexpected: {name}")
+        names.add(name)
+        require(type(job["runId"]) is int and job["runId"] == identity.run_id and type(job["runAttempt"]) is int and job["runAttempt"] == identity.run_attempt and job["headSha"] == identity.source_sha and job["status"] == "completed" and job["conclusion"] == "success", f"candidate verification context job identity or completion is invalid: {name}")
+        job_started = _parse_timestamp(job["startedAt"], f"context.jobs.{name}.startedAt")
+        job_completed = _parse_timestamp(job["completedAt"], f"context.jobs.{name}.completedAt")
+        require(run_created <= run_started <= job_started <= job_completed <= run_updated, f"candidate verification context job timestamp chronology is contradictory: {name}")
+        completion_times.append(job_completed)
+        steps = job["steps"]
+        require(isinstance(steps, list) and len(steps) == len(CANDIDATE_REQUIRED_JOBS[name]), f"candidate verification context steps are missing or unbounded: {name}")
+        step_names: set[str] = set()
+        for step in steps:
+            require(isinstance(step, dict) and set(step) == {"name", "status", "conclusion"}, f"candidate verification context step evidence is malformed: {name}")
+            step_name = require_string(step["name"], f"context.jobs.{name}.step.name")
+            require(step_name not in step_names, f"candidate verification context step is duplicated: {name}/{step_name}")
+            step_names.add(step_name)
+            require(step_name in CANDIDATE_REQUIRED_JOBS[name] and step["status"] == "completed" and step["conclusion"] == "success", f"candidate verification context mandatory step is contradictory: {name}/{step_name}")
+        require(step_names == set(CANDIDATE_REQUIRED_JOBS[name]), f"candidate verification context mandatory steps are incomplete: {name}")
+    require(names == set(CANDIDATE_REQUIRED_JOBS), "candidate verification context job set is incomplete")
+    require(boundary == max(completion_times), "candidate verification context job completion boundary is not the exact maximum")
+    if "workflowIdentity" in context:
+        _validate_candidate_workflow_identity(context["workflowIdentity"], identity)
+    if "verificationCompletedAt" in context:
+        verification_completed = _parse_timestamp(context["verificationCompletedAt"], "context.verificationCompletedAt")
+        require(verification_completed >= boundary, "candidate verification context verification completion is before mandatory job completion")
+
+
+def independent_candidate_verification_context(context: dict[str, Any], identity: TrustedReleaseIdentity) -> tuple[dict[str, Any], str]:
+    """Return canonical retained context bytes' digest for owner approval binding."""
+    enriched = dict(context)
+    enriched.update({"identitySha256": _identity_fingerprint(identity), "sourceSha": identity.source_sha, "artifactClass": identity.artifact_class})
+    validate_candidate_verification_context(enriched, identity)
+    encoded = _canonical_json(enriched)
+    return enriched, hashlib.sha256(encoded + b"\n").hexdigest()
+
+
+def load_owner_approval_context(path: Path, identity: TrustedReleaseIdentity) -> tuple[dict[str, Any], str, str]:
+    """Load the exact retained context that is eligible for owner signing."""
+    raw = _read_bounded_bytes(path, MAX_BUNDLE_BYTES, "independent candidate verification context")
+    try:
+        context = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"independent candidate verification context is malformed: {error}")
+    require(raw == _canonical_json(context) + b"\n", "independent candidate verification context is not canonical")
+    validate_candidate_verification_context(context, identity)
+    require(set(context) == {"contract", "version", "authoritative", "independentlyCompleted", "identitySha256", "sourceSha", "artifactClass", "run", "jobs", "attestation", "archiveValidation", "workflowIdentity", "verificationCompletedAt"}, "independent candidate verification context has missing or unexpected evidence")
+    attestation = context.get("attestation")
+    require(isinstance(attestation, dict) and set(attestation) == {"status", "authenticated", "verifier", "verifierVersion", "subjectDigest"} and attestation.get("status") == "official-verifier-authenticated" and attestation.get("authenticated") is True and attestation.get("subjectDigest") == identity.archive_sha256, "independent context lacks authenticated official provenance")
+    require_string(attestation["verifier"], "context.attestation.verifier")
+    require_string(attestation["verifierVersion"], "context.attestation.verifierVersion")
+    archive_validation = context.get("archiveValidation")
+    require(isinstance(archive_validation, dict) and set(archive_validation) == {"status", "archiveName", "archiveSha256", "archiveBytes", "extracted"} and archive_validation.get("status") == "hardened-validated" and archive_validation.get("archiveName") == identity.archive_name and archive_validation.get("archiveSha256") == identity.archive_sha256 and archive_validation.get("archiveBytes") == identity.archive_bytes and archive_validation.get("extracted") is True, "independent context lacks hardened archive validation")
+    require(type(archive_validation["archiveBytes"]) is int and archive_validation["archiveBytes"] > 0, "independent context archive validation bytes are malformed")
+    _validate_candidate_workflow_identity(context.get("workflowIdentity"), identity)
+    verification_completed_at = require_string(context.get("verificationCompletedAt"), "verificationCompletedAt")
+    verified_at = _parse_timestamp(verification_completed_at, "verificationCompletedAt")
+    boundary = _parse_timestamp(context["run"]["jobCompletionBoundary"], "run.jobCompletionBoundary")
+    require(verified_at >= boundary, "independent verification chronology is before mandatory job completion")
+    return context, hashlib.sha256(raw).hexdigest(), verification_completed_at
+
+
+def verify_completed_candidate_selection(request: ArtifactSelectionRequest, *, service_zip_output: Path, attestation_bundle_output: Path, revision_allowlist: AuthorizationRevisionAllowlist, now: datetime | None = None) -> tuple[TrustedReleaseIdentity, ExactArtifactSelection, dict[str, Any], str]:
+    """Owner-local intake: verify completion, provenance, archive contents, then retain context."""
+    require(request.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS, "independent candidate intake requires the candidate artifact class")
+    require(request.producer_revision is not None, "independent candidate intake requires an explicit producer revision")
+    validate_authorization_revision_allowlist(revision_allowlist)
+    require(request.producer_revision in revision_allowlist.producer_revisions and request.signer_revision in revision_allowlist.signer_revisions, "candidate workflow revisions are not in the immutable owner policy")
+    require(revision_allowlist.producer_workflow == request.signer_workflow and revision_allowlist.signer_workflow == request.signer_workflow, "candidate workflow identity is not in the immutable owner policy")
+    run_metadata = fetch_run_metadata(request.repository, request.run_id, request.run_attempt)
+    jobs = fetch_exact_run_attempt_jobs(request.repository, request.run_id, request.run_attempt)
+    completed_context = validate_completed_candidate_run(request, run_metadata, jobs, now=now)
+    selection = select_artifact_request(request, service_zip_output=service_zip_output, now=now)
+    identity = _candidate_identity_from_selection(request, selection)
+    require(isinstance(run_metadata.get("name"), str) and run_metadata["name"] != "", "candidate workflow name is missing from exact run metadata")
+    repository_metadata = run_metadata.get("repository")
+    repository_visibility = ("private" if repository_metadata.get("private") is True else "public") if isinstance(repository_metadata, dict) else None
+    require(repository_visibility in {"public", "private", "internal"}, "candidate repository visibility is missing from exact run metadata")
+    with tempfile.TemporaryDirectory(prefix="clashcookies-candidate-intake-") as directory_name:
+        directory = Path(directory_name)
+        artifact_response = fetch_run_artifacts(request.repository, request.run_id)
+        attestation_metadata = _select_attestation_artifact_metadata(artifact_response, request, run_metadata, now=(now or _now_utc()).astimezone(timezone.utc))
+        attestation_zip = directory / "attestation-artifact.zip"
+        _download_artifact_service_zip(request.repository, attestation_metadata["id"], attestation_zip, maximum_bytes=MAX_BUNDLE_BYTES, label="candidate attestation artifact")
+        attestation_digest, attestation_bytes = _sha256_file(attestation_zip, MAX_BUNDLE_BYTES, "candidate attestation artifact")
+        require(attestation_digest == require_digest(attestation_metadata["digest"], "attestation artifact.digest") and attestation_bytes == attestation_metadata["size_in_bytes"], "downloaded candidate attestation artifact does not match API identity")
+        bundle = _extract_attestation_bundle(attestation_zip, directory / "attestation-bundle.json")
+        _write_private_bytes(attestation_bundle_output, _read_bounded_bytes(bundle, MAX_BUNDLE_BYTES, "candidate attestation bundle"), "candidate attestation bundle output")
+        expected = {
+            "repository": request.repository,
+            "repository_id": request.repository_id,
+            "repository_owner_id": request.repository_owner_id,
+            "repository_visibility": repository_visibility,
+            "signer_workflow": request.signer_workflow,
+            "signer_revision": request.signer_revision,
+            "source_ref": request.source_ref,
+            "source_sha": request.source_sha,
+            "event": request.event,
+            "workflow_name": run_metadata["name"],
+            "run_id": request.run_id,
+            "run_attempt": request.run_attempt,
+            "pr_number": 0,
+            "pr_head_sha": "",
+            "pr_head_ref": "",
+            "pr_base_sha": "",
+            "pr_base_ref": "",
+            "artifact_class": request.artifact_class,
+            "platform": request.platform,
+            "image": request.image,
+            "image_digest": request.image_digest,
+        }
+        archive, _, _ = _extract_candidate_service_entries(service_zip_output, identity, directory)
+        verified = run_gh_attestation_verify(
+            archive,
+            bundle=bundle,
+            repository=request.repository,
+            signer_workflow=request.signer_workflow,
+            signer_revision=request.signer_revision,
+            source_ref=request.source_ref,
+            source_sha=request.source_sha,
+        )
+        authenticated = validate_verified_result(verified, archive_name=identity.archive_name, archive_digest=identity.archive_sha256, archive_bytes=identity.archive_bytes, expected=expected, run_metadata=run_metadata)
+        validate_authenticated_provenance_binding(authenticated, identity)
+        archive_workspace = directory / "archive-validation"
+        archive_workspace.mkdir(mode=0o700)
+        archive_validation = validate_candidate_archive_contents(service_zip_output, identity, run_metadata, workspace=archive_workspace)
+        completed_context["attestation"] = {"status": "official-verifier-authenticated", "authenticated": True, "verifier": authenticated.receipt.tool, "verifierVersion": authenticated.receipt.version, "subjectDigest": authenticated.receipt.subject_digest}
+        completed_context["archiveValidation"] = archive_validation
+        completed_context["workflowIdentity"] = {"producerWorkflow": revision_allowlist.producer_workflow, "producerRevision": request.producer_revision, "signerWorkflow": revision_allowlist.signer_workflow, "signerRevision": request.signer_revision, "policy": "immutable-owner-allowlist"}
+        completed_context["verificationCompletedAt"] = (now or _now_utc()).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    context, context_digest = independent_candidate_verification_context(completed_context, identity)
+    return identity, selection, context, context_digest
+
+
 def _sha256_file(path: Path, maximum: int, label: str) -> tuple[str, int]:
     """Hash a bounded regular file without following a symlink."""
     require_regular_bounded(path, maximum, label)
@@ -1826,9 +2284,37 @@ def _select_artifact_metadata(response: Any, request: ArtifactSelectionRequest, 
     return artifact
 
 
-def _download_artifact_service_zip(repository: str, artifact_id: int, destination: Path, *, timeout_seconds: int = 90) -> None:
-    """Retrieve one exact artifact ZIP through gh with bounded bytes and deadline."""
+def expected_attestation_artifact_name(run_id: int, run_attempt: int) -> str:
+    """Return the exact workflow artifact carrying the published bundle."""
+    require_int(run_id, "run_id", 1)
+    require_int(run_attempt, "run_attempt", 1)
+    return ATTESTATION_ARTIFACT_NAME_TEMPLATE.format(run_id=run_id, run_attempt=run_attempt)
+
+
+def _select_attestation_artifact_metadata(response: Any, request: ArtifactSelectionRequest, run_metadata: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+    """Select the exact attestation upload from the same run/attempt."""
+    artifacts = validate_artifact_api_response(response)
+    expected_name = expected_attestation_artifact_name(request.run_id, request.run_attempt)
+    matches = [artifact for artifact in artifacts if artifact.get("name") == expected_name]
+    require(len(matches) == 1, "exact candidate attestation artifact is missing or ambiguous")
+    artifact = matches[0]
+    require(require_digest(artifact.get("digest"), "attestation artifact.digest"), "attestation artifact digest is malformed")
+    require(type(artifact.get("size_in_bytes")) is int and 0 < artifact["size_in_bytes"] <= MAX_BUNDLE_BYTES, "attestation artifact size is invalid or oversized")
+    require(artifact.get("expired") is False, "exact candidate attestation artifact is expired")
+    workflow_run = artifact.get("workflow_run")
+    require(isinstance(workflow_run, dict), "candidate attestation artifact workflow binding is missing")
+    require(workflow_run.get("id") == request.run_id and workflow_run.get("repository_id") == request.repository_id and workflow_run.get("head_repository_id") == request.run_head_repository_id and workflow_run.get("head_sha") == request.run_head_sha, "candidate attestation artifact is not bound to the exact run")
+    require(workflow_run.get("head_branch") == request.run_head_ref.removeprefix("refs/heads/"), "candidate attestation artifact head branch mismatch")
+    created = _parse_timestamp(artifact.get("created_at"), "attestation artifact.created_at")
+    updated = _parse_timestamp(run_metadata.get("updated_at"), "run.updated_at")
+    require(created <= updated <= (now or _now_utc()).astimezone(timezone.utc), "candidate attestation artifact is outside the exact run/update boundary")
+    return artifact
+
+
+def _download_artifact_service_zip(repository: str, artifact_id: int, destination: Path, *, timeout_seconds: int = 90, maximum_bytes: int = MAX_ARTIFACT_BYTES, label: str = "artifact service ZIP") -> None:
+    """Retrieve one exact Actions artifact ZIP through gh with bounded bytes."""
     require_int(artifact_id, "artifact_id", 1)
+    require_int(maximum_bytes, "artifact maximum bytes", 1)
     require(not destination.exists(), "artifact service ZIP destination already exists")
     try:
         parent_metadata = os.lstat(destination.parent)
@@ -1898,7 +2384,7 @@ def _download_artifact_service_zip(repository: str, artifact_id: int, destinatio
                         break
                     if index == 0:
                         total += len(item)
-                        if total > MAX_ARTIFACT_BYTES:
+                        if total > maximum_bytes:
                             overflow = True
                             process.kill()
                             break
@@ -1919,8 +2405,8 @@ def _download_artifact_service_zip(repository: str, artifact_id: int, destinatio
             if not progress:
                 time.sleep(0.005)
         return_code = process.wait(timeout=2)
-        require(not overflow and total > 0, "artifact service ZIP output exceeded the limit or was empty")
-        require(return_code == 0, f"exact artifact ZIP retrieval failed: {bytes(stderr).decode('utf-8', 'replace')[-400:]}")
+        require(not overflow and total > 0, f"{label} output exceeded the limit or was empty")
+        require(return_code == 0, f"exact {label} retrieval failed: {bytes(stderr).decode('utf-8', 'replace')[-400:]}")
         os.fsync(descriptor)
     except Exception:
         if process.poll() is None:
@@ -1938,6 +2424,27 @@ def _download_artifact_service_zip(repository: str, artifact_id: int, destinatio
             stream.close()
         for reader in readers:
             reader.join(timeout=2)
+
+
+def _extract_attestation_bundle(artifact_zip: Path, destination: Path) -> Path:
+    """Extract exactly one bounded JSON bundle from the uploaded artifact ZIP."""
+    snapshot = open_zip_snapshot(artifact_zip)
+    try:
+        _preflight_zip_snapshot(snapshot)
+        with os.fdopen(os.dup(snapshot.fd), "rb", closefd=True) as stream, ZipFile(stream) as archive:
+            candidates = [info for info in archive.infolist() if not info.is_dir() and info.filename.endswith(".json")]
+            require(len(candidates) == 1, "candidate attestation artifact must contain exactly one JSON bundle")
+            info = candidates[0]
+            name = info.filename.replace("\\", "/")
+            require(name == info.filename and not name.startswith("/") and ".." not in name.split("/"), "candidate attestation bundle path is unsafe")
+            require(info.file_size <= MAX_BUNDLE_BYTES, "candidate attestation bundle exceeds the limit")
+            payload = archive.read(info)
+            require(len(payload) == info.file_size, "candidate attestation bundle was truncated")
+            require(not destination.exists(), "candidate attestation bundle destination already exists")
+            _write_private_bytes(destination, payload, "candidate attestation bundle")
+            return destination
+    finally:
+        close_zip_snapshot(snapshot)
 
 
 def inspect_artifact_service_zip_snapshot(snapshot: ZipSnapshot, archive_name: str, expected_digest: str | None = None, expected_bytes: int | None = None) -> tuple[str, int]:
@@ -2035,6 +2542,85 @@ def inspect_artifact_service_zip(service_zip: Path, identity: TrustedReleaseIden
         return inspect_artifact_service_zip_snapshot(snapshot, identity.archive_name, identity.archive_sha256, identity.archive_bytes)
     finally:
         close_zip_snapshot(snapshot)
+
+
+def _extract_candidate_service_entries(service_zip: Path, identity: TrustedReleaseIdentity, directory: Path) -> tuple[Path, Path, Path]:
+    """Extract only the original archive and its two validator sidecars."""
+    snapshot = open_zip_snapshot(service_zip, directory=directory)
+    try:
+        validate_trusted_release_identity(identity)
+        verify_artifact_service_zip_snapshot(snapshot, identity.artifact_service_zip_sha256, identity.artifact_service_zip_bytes)
+        inspect_artifact_service_zip_snapshot(snapshot, identity.archive_name, identity.archive_sha256, identity.archive_bytes)
+        outputs: dict[str, Path] = {}
+        with os.fdopen(os.dup(snapshot.fd), "rb", closefd=True) as stream, ZipFile(stream) as archive:
+            expected_names = {identity.archive_name, f"{identity.archive_name}.sha256", f"{identity.archive_name}.manifest.json"}
+            infos = {info.filename: info for info in archive.infolist()}
+            require(expected_names.issubset(infos), "candidate artifact service ZIP is missing hardened-validation sidecars")
+            for name in expected_names:
+                info = infos[name]
+                require(not info.is_dir() and name == name.replace("\\", "/") and not name.startswith("/") and ".." not in name.split("/"), "candidate artifact service ZIP contains an unsafe validator entry")
+                maximum = identity.archive_bytes if name == identity.archive_name else MAX_BUNDLE_BYTES
+                require(info.file_size <= maximum, "candidate validator entry exceeds its bound")
+                target = directory / Path(name).name
+                payload = archive.read(info)
+                require(len(payload) == info.file_size, "candidate validator entry was truncated")
+                _write_private_bytes(target, payload, f"candidate validator entry {name}")
+                outputs[name] = target
+        return outputs[identity.archive_name], outputs[f"{identity.archive_name}.sha256"], outputs[f"{identity.archive_name}.manifest.json"]
+    finally:
+        close_zip_snapshot(snapshot)
+
+
+def _load_hardened_validator() -> Any:
+    """Load the repository's hardened archive validator without a second contract."""
+    path = Path(__file__).with_name("validate-runtime-artifact.py")
+    spec = importlib.util.spec_from_file_location("clashcookies_owner_hardened_validator", path)
+    require(spec is not None and spec.loader is not None, "hardened runtime-artifact validator cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def validate_candidate_archive_contents(service_zip: Path, identity: TrustedReleaseIdentity, run_metadata: dict[str, Any], *, workspace: Path) -> dict[str, Any]:
+    """Run the existing checksum, manifest, preflight, and safe extraction boundary."""
+    archive, checksum, manifest = _extract_candidate_service_entries(service_zip, identity, workspace)
+    validator = _load_hardened_validator()
+    limits = validator.Limits()
+    snapshot = validator.snapshot_source(archive, limits, workspace_root=workspace)
+    extraction = workspace / "extracted-runtime"
+    try:
+        validator.validate_checksum(archive, checksum, snapshot.digest)
+        validator.preflight_metadata(snapshot, limits)
+        entries, metadata_files, file_hashes = validator.collect_entries(snapshot, limits)
+        embedded = validator.read_json_bytes(metadata_files["runtime-artifact-manifest.json"], "embedded manifest")
+        external = validator.read_sidecar_json(manifest, limits, "published manifest")
+        expected = validator.make_manifest_expectation(
+            expected_sha=identity.source_sha,
+            expected_platform=identity.platform,
+            expected_repository=identity.repository,
+            expected_repository_id=str(identity.repository_id),
+            expected_repository_owner_id=str(identity.repository_owner_id),
+            expected_workflow=run_metadata.get("name"),
+            expected_run_id=str(identity.run_id),
+            expected_run_attempt=str(identity.run_attempt),
+            expected_event=identity.event,
+            expected_source_ref=identity.source_ref,
+            expected_artifact_class=identity.artifact_class,
+            expected_signer_workflow=identity.signer_workflow,
+            expected_signer_revision=identity.signer_revision,
+            expected_base_image=identity.image,
+            expected_base_image_digest=identity.image_digest,
+        )
+        require(isinstance(expected.expected_workflow, str) and expected.expected_workflow != "", "candidate run workflow name is missing")
+        validator.validate_manifest(embedded, archive.name, snapshot.size, snapshot.digest, expected, embedded=True)
+        validator.validate_manifest(external, archive.name, snapshot.size, snapshot.digest, expected, embedded=False)
+        validator.compare_manifests(embedded, external)
+        require(validator.archive_input_hashes(metadata_files, entries) == external["inputs"], "candidate archive input hashes do not match the manifest")
+        validator.extract_archive(snapshot, entries, file_hashes, extraction, limits, snapshot.digest)
+    finally:
+        validator.cleanup_snapshot(snapshot)
+    return {"status": "hardened-validated", "archiveName": identity.archive_name, "archiveSha256": identity.archive_sha256, "archiveBytes": identity.archive_bytes, "extracted": True}
 
 
 def validate_run_metadata(metadata: dict[str, Any], expected: dict[str, Any]) -> dict[str, Any] | None:
@@ -2260,7 +2846,7 @@ def _candidate_identity_from_selection(request: ArtifactSelectionRequest, select
         source_sha=request.source_sha,
         event=request.event,
         producer_workflow=RELEASE_PRODUCER_WORKFLOW,
-        producer_revision=request.signer_revision,
+        producer_revision=request.producer_revision or request.signer_revision,
         signer_workflow=request.signer_workflow,
         signer_revision=request.signer_revision,
         run_id=request.run_id,
@@ -2459,9 +3045,10 @@ def selection_request_from_json(value: Any) -> ArtifactSelectionRequest:
         "run_head_repository_id", "run_head_repository_owner_id", "run_head_ref", "run_head_sha",
         "pull_request_number", "pull_request_head_sha", "pull_request_head_ref", "pull_request_base_sha", "pull_request_base_ref",
     )
-    require(set(value) == set(fields), "artifact selection request has missing or unexpected fields")
+    allowed = set(fields) | {"producer_revision"}
+    require(set(value).issubset(allowed) and set(fields).issubset(value), "artifact selection request has missing or unexpected fields")
     try:
-        request = ArtifactSelectionRequest(**{field: value[field] for field in fields})
+        request = ArtifactSelectionRequest(**{field: value[field] for field in fields}, producer_revision=value.get("producer_revision"))
     except TypeError as error:
         fail(f"artifact selection request is malformed: {error}")
     validate_selection_request(request)
@@ -2478,18 +3065,76 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--selection-download-service-zip")
     parser.add_argument("--candidate-evidence-request")
     parser.add_argument("--candidate-evidence-output")
+    parser.add_argument("--verify-completed-candidate", action="store_true")
+    parser.add_argument("--candidate-verification-context-output")
+    parser.add_argument("--candidate-identity-output")
+    parser.add_argument("--candidate-service-zip-output")
+    parser.add_argument("--candidate-attestation-bundle-output")
+    parser.add_argument("--prepare-authorization", action="store_true")
+    parser.add_argument("--authorization-output")
+    parser.add_argument("--authorization-identity")
+    parser.add_argument("--authorization-id")
+    parser.add_argument("--authorization-issued-at")
+    parser.add_argument("--authorization-expires-at")
+    parser.add_argument("--authorization-key-id")
+    parser.add_argument("--authorization-scope", default="forward-release")
+    parser.add_argument("--authorization-recovery-context")
+    parser.add_argument("--authorization-verification-context")
+    parser.add_argument("--authorization-destination")
+    parser.add_argument("--authorization-public-key")
+    parser.add_argument("--authorization-repository-root")
+    parser.add_argument("--authorization-key-fingerprint")
+    parser.add_argument("--authorization-allowlist")
+    parser.add_argument("--assemble-authorization", action="store_true")
+    parser.add_argument("--authorization-record")
+    parser.add_argument("--authorization-signature")
     return parser.parse_args()
 
 
 def main() -> int:
     """Evaluate only an explicitly synthetic policy fixture for diagnostics."""
     args = parse_args()
+    if args.prepare_authorization:
+        require(args.authorization_output and args.authorization_id and args.authorization_issued_at and args.authorization_expires_at and args.authorization_key_id and args.authorization_identity and args.authorization_verification_context and args.authorization_destination, "authorization preparation requires identity, verified context, approved destination, output, lifecycle, and key fields")
+        identity_path = args.authorization_identity
+        identity_value = _read_bounded_json(Path(identity_path), "authorization identity")
+        require(isinstance(identity_value, dict) and set(identity_value) == set(TrustedReleaseIdentity.__dataclass_fields__), "authorization identity is malformed")
+        identity = TrustedReleaseIdentity(**identity_value)
+        _context, context_digest, verification_completed_at = load_owner_approval_context(Path(args.authorization_verification_context), identity)
+        record = prepare_owner_authorization_record(identity, authorization_id=args.authorization_id, issued_at=args.authorization_issued_at, expires_at=args.authorization_expires_at, signing_key_id=args.authorization_key_id, scope=args.authorization_scope, recovery_context=args.authorization_recovery_context, verification_context_sha256=context_digest, delivery_destination=args.authorization_destination, verification_completed_at=verification_completed_at)
+        Path(args.authorization_output).write_bytes(_canonical_json(record))
+        print(json.dumps({"prepared": True, "signed": False, "recordSha256": hashlib.sha256(_canonical_json(record)).hexdigest()}, indent=2))
+        return 0
+    if args.assemble_authorization:
+        require(args.authorization_record and args.authorization_signature and args.authorization_output and args.authorization_key_id and args.authorization_identity and args.authorization_public_key and args.authorization_key_fingerprint and args.authorization_allowlist, "authorization assembly requires record, signature, identity, trust key, fingerprint, allowlist, key ID, and output")
+        record = _read_bounded_json(Path(args.authorization_record), "authorization record")
+        signature = _read_bounded_bytes(Path(args.authorization_signature), 64, "authorization detached signature")
+        envelope = assemble_owner_authorization_envelope(record, signature, args.authorization_key_id)
+        identity_value = _read_bounded_json(Path(args.authorization_identity), "authorization identity")
+        require(isinstance(identity_value, dict) and set(identity_value) == set(TrustedReleaseIdentity.__dataclass_fields__), "authorization identity is malformed")
+        identity = TrustedReleaseIdentity(**identity_value)
+        allowlist = authorization_revision_allowlist_from_json(_read_bounded_json(Path(args.authorization_allowlist), "authorization revision allowlist"))
+        trust = AuthorizationTrustConfig(Path(args.authorization_public_key), args.authorization_key_id, args.authorization_key_fingerprint, Path(args.authorization_repository_root).resolve() if args.authorization_repository_root else Path(args.authorization_identity).resolve().parent)
+        verify_signed_authorization_record(envelope, trust, identity, allowlist)
+        Path(args.authorization_output).write_bytes(_canonical_json(envelope) + b"\n")
+        print(json.dumps({"prepared": False, "assembled": True, "signed": True, "verified": True, "recordSha256": hashlib.sha256(_canonical_json(record)).hexdigest()}, indent=2))
+        return 0
     if args.candidate_evidence_request:
         require(args.candidate_evidence_output is not None, "candidate evidence output is required")
         parsed = candidate_evidence_request_from_json(_read_bounded_json(Path(args.candidate_evidence_request), "candidate evidence request"))
         evidence = build_candidate_evidence(parsed["request"], parsed["selection"], parsed["provenance"], parsed["validation"])
         Path(args.candidate_evidence_output).write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
         print(json.dumps({"authoritative": False, "productionEligible": False, "candidateEvidence": True}, indent=2))
+        return 0
+    if args.verify_completed_candidate:
+        require(args.selection_request and args.candidate_service_zip_output and args.candidate_attestation_bundle_output and args.candidate_verification_context_output and args.candidate_identity_output, "completed candidate verification requires selection request, ZIP, attestation bundle, context output, and identity output")
+        request = selection_request_from_json(_read_bounded_json(Path(args.selection_request), "candidate selection request"))
+        require(args.authorization_allowlist, "completed candidate verification requires an immutable authorization revision allowlist")
+        allowlist = authorization_revision_allowlist_from_json(_read_bounded_json(Path(args.authorization_allowlist), "authorization revision allowlist"))
+        identity, selection, context, context_digest = verify_completed_candidate_selection(request, service_zip_output=Path(args.candidate_service_zip_output), attestation_bundle_output=Path(args.candidate_attestation_bundle_output), revision_allowlist=allowlist)
+        Path(args.candidate_identity_output).write_bytes(_canonical_json(_authorization_identity_payload(identity)) + b"\n")
+        Path(args.candidate_verification_context_output).write_bytes(_canonical_json(context) + b"\n")
+        print(json.dumps({"authoritative": False, "independentlyCompleted": True, "identitySha256": _identity_fingerprint(identity), "verificationContextSha256": context_digest, "selection": {"artifactId": selection.artifact_id, "artifactName": selection.artifact_name, "artifactServiceZipSha256": selection.artifact_service_zip_sha256, "artifactServiceZipBytes": selection.artifact_service_zip_bytes, "archiveName": selection.archive_name, "archiveSha256": selection.archive_sha256, "archiveBytes": selection.archive_bytes}}, indent=2))
         return 0
     if args.selection_request:
         request = selection_request_from_json(_read_bounded_json(Path(args.selection_request), "artifact selection request"))
