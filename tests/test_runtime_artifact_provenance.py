@@ -298,6 +298,8 @@ def main_selection_request() -> object:
         selection_request(),
         source_ref=provenance.RELEASE_SOURCE_REF,
         event="push",
+        artifact_class=provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS,
+        authorization_context=provenance.CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT,
         artifact_name=provenance.expected_artifact_name(RUN_ID, RUN_ATTEMPT),
         archive_name=f"clashcookies-runtime-{MAIN_SOURCE_SHA}.tar.gz",
         run_head_ref=provenance.RELEASE_SOURCE_REF,
@@ -452,6 +454,45 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         duplicate["name"] = "other-artifact-name"
         with self.assertRaisesRegex(provenance.ProvenanceError, "duplicate artifact ID"):
             provenance.validate_artifact_api_response({"total_count": 2, "artifacts": [metadata, duplicate]})
+
+    def test_main_push_candidate_selection_and_handoff_evidence_bind_exact_bytes(self) -> None:
+        request = main_selection_request()
+        identity = trusted_identity()
+        selection = provenance.ExactArtifactSelection(
+            artifact_id=identity.artifact_id,
+            artifact_name=identity.artifact_name,
+            artifact_service_zip_sha256=identity.artifact_service_zip_sha256,
+            artifact_service_zip_bytes=identity.artifact_service_zip_bytes,
+            archive_name=identity.archive_name,
+            archive_sha256=identity.archive_sha256,
+            archive_bytes=identity.archive_bytes,
+            byte_verified=True,
+        )
+        diagnostic = authoritative_evidence_for(identity).diagnostic_json()
+        diagnostic["productionEligibility"] = {"eligible": False, "authoritative": False, "reasonCode": "missing-trusted-release-identity", "detail": "candidate evidence only"}
+        record = provenance.build_candidate_evidence(
+            request,
+            selection,
+            diagnostic,
+            {"sha256": identity.archive_sha256, "archiveBytes": identity.archive_bytes, "sourceSha": identity.source_sha, "extractedFootprintBytes": 1, "authenticatedProvenance": diagnostic, "measurements": {"elapsedMs": 1}},
+        )
+        self.assertFalse(record["authoritative"])
+        self.assertFalse(record["productionEligible"])
+        self.assertTrue(record["selection"]["byteVerified"])
+        self.assertEqual(record["identity"]["sourceRef"], provenance.RELEASE_SOURCE_REF)
+        tampered = copy.deepcopy(diagnostic)
+        tampered["subject"]["artifactClass"] = provenance.DEVELOPMENT_ARTIFACT_CLASS
+        with self.assertRaisesRegex(provenance.ProvenanceError, "subject identity"):
+            provenance.build_candidate_evidence(
+                request,
+                selection,
+                tampered,
+                {"sha256": identity.archive_sha256, "archiveBytes": identity.archive_bytes, "sourceSha": identity.source_sha, "authenticatedProvenance": diagnostic, "measurements": {}},
+            )
+
+    def test_main_push_development_classification_is_rejected(self) -> None:
+        with self.assertRaisesRegex(provenance.ProvenanceError, "main push cannot"):
+            provenance.validate_selection_request(replace(main_selection_request(), artifact_class=provenance.DEVELOPMENT_ARTIFACT_CLASS, authorization_context="ci-selection-only"))
 
     def test_shared_cli_selection_validates_complete_pr_attempt_and_metadata_response(self) -> None:
         request = selection_request()

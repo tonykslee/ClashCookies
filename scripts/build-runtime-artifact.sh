@@ -57,6 +57,9 @@ docker run --rm --platform "${platform}" -i \
   -e "GITHUB_WORKFLOW_PATH=${GITHUB_WORKFLOW_PATH:-local}" \
   -e "GITHUB_WORKFLOW_SHA=${GITHUB_WORKFLOW_SHA:-local}" \
   -e "GITHUB_REPOSITORY=${GITHUB_REPOSITORY:-local}" \
+  -e "GITHUB_REPOSITORY_ID=${GITHUB_REPOSITORY_ID:-local}" \
+  -e "GITHUB_REPOSITORY_OWNER_ID=${GITHUB_REPOSITORY_OWNER_ID:-local}" \
+  -e "GITHUB_SHA=${GITHUB_SHA:-${source_sha}}" \
   -e "GITHUB_SERVER_URL=${GITHUB_SERVER_URL:-}" \
   -e "ARTIFACT_NAME=${artifact_name}" \
   -e "BUILD_STARTED_AT=${started_at}" \

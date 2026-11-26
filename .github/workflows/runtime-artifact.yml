@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [dev]
   push:
-    branches: [dev]
+    branches: [dev, main]
 
 permissions:
   contents: read
@@ -13,6 +13,7 @@ env:
   RUNTIME_ARTIFACT_IMAGE: node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5
   RUNTIME_ARTIFACT_PLATFORM: linux/amd64
   RUNTIME_ARTIFACT_SIGNER_WORKFLOW: .github/workflows/runtime-artifact.yml
+  RUNTIME_ARTIFACT_ARTIFACT_CLASS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'production-candidate-runtime-evidence-v1' || 'development-runtime-evidence' }}
   GH_ATTESTATION_CLI_VERSION: 2.89.0
   GH_ATTESTATION_CLI_URL: https://github.com/cli/cli/releases/download/v2.89.0/gh_2.89.0_linux_amd64.tar.gz
   GH_ATTESTATION_CLI_SHA256: d0422caade520530e76c1c558da47daebaa8e1203d6b7ff10ad7d6faba3490d8
@@ -37,6 +38,9 @@ jobs:
           GITHUB_WORKFLOW_PATH: .github/workflows/runtime-artifact.yml
           GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          GITHUB_SHA: ${{ github.sha }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
@@ -46,11 +50,11 @@ jobs:
             --image "$RUNTIME_ARTIFACT_IMAGE" \
             --platform "$RUNTIME_ARTIFACT_PLATFORM" \
             --expected-sha "$GITHUB_SHA"
-          jq -e '.artifact.nonProductionEvidence == true and .identity.deployableRelease == false and .build.baseImageDigest' \
+          jq -e --arg expected_class "$RUNTIME_ARTIFACT_ARTIFACT_CLASS" '.artifact.nonProductionEvidence == true and .artifact.artifactClass == $expected_class and .identity.deployableRelease == false and .build.baseImageDigest' \
             "$RUNNER_TEMP/runtime-artifact"/*.manifest.json
           manifest="$RUNNER_TEMP/runtime-artifact/$(basename "$(find "$RUNNER_TEMP/runtime-artifact" -maxdepth 1 -name '*.manifest.json' -print -quit)")"
           {
-            echo "## FB-028A runtime artifact"
+            echo "## FB-028A/FB-028B runtime artifact"
             jq -r '"- Build duration: \(.build.durationMs) ms\n- Archive size: \(.measurements.archiveBytes) bytes\n- Extracted footprint: \(.measurements.extractedFootprintBytes) bytes\n- Source SHA: `\(.source.gitSha)`\n- Base image: `\(.build.baseImage)`"' "$manifest"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -64,7 +68,7 @@ jobs:
           include-hidden-files: true
 
   attest-runtime-artifact:
-    name: Generate authenticated development attestation
+    name: Generate authenticated runtime artifact attestation
     needs: build-runtime-artifact
     runs-on: ubuntu-latest
     permissions:
@@ -204,7 +208,7 @@ jobs:
             --argjson run_id "$GITHUB_RUN_ID" \
             --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg artifact_name "runtime-artifact-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --arg artifact_class "development-runtime-evidence" \
+            --arg artifact_class "$RUNTIME_ARTIFACT_ARTIFACT_CLASS" \
             --arg archive_name "$archive_name" \
             --arg platform "$RUNTIME_ARTIFACT_PLATFORM" \
             --arg image "$RUNTIME_ARTIFACT_IMAGE" \
@@ -220,7 +224,7 @@ jobs:
             --arg pr_head_ref "$RUNTIME_ARTIFACT_PR_HEAD_REF" \
             --arg pr_base_sha "$RUNTIME_ARTIFACT_PR_BASE_SHA" \
             --arg pr_base_ref "$RUNTIME_ARTIFACT_PR_BASE_REF" \
-            '{repository:$repository,repository_id:$repository_id,repository_owner_id:$repository_owner_id,source_ref:$source_ref,source_sha:$source_sha,event:$event,signer_workflow:$signer_workflow,signer_revision:$signer_revision,run_id:$run_id,run_attempt:$run_attempt,artifact_name:$artifact_name,artifact_class:$artifact_class,archive_name:$archive_name,platform:$platform,image:$image,image_digest:$image_digest,authorization_context:$authorization_context,run_head_repository:$run_head_repository,run_head_repository_id:$run_head_repository_id,run_head_repository_owner_id:$run_head_repository_owner_id,run_head_ref:(if $event == "push" then $source_ref else ("refs/heads/" + $run_head_ref) end),run_head_sha:$run_head_sha,pull_request_number:(if $pr_number == "" then null else ($pr_number|tonumber) end),pull_request_head_sha:(if $pr_head_sha == "" then null else $pr_head_sha end),pull_request_head_ref:(if $pr_head_ref == "" then null else ("refs/heads/" + $pr_head_ref) end),pull_request_base_sha:(if $pr_base_sha == "" then null else $pr_base_sha end),pull_request_base_ref:(if $pr_base_ref == "" then null else ("refs/heads/" + $pr_base_ref) end)}' \
+            '{repository:$repository,repository_id:$repository_id,repository_owner_id:$repository_owner_id,source_ref:$source_ref,source_sha:$source_sha,event:$event,signer_workflow:$signer_workflow,signer_revision:$signer_revision,run_id:$run_id,run_attempt:$run_attempt,artifact_name:$artifact_name,artifact_class:$artifact_class,archive_name:$archive_name,platform:$platform,image:$image,image_digest:$image_digest,authorization_context:(if $artifact_class == "production-candidate-runtime-evidence-v1" then "production-candidate-selection-only" else $authorization_context end),run_head_repository:$run_head_repository,run_head_repository_id:$run_head_repository_id,run_head_repository_owner_id:$run_head_repository_owner_id,run_head_ref:(if $event == "push" then $source_ref else ("refs/heads/" + $run_head_ref) end),run_head_sha:$run_head_sha,pull_request_number:(if $pr_number == "" then null else ($pr_number|tonumber) end),pull_request_head_sha:(if $pr_head_sha == "" then null else $pr_head_sha end),pull_request_head_ref:(if $pr_head_ref == "" then null else ("refs/heads/" + $pr_head_ref) end),pull_request_base_sha:(if $pr_base_sha == "" then null else $pr_base_sha end),pull_request_base_ref:(if $pr_base_ref == "" then null else ("refs/heads/" + $pr_base_ref) end)}' \
             > "$RUNNER_TEMP/exact-selection-request.json"
           python scripts/runtime_artifact_provenance.py \
             --selection-request "$RUNNER_TEMP/exact-selection-request.json" \
@@ -330,6 +334,7 @@ jobs:
             --expected-repository-visibility "$RUNTIME_ARTIFACT_REPOSITORY_VISIBILITY" \
             --expected-signer-workflow "$RUNTIME_ARTIFACT_SIGNER_WORKFLOW" \
             --expected-signer-revision "$RUNTIME_ARTIFACT_SIGNER_REVISION" \
+            --expected-artifact-class "$RUNTIME_ARTIFACT_ARTIFACT_CLASS" \
             --expected-pr-number "${RUNTIME_ARTIFACT_PR_NUMBER:-0}" \
             --expected-pr-head-sha "$RUNTIME_ARTIFACT_PR_HEAD_SHA" \
             --expected-pr-head-ref "$RUNTIME_ARTIFACT_PR_HEAD_REF" \
@@ -342,22 +347,51 @@ jobs:
             --attestation-bundle "$bundle" \
             --provenance-output "$RUNNER_TEMP/authenticated-development-provenance.json" \
             --source-root "$GITHUB_WORKSPACE" \
-            --extract "$RUNNER_TEMP/extracted-runtime-artifact")"
-          printf '%s\n' "$validation_output"
+            --extract "$RUNNER_TEMP/extracted-runtime-artifact" | tee "$RUNNER_TEMP/validation-output.json"
           {
             echo "## FB-028B bounded validation/extraction"
-            jq -r '"- Elapsed: \(.measurements.elapsedMs) ms\n- Headers: \(.measurements.headers.totalHeaders) total / \(.measurements.headers.metadataHeaders) metadata\n- Physical metadata: \(.measurements.headers.physicalMetadataBytes) bytes\n- Archive: \(.archiveBytes) bytes\n- Extracted footprint: \(.extractedFootprintBytes) bytes\n- Estimated temporary disk: \(.measurements.temporaryDiskBytesRequired) bytes\n- Peak memory: \(.measurements.peakMemoryBytes // "unavailable")"' <<< "$validation_output"
+            jq -r '"- Elapsed: \(.measurements.elapsedMs) ms\n- Headers: \(.measurements.headers.totalHeaders) total / \(.measurements.headers.metadataHeaders) metadata\n- Physical metadata: \(.measurements.headers.physicalMetadataBytes) bytes\n- Archive: \(.archiveBytes) bytes\n- Extracted footprint: \(.extractedFootprintBytes) bytes\n- Estimated temporary disk: \(.measurements.temporaryDiskBytesRequired) bytes\n- Peak memory: \(.measurements.peakMemoryBytes // "unavailable")"' "$RUNNER_TEMP/validation-output.json"
           } >> "$GITHUB_STEP_SUMMARY"
-          jq -e '.productionEligibility | .eligible == false and .authoritative == false and .reasonCode == "development-artifact-class"' \
+          jq -e --arg expected_class "$RUNTIME_ARTIFACT_ARTIFACT_CLASS" '.authenticated == true and .productionEligibility.eligible == false and .productionEligibility.authoritative == false and .subject.artifactClass == $expected_class' \
             "$RUNNER_TEMP/authenticated-development-provenance.json" >/dev/null
 
+      - name: Produce non-authoritative production-candidate evidence
+        if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'production-candidate-runtime-evidence-v1'
+        run: |
+          set -euo pipefail
+          jq -n \
+            --slurpfile selection_request "$RUNNER_TEMP/exact-selection-request.json" \
+            --slurpfile selection "$RUNNER_TEMP/exact-selection.json" \
+            --slurpfile provenance "$RUNNER_TEMP/authenticated-development-provenance.json" \
+            --slurpfile validation "$RUNNER_TEMP/validation-output.json" \
+            '{selectionRequest:$selection_request[0],selection:$selection[0].selection,provenance:$provenance[0],validation:$validation[0]}' \
+            > "$RUNNER_TEMP/candidate-evidence-request.json"
+          python scripts/runtime_artifact_provenance.py \
+            --candidate-evidence-request "$RUNNER_TEMP/candidate-evidence-request.json" \
+            --candidate-evidence-output "$RUNNER_TEMP/production-candidate-evidence.json"
+          jq -e '.authoritative == false and .productionEligible == false and .authorizationRequired == true and .bearerCredential == false and .identity.artifactClass == "production-candidate-runtime-evidence-v1" and .selection.byteVerified == true' \
+            "$RUNNER_TEMP/production-candidate-evidence.json" >/dev/null
+          echo "Non-authoritative candidate evidence was produced; independent authorization and exact-run completion verification remain required." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish non-authoritative production-candidate evidence
+        if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'production-candidate-runtime-evidence-v1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-artifact-candidate-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/production-candidate-evidence.json
+          if-no-files-found: error
+          retention-days: 3
+          include-hidden-files: true
+
       - name: Install disposable OpenSSH receiver for integration evidence
+        if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'development-runtime-evidence'
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends openssh-server
 
       - name: Prepare exact receiver identity and offline expectation
+        if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'development-runtime-evidence'
         env:
           RUNTIME_ARTIFACT_REPOSITORY_ID: ${{ github.repository_id }}
           RUNTIME_ARTIFACT_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
@@ -440,6 +474,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Run mandatory genuine Linux/OpenSSH receiver integration
+        if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'development-runtime-evidence'
         run: |
           set -euo pipefail
           test "$CC_REAL_RECEIVER" = 1
@@ -450,6 +485,7 @@ jobs:
             tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_synthetic_authorized_delivery_composes_reservation_publication_and_durable_retry -v
 
       - name: Verify genuine attestation offline without token or network
+        if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'development-runtime-evidence'
         env:
           RUNTIME_ARTIFACT_REPOSITORY_ID: ${{ github.repository_id }}
           RUNTIME_ARTIFACT_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
@@ -529,6 +565,7 @@ jobs:
           PY
 
       - name: Verify operationally retained artifact offline
+        if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'development-runtime-evidence'
         run: |
           set -euo pipefail
           test "$CC_REAL_RETENTION_OFFLINE" = 1
@@ -616,16 +653,22 @@ jobs:
           mapfile -t bundles < <(find "$RUNNER_TEMP/retrieved-runtime-attestation" -maxdepth 2 -type f -name '*.json' -print)
           test "${#bundles[@]}" -eq 1
           bundle="${bundles[0]}"
+          mismatched_ref="refs/heads/main"
+          expected_failure='expected SourceRepositoryRef to be refs/heads/main'
+          if [ "$RUNTIME_ARTIFACT_ARTIFACT_CLASS" = "production-candidate-runtime-evidence-v1" ]; then
+            mismatched_ref="refs/heads/dev"
+            expected_failure='expected SourceRepositoryRef to be refs/heads/dev'
+          fi
           if mismatched_output="$("$GH_ATTESTATION_CLI" attestation verify "$archive" \
             --repo "$GITHUB_REPOSITORY" \
             --bundle "$bundle" \
-            --source-ref refs/heads/main \
+            --source-ref "$mismatched_ref" \
             --source-digest "$GITHUB_SHA" \
             --predicate-type https://slsa.dev/provenance/v1 \
             --format json 2>&1)"; then
             echo 'The official verifier accepted a mismatched source ref' >&2
             exit 1
-          elif ! grep -Fq 'expected SourceRepositoryRef to be refs/heads/main' <<< "$mismatched_output"; then
+          elif ! grep -Fq "$expected_failure" <<< "$mismatched_output"; then
             echo "Mismatched-source verification failed operationally or for an unexpected reason: $mismatched_output" >&2
             exit 1
           fi

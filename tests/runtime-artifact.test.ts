@@ -256,12 +256,14 @@ function refreshExternalIntegrity(archivePath: string) {
   writeFileSync(`${archivePath}.sha256`, `${digest}  ${archivePath.split(/[\\/]/).pop()}\n`);
 }
 
-function producerContractFixture() {
+function producerContractFixture(options: { candidate?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "clashcookies-runtime-producer-contract-"));
   const payload = join(root, "payload");
   const name = `clashcookies-runtime-${sourceSha}.tar.gz`;
   const archivePath = join(root, name);
-  const image = "node:20-bookworm@sha256:" + "a".repeat(64);
+  const image = options.candidate
+    ? "node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5"
+    : "node:20-bookworm@sha256:" + "a".repeat(64);
   const writePayload = (name: string, content: string, mode = 0o644) => {
     const path = join(payload, ...name.split("/"));
     mkdirSync(dirname(path), { recursive: true });
@@ -279,7 +281,30 @@ function producerContractFixture() {
   writePayload("prisma/migrations/20260101000000_fixture/migration.sql", "-- fixture\n");
   writePayload("package.json", "{}\n");
   writePayload("yarn.lock", "# fixture\n");
-  const env = { ...process.env, SOURCE_SHA: sourceSha, ARTIFACT_NAME: name, BUILD_IMAGE: image, BUILD_PLATFORM: "linux/amd64", BUILD_ARCHITECTURE: "amd64", NODE_VERSION: "v20.0.0", YARN_VERSION: "1.22.22", BUILD_DURATION_MS: "7", BUILD_STARTED_AT: "2026-01-01T00:00:00Z", GITHUB_EVENT_NAME: "pull_request", GITHUB_WORKFLOW: "contract", GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "3", GITHUB_REF: "refs/pull/1/merge", GITHUB_REPOSITORY: "test/test", GITHUB_SERVER_URL: "https://github.com" };
+  const env = {
+    ...process.env,
+    SOURCE_SHA: sourceSha,
+    GITHUB_SHA: options.candidate ? sourceSha : "",
+    ARTIFACT_NAME: name,
+    BUILD_IMAGE: image,
+    BUILD_PLATFORM: "linux/amd64",
+    BUILD_ARCHITECTURE: "amd64",
+    NODE_VERSION: "v20.0.0",
+    YARN_VERSION: "1.22.22",
+    BUILD_DURATION_MS: "7",
+    BUILD_STARTED_AT: "2026-01-01T00:00:00Z",
+    GITHUB_EVENT_NAME: options.candidate ? "push" : "pull_request",
+    GITHUB_WORKFLOW: "contract",
+    GITHUB_RUN_ID: "42",
+    GITHUB_RUN_ATTEMPT: "3",
+    GITHUB_REF: options.candidate ? "refs/heads/main" : "refs/pull/1/merge",
+    GITHUB_WORKFLOW_PATH: options.candidate ? ".github/workflows/runtime-artifact.yml" : "local",
+    GITHUB_WORKFLOW_SHA: options.candidate ? "b".repeat(40) : "local",
+    GITHUB_REPOSITORY: options.candidate ? "tonykslee/ClashCookies" : "test/test",
+    GITHUB_REPOSITORY_ID: options.candidate ? "668452496" : "local",
+    GITHUB_REPOSITORY_OWNER_ID: options.candidate ? "18295450" : "local",
+    GITHUB_SERVER_URL: "https://github.com",
+  };
   execFileSync(process.execPath, [join(process.cwd(), "scripts", "runtime-artifact-manifest.js"), "--root", payload, "--output", join(payload, "runtime-artifact-manifest.json")], { cwd: process.cwd(), env, stdio: "pipe" });
   execFileSync("tar", ["--format=gnu", "-czf", archivePath, "-C", payload, "dist", "node_modules", "prisma", "package.json", "yarn.lock", "runtime-artifact-manifest.json"], { stdio: "pipe" });
   const archive = readFileSync(archivePath);
@@ -397,6 +422,29 @@ describe("runtime artifact validation", () => {
     if (!execFileSync("tar", ["--version"], { encoding: "utf8" }).startsWith("tar (GNU tar)")) return;
     const value = producerContractFixture();
     expect(runValidation(value.archivePath, "--expected-repository", "test/test", "--expected-workflow", "contract", "--expected-run-id", "42", "--expected-run-attempt", "3", "--expected-base-image", value.image, "--expected-base-image-digest", "sha256:" + "a".repeat(64))).toContain(sourceSha);
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it("emits and validates the explicit main-push production-candidate profile", () => {
+    if (process.platform === "win32") return;
+    if (!execFileSync("tar", ["--version"], { encoding: "utf8" }).startsWith("tar (GNU tar)")) return;
+    const value = producerContractFixture({ candidate: true });
+    expect(runValidation(
+      value.archivePath,
+      "--expected-repository", "tonykslee/ClashCookies",
+      "--expected-repository-id", "668452496",
+      "--expected-repository-owner-id", "18295450",
+      "--expected-workflow", "contract",
+      "--expected-run-id", "42",
+      "--expected-run-attempt", "3",
+      "--expected-event", "push",
+      "--expected-source-ref", "refs/heads/main",
+      "--expected-signer-workflow", ".github/workflows/runtime-artifact.yml",
+      "--expected-signer-revision", "b".repeat(40),
+      "--expected-artifact-class", "production-candidate-runtime-evidence-v1",
+      "--expected-base-image", value.image,
+      "--expected-base-image-digest", "sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5",
+    )).toContain(sourceSha);
     rmSync(value.root, { recursive: true, force: true });
   });
 

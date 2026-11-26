@@ -69,6 +69,11 @@ RELEASE_PRODUCER_WORKFLOW = ".github/workflows/runtime-artifact.yml"
 RELEASE_PLATFORM = "linux/amd64"
 RELEASE_IMAGE = "node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5"
 PRODUCTION_CANDIDATE_ARTIFACT_CLASS = "production-candidate-runtime-evidence-v1"
+PRODUCTION_CANDIDATE_PROFILE = "production-candidate-main-push-v1"
+CANDIDATE_EVIDENCE_CONTRACT = "clashcookies.production-candidate-evidence"
+CANDIDATE_EVIDENCE_VERSION = 1
+CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT = "production-candidate-selection-only"
+PRODUCTION_CANDIDATE_AUTHORIZATION_CONTEXT = CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT
 ARTIFACT_NAME_TEMPLATE = "runtime-artifact-{run_id}-{run_attempt}"
 MAX_ARTIFACT_ENTRIES = 64
 MAX_INNER_ARCHIVE_BYTES = MAX_ARCHIVE_BYTES
@@ -492,6 +497,11 @@ def validate_selection_request(request: ArtifactSelectionRequest) -> None:
         require(source_ref == request.run_head_ref and source_sha == request.run_head_sha, "main/development push source and head identity mismatch")
         for value in (request.pull_request_number, request.pull_request_head_sha, request.pull_request_head_ref, request.pull_request_base_sha, request.pull_request_base_ref):
             require(value is None, "push selection must not carry PR correlation")
+        if request.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
+            require(source_ref == RELEASE_SOURCE_REF, "production candidate selection must use the exact main ref")
+            require(request.authorization_context == CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT, "production candidate selection authorization context is invalid")
+        else:
+            require(source_ref != RELEASE_SOURCE_REF, "main push cannot be selected as development evidence")
     else:
         require(type(request.pull_request_number) is int and request.pull_request_number >= 1, "PR selection number is invalid")
         require(request.source_ref == f"refs/pull/{request.pull_request_number}/merge", "PR selection source ref is not canonical")
@@ -2212,6 +2222,161 @@ def validate_verified_result(
     )
 
 
+def _candidate_identity_from_selection(request: ArtifactSelectionRequest, selection: ExactArtifactSelection) -> TrustedReleaseIdentity:
+    """Build the candidate-shaped identity only after exact byte selection."""
+    require(request.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS, "candidate evidence requires the production-candidate artifact class")
+    require(request.authorization_context == CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT, "candidate evidence authorization context is invalid")
+    require(selection.byte_verified, "candidate evidence requires byte-verified artifact selection")
+    require(selection.archive_sha256 is not None and selection.archive_bytes is not None, "candidate evidence selection is missing inner archive identity")
+    identity = TrustedReleaseIdentity(
+        repository=request.repository,
+        repository_id=request.repository_id,
+        repository_owner_id=request.repository_owner_id,
+        source_ref=request.source_ref,
+        source_sha=request.source_sha,
+        event=request.event,
+        producer_workflow=RELEASE_PRODUCER_WORKFLOW,
+        producer_revision=request.signer_revision,
+        signer_workflow=request.signer_workflow,
+        signer_revision=request.signer_revision,
+        run_id=request.run_id,
+        run_attempt=request.run_attempt,
+        artifact_id=selection.artifact_id,
+        artifact_name=selection.artifact_name,
+        artifact_class=request.artifact_class,
+        artifact_service_zip_sha256=selection.artifact_service_zip_sha256,
+        artifact_service_zip_bytes=selection.artifact_service_zip_bytes,
+        archive_name=selection.archive_name,
+        archive_sha256=selection.archive_sha256,
+        archive_bytes=selection.archive_bytes,
+        platform=request.platform,
+        image=request.image,
+        image_digest=request.image_digest,
+        authorization_context=request.authorization_context,
+    )
+    validate_trusted_release_identity(identity)
+    return identity
+
+
+def _validate_candidate_provenance_diagnostic(value: Any, identity: TrustedReleaseIdentity) -> dict[str, Any]:
+    """Check serialized provenance as bounded evidence, never as an authority token."""
+    require(isinstance(value, dict), "candidate authenticated provenance evidence must be an object")
+    require(value.get("contract") == PROVENANCE_CONTRACT and value.get("contractVersion") == PROVENANCE_CONTRACT_VERSION, "candidate provenance contract is unsupported")
+    require(value.get("status") == "verified-provenance-only" and value.get("authenticated") is True, "candidate provenance is not authenticated evidence")
+    subject = value.get("subject")
+    require(isinstance(subject, dict) and subject.get("name") == identity.archive_name and subject.get("sha256") == identity.archive_sha256 and subject.get("bytes") == identity.archive_bytes and subject.get("artifactClass") == identity.artifact_class, "candidate provenance subject identity mismatch")
+    source = value.get("source")
+    require(isinstance(source, dict) and source.get("repository") == identity.repository and str(source.get("repositoryId")) == str(identity.repository_id) and source.get("ref") == identity.source_ref and source.get("gitSha") == identity.source_sha and source.get("event") == identity.event, "candidate provenance source identity mismatch")
+    signer = value.get("signer")
+    require(isinstance(signer, dict) and signer.get("workflow") == identity.signer_workflow and signer.get("revision") == identity.signer_revision and signer.get("runner") == GITHUB_HOSTED_RUNNER, "candidate provenance signer identity mismatch")
+    run = value.get("run")
+    require(isinstance(run, dict) and run.get("id") == identity.run_id and run.get("attempt") == identity.run_attempt, "candidate provenance run identity mismatch")
+    build = value.get("build")
+    require(isinstance(build, dict) and build.get("platform") == identity.platform and build.get("image") == identity.image and build.get("imageDigest") == identity.image_digest, "candidate provenance build identity mismatch")
+    verification = value.get("verification")
+    require(isinstance(verification, dict), "candidate provenance verification evidence is missing")
+    for field in ("subjectDigestAuthenticated", "certificateClaimsAuthenticated", "predicateClaimsWorkflowControlled", "runMetadataIndependentlyChecked"):
+        require(verification.get(field) is True, f"candidate provenance verification evidence is incomplete: {field}")
+    eligibility = value.get("productionEligibility")
+    require(isinstance(eligibility, dict) and eligibility.get("eligible") is False and eligibility.get("authoritative") is False, "candidate provenance must remain production-ineligible and non-authoritative")
+    return value
+
+
+def build_candidate_evidence(
+    request: ArtifactSelectionRequest,
+    selection: ExactArtifactSelection,
+    provenance_diagnostic: Any,
+    validation_diagnostic: Any,
+) -> dict[str, Any]:
+    """Return bounded handoff evidence for later independent authorization."""
+    identity = _candidate_identity_from_selection(request, selection)
+    provenance_evidence = _validate_candidate_provenance_diagnostic(provenance_diagnostic, identity)
+    require(isinstance(validation_diagnostic, dict), "candidate validation evidence must be an object")
+    require(validation_diagnostic.get("sha256") == identity.archive_sha256 and validation_diagnostic.get("archiveBytes") == identity.archive_bytes and validation_diagnostic.get("sourceSha") == identity.source_sha, "candidate validation evidence identity mismatch")
+    authenticated = validation_diagnostic.get("authenticatedProvenance")
+    require(isinstance(authenticated, dict), "candidate validation evidence is missing authenticated provenance")
+    _validate_candidate_provenance_diagnostic({**authenticated, "productionEligibility": provenance_evidence["productionEligibility"]}, identity)
+    measurements = validation_diagnostic.get("measurements")
+    require(isinstance(measurements, dict), "candidate validation measurements are missing")
+    return {
+        "contract": CANDIDATE_EVIDENCE_CONTRACT,
+        "version": CANDIDATE_EVIDENCE_VERSION,
+        "authoritative": False,
+        "productionEligible": False,
+        "authorizationRequired": True,
+        "bearerCredential": False,
+        "authorizationContext": identity.authorization_context,
+        "identity": {
+            "repository": identity.repository,
+            "repositoryId": identity.repository_id,
+            "repositoryOwnerId": identity.repository_owner_id,
+            "sourceRef": identity.source_ref,
+            "sourceSha": identity.source_sha,
+            "event": identity.event,
+            "producerWorkflow": identity.producer_workflow,
+            "producerRevision": identity.producer_revision,
+            "signerWorkflow": identity.signer_workflow,
+            "signerRevision": identity.signer_revision,
+            "runId": identity.run_id,
+            "runAttempt": identity.run_attempt,
+            "artifactId": identity.artifact_id,
+            "artifactName": identity.artifact_name,
+            "artifactClass": identity.artifact_class,
+            "artifactServiceZipSha256": identity.artifact_service_zip_sha256,
+            "artifactServiceZipBytes": identity.artifact_service_zip_bytes,
+            "archiveName": identity.archive_name,
+            "archiveSha256": identity.archive_sha256,
+            "archiveBytes": identity.archive_bytes,
+            "platform": identity.platform,
+            "image": identity.image,
+            "imageDigest": identity.image_digest,
+        },
+        "selection": {
+            "byteVerified": True,
+            "artifactId": selection.artifact_id,
+            "artifactName": selection.artifact_name,
+            "artifactServiceZipSha256": selection.artifact_service_zip_sha256,
+            "artifactServiceZipBytes": selection.artifact_service_zip_bytes,
+            "archiveName": selection.archive_name,
+            "archiveSha256": selection.archive_sha256,
+            "archiveBytes": selection.archive_bytes,
+        },
+        "authenticatedProvenance": provenance_evidence,
+        "validation": {
+            "sha256": validation_diagnostic["sha256"],
+            "archiveBytes": validation_diagnostic["archiveBytes"],
+            "sourceSha": validation_diagnostic["sourceSha"],
+            "extractedFootprintBytes": validation_diagnostic.get("extractedFootprintBytes"),
+            "measurements": measurements,
+        },
+        "limitations": [
+            "This record is non-authoritative evidence, not a trusted-root input or bearer credential.",
+            "Subsequent authorization and delivery must independently verify successful completion of the exact producer and validation run.",
+            "The current workflow does not observe its own completed run and does not authorize production eligibility.",
+        ],
+    }
+
+
+def candidate_evidence_request_from_json(value: Any) -> dict[str, Any]:
+    """Parse and validate the bounded inputs used to emit candidate handoff evidence."""
+    require(isinstance(value, dict) and set(value) == {"selectionRequest", "selection", "provenance", "validation"}, "candidate evidence request is malformed")
+    request = selection_request_from_json(value["selectionRequest"])
+    selected = value["selection"]
+    require(isinstance(selected, dict), "candidate evidence selection is malformed")
+    fields = {"artifactId", "artifactName", "artifactServiceZipSha256", "artifactServiceZipBytes", "archiveName", "archiveSha256", "archiveBytes", "byteVerified"}
+    require(set(selected) == fields, "candidate evidence selection fields are incomplete")
+    try:
+        selection = ExactArtifactSelection(
+            artifact_id=selected["artifactId"], artifact_name=selected["artifactName"],
+            artifact_service_zip_sha256=selected["artifactServiceZipSha256"], artifact_service_zip_bytes=selected["artifactServiceZipBytes"],
+            archive_name=selected["archiveName"], archive_sha256=selected["archiveSha256"], archive_bytes=selected["archiveBytes"],
+            byte_verified=selected["byteVerified"],
+        )
+    except TypeError as error:
+        fail(f"candidate evidence selection is malformed: {error}")
+    return {"request": request, "selection": selection, "provenance": value["provenance"], "validation": value["validation"]}
+
+
 def evaluate_production_eligibility(
     provenance: object,
     expected: object,
@@ -2285,12 +2450,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--selection-request")
     parser.add_argument("--selection-service-zip")
     parser.add_argument("--selection-download-service-zip")
+    parser.add_argument("--candidate-evidence-request")
+    parser.add_argument("--candidate-evidence-output")
     return parser.parse_args()
 
 
 def main() -> int:
     """Evaluate only an explicitly synthetic policy fixture for diagnostics."""
     args = parse_args()
+    if args.candidate_evidence_request:
+        require(args.candidate_evidence_output is not None, "candidate evidence output is required")
+        parsed = candidate_evidence_request_from_json(_read_bounded_json(Path(args.candidate_evidence_request), "candidate evidence request"))
+        evidence = build_candidate_evidence(parsed["request"], parsed["selection"], parsed["provenance"], parsed["validation"])
+        Path(args.candidate_evidence_output).write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps({"authoritative": False, "productionEligible": False, "candidateEvidence": True}, indent=2))
+        return 0
     if args.selection_request:
         request = selection_request_from_json(_read_bounded_json(Path(args.selection_request), "artifact selection request"))
         require(args.selection_service_zip is None or args.selection_download_service_zip is None, "selection ZIP input and download are mutually exclusive")
