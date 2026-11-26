@@ -168,6 +168,7 @@ jobs:
           test -s "$trusted_root"
           chmod 600 "$trusted_root"
           sha256sum "$trusted_root" | tee "$trusted_root_dir/trusted-root.sha256"
+          echo "CC_TRUSTED_ROOT_VERSION=$(sha256sum "$trusted_root" | awk '{ print substr($1,1,16) }')" >> "$GITHUB_ENV"
           echo "Trusted root was acquired before network-disabled verification and retained outside the checkout." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Select exact artifact-service ZIP and inner archive
@@ -431,8 +432,11 @@ jobs:
             echo "CC_RETENTION_SERVICE_ZIP=$custody/artifact-service.zip"
             echo "CC_RETENTION_BUNDLE=$custody/attestation-bundle.json"
             echo "CC_RETENTION_TRUSTED_ROOT=$custody/trusted_root.jsonl"
+            echo "CC_RETENTION_TRUSTED_ROOT_VERSION=$CC_TRUSTED_ROOT_VERSION"
             echo "CC_RETENTION_EXPECTED_IDENTITY=$custody/receiver-expected-identity.json"
             echo "CC_RETENTION_OFFLINE_EXPECTATION=$custody/receiver-offline-expectation.json"
+            echo "CC_RECEIVER_PUBLICATION_CAPTURE=$RUNNER_TEMP/receiver-publication-capture"
+            echo "CC_RETENTION_PUBLICATION_CAPTURE=$RUNNER_TEMP/receiver-publication-capture"
           } >> "$GITHUB_ENV"
 
       - name: Run mandatory genuine Linux/OpenSSH receiver integration
@@ -524,11 +528,12 @@ jobs:
           print("genuine pinned-gh offline attestation verification passed without token or network")
           PY
 
-      - name: Verify retained artifact offline after source expiry boundary
+      - name: Verify operationally retained artifact offline
         run: |
           set -euo pipefail
           test "$CC_REAL_RETENTION_OFFLINE" = 1
-          python -m unittest tests.test_durable_artifact_retention.DurableRetentionTests.test_real_retained_offline_verification -v
+          test -d "$CC_RETENTION_PUBLICATION_CAPTURE"
+          python -m unittest tests.test_durable_artifact_retention.DurableRetentionTests.test_real_retained_offline_verification_after_operational_delivery -v
 
       - name: Verify synthetic policy output is explicitly non-authoritative
         run: |

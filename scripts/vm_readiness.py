@@ -344,7 +344,7 @@ def _evidence_finding(name: str, value: Any, *, required: bool) -> Finding:
     status = payload.get("status")
     if status not in {"PASS", "BLOCKED", "UNKNOWN"}:
         return _finding(name, "UNKNOWN", "evidence-ambiguous", "evidence status is missing or ambiguous")
-    return _finding(name, status, "evidence-status", "sanitized status evidence accepted")
+    return _finding(name, "UNKNOWN", "evidence-authenticity-unavailable", "independent authenticity and finding-specific subject correspondence are not established by this collector")
 
 
 def collect(config: dict[str, Any]) -> dict[str, Any]:

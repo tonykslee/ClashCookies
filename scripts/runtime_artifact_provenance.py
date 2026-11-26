@@ -1529,6 +1529,10 @@ def run_gh_attestation_verify(
         command.extend(["--bundle", str(bundle)])
     if custom_trusted_root is not None:
         command.extend(["--custom-trusted-root", str(root_snapshot or custom_trusted_root)])
+    trusted_root_digest = None
+    trusted_root_bytes = None
+    if root_snapshot is not None:
+        trusted_root_digest, trusted_root_bytes = _sha256_file(root_snapshot, MAX_BUNDLE_BYTES, "custom trusted root snapshot")
     try:
         if deadline is not None:
             remaining = deadline - time.monotonic()
@@ -1552,6 +1556,9 @@ def run_gh_attestation_verify(
     require(len(document) == 1, "attestation selection is missing or ambiguous")
     require(isinstance(document[0], dict), "official GitHub attestation verifier returned an invalid result")
     document[0]["_verifierVersion"] = verified_version
+    if trusted_root_digest is not None and trusted_root_bytes is not None:
+        document[0]["_trustedRootSha256"] = trusted_root_digest
+        document[0]["_trustedRootBytes"] = trusted_root_bytes
     return document[0]
 
 

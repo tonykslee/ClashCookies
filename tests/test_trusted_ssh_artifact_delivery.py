@@ -109,6 +109,44 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 delivery._rename_noreplace(7, "staging-directory", "accepted-directory")
         self.assertEqual(context.exception.args, ("accepted-directory",))
 
+    @unittest.skipUnless(os.name == "posix", "retained publication retry filesystem verification requires POSIX")
+    def test_retry_matches_and_fsynchronizes_retained_verification_evidence(self) -> None:
+        with TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            checkout = root / "checkout"
+            publication = root / "publication"
+            checkout.mkdir(mode=0o700)
+            publication.mkdir(mode=0o700)
+            if os.name == "posix":
+                root.chmod(0o700)
+                checkout.chmod(0o700)
+                publication.chmod(0o700)
+            archive_name = development_identity().archive_name
+            archive_bytes = b"test"
+            service_zip = root / "artifact-service.zip"
+            with ZipFile(service_zip, "w") as archive:
+                archive.writestr(archive_name, archive_bytes)
+            digest = hashlib.sha256(service_zip.read_bytes()).hexdigest()
+            identity = replace(development_identity(), artifact_service_zip_sha256=digest, artifact_service_zip_bytes=service_zip.stat().st_size, archive_sha256=hashlib.sha256(archive_bytes).hexdigest())
+            destination = publication / "release"
+            destination.mkdir(mode=0o700)
+            (destination / "identity.json").write_text(json.dumps(delivery._identity_payload(identity), sort_keys=True, separators=(",", ":")), encoding="utf-8")
+            (destination / "artifact-service.zip").write_bytes(service_zip.read_bytes())
+            expected_verification = {}
+            for name, payload in (("verification-expectation.json", b"expectation\n"), ("verification-receipt.json", b"receipt\n"), ("trusted-root.jsonl", b"root\n")):
+                (destination / name).write_bytes(payload)
+                expected_verification[name] = (hashlib.sha256(payload).hexdigest(), len(payload))
+            for path in destination.iterdir():
+                if os.name == "posix":
+                    path.chmod(0o600)
+            self.assertEqual(delivery.identity_from_json(json.loads((destination / "identity.json").read_text(encoding="utf-8"))), identity)
+            self.assertEqual(delivery.provenance._sha256_file(destination / "artifact-service.zip", delivery.MAX_SERVICE_ZIP_BYTES, "test service")[0], identity.artifact_service_zip_sha256)
+            self.assertEqual({path.name for path in destination.iterdir()}, {"identity.json", "artifact-service.zip", *expected_verification})
+            self.assertTrue(delivery._payload_matches(destination, identity, expected_verification=expected_verification))
+            delivery._fsync_existing_publication(destination, None, None, expected_verification)
+            (destination / "verification-receipt.json").write_bytes(b"substituted\n")
+            self.assertFalse(delivery._payload_matches(destination, identity, expected_verification=expected_verification))
+
     def test_synthetic_authorization_fixture_uses_delivery_provenance_module(self) -> None:
         identity = synthetic_canonical_identity()
         self.assertIs(type(identity), delivery.provenance.TrustedReleaseIdentity)
@@ -501,7 +539,11 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             tampered["signature"]["value"] = base64.b64encode(b"\0" * 64).decode("ascii")
             with self.assertRaises(delivery.provenance.ProvenanceError):
                 delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=tampered, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
-            journal.consume(envelope, identity, allowlist, trust, operation="forward-release", now=now)
+            store = delivery.retention.RetentionStore(publication, repository_root=checkout, require_durable=False)
+            store.consume_reserved_authorization(result.identity_sha256, envelope, allowlist, trust, journal, operation="forward-release", now=now)
+            self.assertEqual(store.load()["releases"][result.identity_sha256]["reconciliation"]["authorization"], "consumed")
+            with self.assertRaises(delivery.provenance.ProvenanceError):
+                journal.consume(envelope, identity, allowlist, trust, operation="forward-release", now=now)
             with self.assertRaises(delivery.provenance.ProvenanceError):
                 delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
 
@@ -755,6 +797,11 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 with self.assertRaisesRegex(delivery.DeliveryError, "[Hh]ost key"):
                     deliver()
                 self.assertEqual((custody_state(receiving), custody_state(publication)), changed_before, "changed-host-key rejection mutated receiver or publication custody")
+                capture = Path(os.environ["CC_RECEIVER_PUBLICATION_CAPTURE"])
+                self.assertTrue(capture.is_absolute(), "publication capture path must be absolute")
+                self.assertFalse(capture.exists(), "publication capture path must be exclusive")
+                shutil.copytree(publication, capture)
+                self.assertTrue((capture / "retention-state.json").is_file(), "operational publication did not retain durable metadata")
             finally:
                 stop_server(server)
 

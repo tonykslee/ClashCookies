@@ -214,10 +214,11 @@ Rules:
 
 ## FB-028B-2b-3 retention/readiness checkpoint (repository-verified, 2026-11-25)
 
-- Implemented on the feature branch: identity-bound durable retention metadata, first-legacy rollback baseline representation, shared delivery/retention/GC locking, atomic metadata durability, bounded dry-run/explicit GC, shared-filesystem byte/inode admission, conservative interrupted-operation handling, and sanitized repository-local readiness assessment.
-- Retained evidence remains independent of GitHub Actions expiry. Authorization private keys, trusted roots, replay journals, and historical verification evidence remain distinct custody domains; no production key, credential, trust anchor, or VM change was created.
+- Implemented on the feature branch: identity-bound durable retention metadata, first-legacy rollback baseline representation, shared delivery/retention/GC locking, metadata-nonmutating dry-run plus bounded explicit GC, shared-filesystem byte/inode admission, conservative interrupted-operation handling, independent-root historical verification, and sanitized repository-local readiness assessment.
+- Retained evidence remains independent of GitHub Actions expiry. Authorization private keys, independently pinned trusted roots, replay journals, and historical verification evidence remain distinct custody domains; offline re-verification requires the independently maintained root and exact root version/fingerprint used at intake. A reserved authorization is consumed only through the real replay-journal contract; retained evidence cannot authorize a new activation. No production key, credential, trust anchor, or VM change was created.
 - Production eligibility, runtime activation, wrapper installation, live VM access, and `dev`→`main` promotion remain disabled/NO-GO. Current live VM compatibility, installed wrapper identity, native ABI, health, scheduler singleton, trust custody, and actual resource headroom are not repository-verified.
 - FB-027 kernel-backed deployment locking, candidate ownership, bounded cleanup, health gates, rollback preservation, and resource admission remain the deployment authority. Authenticated artifact retention must coordinate with detached-volume cleanup by using exact ownership labels/metadata and must never broaden cleanup to unknown resources.
+- Retention GC is dry-run by default and does not mutate metadata; bounded execution revalidates ownership under the shared lock. Interrupted or missing-path deletion transactions remain recovery-protected until an explicit transaction-owner acknowledgment, and no automatic disk-pressure eviction is permitted.
 
 Current production and staging deployments are droplet-based.
 

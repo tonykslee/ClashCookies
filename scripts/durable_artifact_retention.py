@@ -42,6 +42,7 @@ DEFAULT_TEMP_INODES = 4096
 DEFAULT_PERSISTENT_INODES = 32
 MAX_INVENTORY_ENTRIES = 256
 MAX_GC_TRANSACTIONS = MAX_GC_DELETIONS
+MAX_RELEASE_ENTRIES = 16
 
 
 class RetentionError(RuntimeError):
@@ -318,6 +319,7 @@ def assess_storage(
     temporary_bytes: int,
     persistent_bytes: int,
     preserved_runtime_bytes: int = 0,
+    incremental_preservation_bytes: int = 0,
     database_headroom_bytes: int = 0,
     host_headroom_bytes: int = 0,
     temporary_inodes: int = DEFAULT_TEMP_INODES,
@@ -326,7 +328,7 @@ def assess_storage(
 ) -> StorageAssessment:
     """Account once per filesystem, including overlapping receiving/publication roots."""
     _require(paths and all(isinstance(path, Path) for path in paths), "storage admission requires explicit paths")
-    for value, label in ((temporary_bytes, "temporary_bytes"), (persistent_bytes, "persistent_bytes"), (preserved_runtime_bytes, "preserved_runtime_bytes"), (database_headroom_bytes, "database_headroom_bytes"), (host_headroom_bytes, "host_headroom_bytes"), (temporary_inodes, "temporary_inodes"), (persistent_inodes, "persistent_inodes"), (headroom_inodes, "headroom_inodes")):
+    for value, label in ((temporary_bytes, "temporary_bytes"), (persistent_bytes, "persistent_bytes"), (preserved_runtime_bytes, "preserved_runtime_bytes"), (incremental_preservation_bytes, "incremental_preservation_bytes"), (database_headroom_bytes, "database_headroom_bytes"), (host_headroom_bytes, "host_headroom_bytes"), (temporary_inodes, "temporary_inodes"), (persistent_inodes, "persistent_inodes"), (headroom_inodes, "headroom_inodes")):
         _nonnegative_int(value, label)
     values: dict[int, dict[str, Any]] = {}
     for path in paths:
@@ -350,7 +352,7 @@ def assess_storage(
                 inode_verified = False
             values[device] = {"device": device, "free_bytes": free_bytes, "free_inodes": free_inodes, "inode_verified": inode_verified, "paths": 0}
         values[device]["paths"] += 1
-    required_bytes = max(0, temporary_bytes) + max(0, persistent_bytes) + max(0, database_headroom_bytes) + max(0, host_headroom_bytes)
+    required_bytes = max(0, temporary_bytes) + max(0, persistent_bytes) + max(0, incremental_preservation_bytes) + max(0, database_headroom_bytes) + max(0, host_headroom_bytes)
     required_inodes = max(0, temporary_inodes) + max(0, persistent_inodes) + max(0, headroom_inodes)
     observed = []
     blocked = False
@@ -359,6 +361,7 @@ def assess_storage(
         item["required_bytes"] = required_bytes
         item["required_inodes"] = required_inodes
         item["preserved_runtime_bytes"] = max(0, preserved_runtime_bytes)
+        item["incremental_preservation_bytes"] = max(0, incremental_preservation_bytes)
         item["status"] = "PASS" if item["free_bytes"] >= required_bytes and item["free_inodes"] >= required_inodes else "BLOCKED"
         blocked = blocked or item["status"] == "BLOCKED"
         observed.append(item)
@@ -375,7 +378,12 @@ def retained_bytes(publication_root: Path) -> int:
             continue
         release_count += 1
         _require(release_count <= MAX_INVENTORY_ENTRIES, "retained storage inventory exceeds its bound")
+        entries: list[Path] = []
         for path in child.iterdir():
+            if len(entries) >= MAX_RELEASE_ENTRIES:
+                _fail("retained release inventory exceeds its bound")
+            entries.append(path)
+        for path in entries:
             _require(not path.is_symlink(), "retained storage contains a symlink")
             if path.is_file():
                 total += path.stat().st_size
@@ -471,7 +479,7 @@ class RetentionStore:
             receipt = _read_json(publication / "verification-receipt.json", MAX_EVIDENCE_BYTES, "verification receipt")
             _require(isinstance(expectation, dict) and expectation.get("contract") == "clashcookies.retained-verification-expectation" and expectation.get("version") == 1 and expectation.get("identity_sha256") == digest, "verification expectation is not bound to the immutable identity")
             _require(isinstance(receipt, dict) and receipt.get("status") == "verified-provenance-only" and receipt.get("authenticated") is True, "verification receipt is not authenticated provenance evidence")
-            root_digest, root_bytes = provenance._sha256_file(publication / "trusted-root.jsonl", MAX_BUNDLE_BYTES, "retained trusted root")
+            root_digest, root_bytes = provenance._sha256_file(publication / "trusted-root.jsonl", provenance.MAX_BUNDLE_BYTES, "retained trusted root")
             _require(expectation.get("trusted_root_sha256") == root_digest and expectation.get("trusted_root_bytes") == root_bytes, "retained trust root is not bound to the verification expectation")
         roles = ["pending"] + (["reserved"] if authorization_reserved else [])
         def apply() -> None:
@@ -511,21 +519,39 @@ class RetentionStore:
             with activity_lock(self.root):
                 apply()
 
-    def retire(self, identity_sha256: str, *, authorization_resolution: str | None = None, recovery_resolution: str | None = None, assume_locked: bool = False) -> None:
+    def retire(self, identity_sha256: str, *, assume_locked: bool = False) -> None:
         def apply() -> None:
             state = self.load()
             _require(identity_sha256 in state["releases"], "cannot retire unknown release")
             _require(state["active_release"] != identity_sha256 and state["previous_known_good_release"] != identity_sha256, "active or previous known-good release cannot be retired")
             _require(all(operation["release_sha256"] != identity_sha256 for operation in state["operations"].values()), "in-flight release cannot be retired")
             record = state["releases"][identity_sha256]
-            if set(record["roles"]) & {"pending", "reserved"}:
-                _require(authorization_resolution in {"released", "consumed", "expired"}, "pending or reserved release requires an explicit authorization reconciliation resolution before retirement")
-                record["reconciliation"]["authorization"] = authorization_resolution
-            if set(record["roles"]) & {"in-flight", "recovery-protected"}:
-                _require(recovery_resolution in {"recovered", "abandoned"}, "recovery-protected release requires an explicit recovery resolution before retirement")
-                record["reconciliation"]["recovery"] = recovery_resolution
+            _require(not (set(record["roles"]) & {"pending", "reserved", "in-flight", "recovery-protected"}), "release protection requires actual authorization or recovery reconciliation before retirement")
             record["roles"] = ["retired"]
             record["retired_at"] = _now()
+            self._save(state)
+        if assume_locked:
+            apply()
+        else:
+            with activity_lock(self.root):
+                apply()
+
+    def consume_reserved_authorization(self, identity_sha256: str, envelope: Any, revision_allowlist: Any, trust: Any, journal: Any, *, operation: str, now: Any = None, assume_locked: bool = False) -> None:
+        """Consume a real replay-journal reservation before removing reserved protection."""
+        def apply() -> None:
+            state = self.load()
+            record = state["releases"].get(identity_sha256)
+            _require(record is not None and "reserved" in record["roles"], "retained release has no reserved authorization to consume")
+            identity = provenance.TrustedReleaseIdentity(**record["identity"])
+            journal.consume(envelope, identity, revision_allowlist, trust, operation=operation, now=now)
+            state = self.load()
+            record = state["releases"].get(identity_sha256)
+            _require(record is not None and "reserved" in record["roles"], "retained reservation changed during authorization consumption")
+            record["roles"] = [role for role in record["roles"] if role not in {"pending", "reserved"}]
+            if not record["roles"]:
+                record["roles"] = ["retired"]
+                record["retired_at"] = _now()
+            record["reconciliation"]["authorization"] = "consumed"
             self._save(state)
         if assume_locked:
             apply()
@@ -601,10 +627,15 @@ class RetentionStore:
             if execute and os.name != "posix":
                 _fail("destructive retention garbage collection requires POSIX descriptor safety")
             state = self.load()
-            self._recover_gc_transactions(state)
+            if execute:
+                self._recover_gc_transactions(state)
+            else:
+                self._validate_gc_transactions(state)
             state = self.load()
             inventory = self.inventory(assume_locked=True)
-            candidates = [] if inventory.get("truncated") else [item for item in inventory["known"] if item["eligible"]]
+            transaction_ids = set(state["gc_transactions"])
+            transaction_unknown = [{"publication": transaction["publication_name"], "reason": "gc-transaction-recovery-required"} for transaction in state["gc_transactions"].values() if not (self.root / transaction["publication_name"]).exists()]
+            candidates = [] if inventory.get("truncated") else [item for item in inventory["known"] if item["eligible"] and item["identity_sha256"] not in transaction_ids]
             candidates = candidates[:max_deletions]
             deleted: list[str] = []
             if execute:
@@ -627,24 +658,20 @@ class RetentionStore:
                     current["releases"].pop(digest, None)
                     current["gc_transactions"].pop(digest, None)
                     self._save(current)
-            return {"dry_run": not execute, "candidates": [item["identity_sha256"] for item in candidates], "deleted": deleted, "unknown": inventory["unknown"], "protected": [item["identity_sha256"] for item in inventory["known"] if not item["eligible"]]}
+            return {"dry_run": not execute, "candidates": [item["identity_sha256"] for item in candidates], "deleted": deleted, "unknown": inventory["unknown"] + transaction_unknown, "protected": [item["identity_sha256"] for item in inventory["known"] if not item["eligible"]] + sorted(transaction_ids)}
         if assume_locked:
             return collect()
         with activity_lock(self.root):
             return collect()
 
     def _recover_gc_transactions(self, state: dict[str, Any]) -> None:
+        self._validate_gc_transactions(state)
         changed = False
         for digest, transaction in list(state["gc_transactions"].items()):
             record = state["releases"].get(digest)
             path = self.root / transaction["publication_name"]
             if record is None or transaction["publication_name"] != f"release-{digest}":
                 _fail("retention GC transaction has conflicting ownership")
-            if not path.exists():
-                state["releases"].pop(digest, None)
-                state["gc_transactions"].pop(digest, None)
-                changed = True
-                continue
             if "recovery-protected" not in record["roles"]:
                 record["roles"].append("recovery-protected")
                 if "retired" in record["roles"]:
@@ -653,6 +680,36 @@ class RetentionStore:
                 changed = True
         if changed:
             self._save(state)
+
+    def _validate_gc_transactions(self, state: dict[str, Any]) -> None:
+        for digest, transaction in state["gc_transactions"].items():
+            _require(state["active_release"] != digest and state["previous_known_good_release"] != digest, "GC transaction references a protected release")
+            _require(not any(operation["release_sha256"] == digest for operation in state["operations"].values()), "GC transaction conflicts with an in-flight operation")
+            record = state["releases"].get(digest)
+            _require(record is not None and set(record["roles"]) <= {"retired", "recovery-protected"}, "GC transaction references an invalid release role")
+            path = self.root / transaction["publication_name"]
+            if path.exists():
+                self._verify_owned_release(path, record)
+
+    def acknowledge_gc_deletion(self, identity_sha256: str, owner: dict[str, int], *, assume_locked: bool = False) -> None:
+        """Explicitly finalize a missing-path GC transaction after owner review."""
+        def apply() -> None:
+            state = self.load()
+            transaction = state["gc_transactions"].get(identity_sha256)
+            record = state["releases"].get(identity_sha256)
+            _require(transaction is not None and record is not None, "GC deletion transaction is unknown")
+            _require(transaction["owner"] == owner and transaction["phase"] == "deleting", "GC deletion ownership confirmation is invalid")
+            _require(state["active_release"] != identity_sha256 and state["previous_known_good_release"] != identity_sha256, "cannot finalize protected GC deletion")
+            _require("recovery-protected" in record["roles"] and not (self.root / transaction["publication_name"]).exists(), "GC deletion is not explicitly recovery-ready")
+            _require(not any(operation["release_sha256"] == identity_sha256 for operation in state["operations"].values()), "GC deletion conflicts with an in-flight operation")
+            state["releases"].pop(identity_sha256, None)
+            state["gc_transactions"].pop(identity_sha256, None)
+            self._save(state)
+        if assume_locked:
+            apply()
+        else:
+            with activity_lock(self.root):
+                apply()
 
     def _verify_owned_release(self, path: Path, record: dict[str, Any]) -> dict[str, int]:
         _require(path.parent == self.root and path.name == record["publication_name"], "release ownership path changed")
@@ -694,6 +751,7 @@ class RetentionStore:
                     _require(child_stat.st_uid == os.geteuid() and stat.S_IMODE(child_stat.st_mode) & 0o077 == 0, "release evidence ownership changed during deletion")
                 os.unlink(name, dir_fd=release_fd)
             os.rmdir(path.name, dir_fd=parent_fd)
+            _fsync_directory(self.root, required=True)
         except OSError as error:
             _fail(f"descriptor-bound release deletion failed: {error}")
         finally:
@@ -701,8 +759,20 @@ class RetentionStore:
                 os.close(release_fd)
             os.close(parent_fd)
 
-    def verify_retained_offline(self, identity_sha256: str, *, verifier_version: str | None = None) -> dict[str, Any]:
-        """Re-verify retained evidence using only the retained artifact and trust material."""
+    def verify_retained_offline(self, identity_sha256: str, *, trusted_root: Path, trusted_root_version: str, verifier_version: str | None = None) -> dict[str, Any]:
+        """Re-verify retained evidence with an independently maintained trust root."""
+        _require(isinstance(trusted_root_version, str) and len(trusted_root_version) == 16 and all(char in "0123456789abcdef" for char in trusted_root_version), "independent trusted-root version is malformed")
+        _require(trusted_root.is_absolute() and trusted_root.is_file() and not trusted_root.is_symlink(), "independent trusted root is unavailable")
+        for base in (self.root, self.repository_root):
+            try:
+                trusted_root.resolve().relative_to(base.resolve())
+            except ValueError:
+                pass
+            else:
+                _fail("independent trusted root must be outside retention and checkout roots")
+        trusted_metadata = _private_regular_file(trusted_root, "independent trusted root")
+        if os.name == "posix":
+            _require(trusted_metadata.st_uid == os.geteuid() and stat.S_IMODE(trusted_metadata.st_mode) & 0o077 == 0, "independent trusted root is not private")
         with activity_lock(self.root):
             state = self.load()
             record = state["releases"].get(identity_sha256)
@@ -717,8 +787,9 @@ class RetentionStore:
             _require(isinstance(expectation, dict) and expectation.get("contract") == "clashcookies.retained-verification-expectation" and expectation.get("version") == 1, "retained verification expectation is not bound")
             _require(expectation.get("identity_sha256") == identity_sha256, "retained verification expectation identity is not bound")
             _require(isinstance(receipt, dict) and receipt.get("status") == "verified-provenance-only" and receipt.get("authenticated") is True, "retained verification receipt is not an authenticated receipt")
-            root_digest, root_bytes = provenance._sha256_file(path / "trusted-root.jsonl", MAX_BUNDLE_BYTES, "retained trusted root")
-            _require(expectation.get("trusted_root_sha256") == root_digest and expectation.get("trusted_root_bytes") == root_bytes, "retained trusted root does not match the verification expectation")
+            retained_root_digest, retained_root_bytes = provenance._sha256_file(path / "trusted-root.jsonl", provenance.MAX_BUNDLE_BYTES, "retained trusted root")
+            root_digest, root_bytes = provenance._sha256_file(trusted_root, provenance.MAX_BUNDLE_BYTES, "independent trusted root")
+            _require(expectation.get("trusted_root_sha256") == root_digest == retained_root_digest and expectation.get("trusted_root_bytes") == root_bytes == retained_root_bytes and expectation.get("trusted_root_version") == trusted_root_version, "trusted-root version, fingerprint, or retained snapshot does not match the verification expectation")
             identity = record["identity"]
             with tempfile.TemporaryDirectory(prefix="retained-verify-", dir=self.root) as directory_name:
                 temporary = Path(directory_name)
@@ -735,7 +806,7 @@ class RetentionStore:
                             remaining -= len(chunk)
                         _require(source.read(1) == b"", "retained archive exceeds the verification limit")
                 actual_version = verifier_version or expectation.get("verifier_version", provenance.SUPPORTED_GH_VERSION)
-                verified = provenance.run_gh_attestation_verify(archive_path, bundle=path / "attestation-bundle.json", repository=expectation["repository"], signer_workflow=expectation["signer_workflow"], signer_revision=expectation["signer_revision"], source_ref=expectation["source_ref"], source_sha=expectation["source_sha"], verifier_version=actual_version, custom_trusted_root=path / "trusted-root.jsonl", offline=True, repository_root=self.repository_root, excluded_roots=(self.repository_root,))
+                verified = provenance.run_gh_attestation_verify(archive_path, bundle=path / "attestation-bundle.json", repository=expectation["repository"], signer_workflow=expectation["signer_workflow"], signer_revision=expectation["signer_revision"], source_ref=expectation["source_ref"], source_sha=expectation["source_sha"], verifier_version=actual_version, custom_trusted_root=trusted_root, offline=True, repository_root=self.repository_root, excluded_roots=(self.repository_root, self.root))
                 authenticated = provenance.validate_verified_result(verified, archive_name=identity["archive_name"], archive_digest=identity["archive_sha256"], archive_bytes=identity["archive_bytes"], expected=expectation, run_metadata=None, require_run_metadata=False)
                 return authenticated.diagnostic_json()
 

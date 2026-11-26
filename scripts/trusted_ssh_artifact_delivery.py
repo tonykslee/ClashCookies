@@ -61,6 +61,7 @@ MAX_SIDECAR_BYTES = MAX_CHECKSUM_BYTES + MAX_MANIFEST_BYTES
 MAX_TEMPORARY_BYTES = (4 * MAX_SERVICE_ZIP_BYTES) + (3 * provenance.MAX_BUNDLE_BYTES) + (2 * provenance.MAX_ARCHIVE_BYTES) + MAX_SIDECAR_BYTES + MAX_VALIDATOR_EXPANDED_BYTES
 DEFAULT_DATABASE_HEADROOM_BYTES = 512 * 1024 * 1024
 DEFAULT_HOST_HEADROOM_BYTES = 256 * 1024 * 1024
+DEFAULT_INCREMENTAL_PRESERVATION_BYTES = provenance.MAX_ARCHIVE_BYTES
 ALLOWED_FILES = {"artifact-service.zip", "attestation-bundle.json", "authorization-envelope.json"}
 
 
@@ -80,6 +81,7 @@ class DeliveryLimits:
     max_temporary_bytes: int = MAX_TEMPORARY_BYTES
     database_headroom_bytes: int = DEFAULT_DATABASE_HEADROOM_BYTES
     host_headroom_bytes: int = DEFAULT_HOST_HEADROOM_BYTES
+    incremental_preservation_bytes: int = DEFAULT_INCREMENTAL_PRESERVATION_BYTES
 
 
 @dataclass(frozen=True)
@@ -661,14 +663,14 @@ def _read_json_file(path: Path, maximum: int, label: str) -> Any:
         _fail(f"{label} is malformed: {error}")
 
 
-def _payload_matches(path: Path, identity: Any, expected_bundle: tuple[str, int] | None = None, expected_authorization: tuple[str, int] | None = None) -> bool:
+def _payload_matches(path: Path, identity: Any, expected_bundle: tuple[str, int] | None = None, expected_authorization: tuple[str, int] | None = None, expected_verification: dict[str, tuple[str, int]] | None = None) -> bool:
     try:
         metadata = os.lstat(path)
         if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             return False
         if os.name == "posix" and (metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) & 0o077):
             return False
-        expected_names = {"identity.json", "artifact-service.zip"} | ({"attestation-bundle.json"} if expected_bundle is not None else set()) | ({"authorization-envelope.json"} if expected_authorization is not None else set())
+        expected_names = {"identity.json", "artifact-service.zip"} | ({"attestation-bundle.json"} if expected_bundle is not None else set()) | ({"authorization-envelope.json"} if expected_authorization is not None else set()) | (set(expected_verification) if expected_verification is not None else set())
         if {child.name for child in path.iterdir()} != expected_names:
             return False
         actual = identity_from_json(_read_json_file(path / "identity.json", 128 * 1024, "published identity"))
@@ -686,6 +688,10 @@ def _payload_matches(path: Path, identity: Any, expected_bundle: tuple[str, int]
             authorization_digest, authorization_size = provenance._sha256_file(path / "authorization-envelope.json", provenance.MAX_AUTHORIZATION_RECORD_BYTES, "published authorization envelope")
             if (authorization_digest, authorization_size) != expected_authorization:
                 return False
+        if expected_verification is not None:
+            for name, expected in expected_verification.items():
+                if provenance._sha256_file(path / name, MAX_BUNDLE_BYTES, f"published {name}") != expected:
+                    return False
         with _owned_temp_directory(path.parent, "clashcookies-publication-verify-") as verification_owner:
             verification = verification_owner.path
             assert verification is not None
@@ -700,8 +706,9 @@ def _payload_matches(path: Path, identity: Any, expected_bundle: tuple[str, int]
         return False
 
 
-def _fsync_existing_publication(path: Path, expected_bundle: tuple[str, int] | None, expected_authorization: tuple[str, int] | None) -> None:
-    for name in ("identity.json", "artifact-service.zip", "attestation-bundle.json", "authorization-envelope.json"):
+def _fsync_existing_publication(path: Path, expected_bundle: tuple[str, int] | None, expected_authorization: tuple[str, int] | None, expected_verification: dict[str, tuple[str, int]] | None = None) -> None:
+    names = ["identity.json", "artifact-service.zip", "attestation-bundle.json", "authorization-envelope.json"] + list(expected_verification or {})
+    for name in names:
         candidate = path / name
         if candidate.exists():
             descriptor = os.open(candidate, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -713,6 +720,9 @@ def _fsync_existing_publication(path: Path, expected_bundle: tuple[str, int] | N
         _require((provenance._sha256_file(path / "attestation-bundle.json", MAX_BUNDLE_BYTES, "published attestation bundle")) == expected_bundle, "published attestation bundle changed before retry acknowledgment")
     if expected_authorization is not None:
         _require((provenance._sha256_file(path / "authorization-envelope.json", provenance.MAX_AUTHORIZATION_RECORD_BYTES, "published authorization envelope")) == expected_authorization, "published authorization evidence changed before retry acknowledgment")
+    if expected_verification is not None:
+        for name, expected in expected_verification.items():
+            _require(provenance._sha256_file(path / name, MAX_BUNDLE_BYTES, f"published {name}") == expected, f"published {name} changed before retry acknowledgment")
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
     try:
         os.fsync(descriptor)
@@ -720,7 +730,7 @@ def _fsync_existing_publication(path: Path, expected_bundle: tuple[str, int] | N
         os.close(descriptor)
 
 
-def _publish_payload(staging: Path, publication_root: Path, identity: Any, expected_bundle: tuple[str, int] | None = None, expected_authorization: tuple[str, int] | None = None, staging_owner: _OwnedTempDirectory | None = None) -> tuple[Path, bool]:
+def _publish_payload(staging: Path, publication_root: Path, identity: Any, expected_bundle: tuple[str, int] | None = None, expected_authorization: tuple[str, int] | None = None, expected_verification: dict[str, tuple[str, int]] | None = None, staging_owner: _OwnedTempDirectory | None = None) -> tuple[Path, bool]:
     destination = publication_root / _safe_publication_name(identity)
     _require(staging.parent.absolute() == publication_root.absolute(), "publication staging must be directly inside the configured publication directory")
     _attempt_bytes(staging, MAX_TEMPORARY_BYTES)
@@ -736,11 +746,11 @@ def _publish_payload(staging: Path, publication_root: Path, identity: Any, expec
         os.fsync(root_descriptor)
         current_metadata = os.lstat(publication_root)
         _require((current_metadata.st_dev, current_metadata.st_ino) == (root_metadata.st_dev, root_metadata.st_ino), "publication directory changed during publication")
-        _require(_payload_matches(destination, identity, expected_bundle, expected_authorization), "new publication failed retained-content verification")
+        _require(_payload_matches(destination, identity, expected_bundle, expected_authorization, expected_verification), "new publication failed retained-content verification")
         return destination, False
     except FileExistsError:
-        _require(_payload_matches(destination, identity, expected_bundle, expected_authorization), "conflicting existing publication or incomplete publication")
-        _fsync_existing_publication(destination, expected_bundle, expected_authorization)
+        _require(_payload_matches(destination, identity, expected_bundle, expected_authorization, expected_verification), "conflicting existing publication or incomplete publication")
+        _fsync_existing_publication(destination, expected_bundle, expected_authorization, expected_verification)
         os.fsync(root_descriptor)
         return destination, True
     finally:
@@ -768,7 +778,7 @@ def _write_snapshot(snapshot: provenance.ZipSnapshot, destination: Path) -> None
         _fail(f"verified artifact snapshot copy failed: {error}")
 
 
-def _publication_payload(staging: Path, identity: Any, service_zip_snapshot: provenance.ZipSnapshot, bundle: Path | None, authorization_envelope: Any | None = None, *, verification_expectation: dict[str, Any] | None = None, verification_receipt: dict[str, Any] | None = None, trusted_root: Path | None = None) -> tuple[tuple[str, int] | None, tuple[str, int] | None]:
+def _publication_payload(staging: Path, identity: Any, service_zip_snapshot: provenance.ZipSnapshot, bundle: Path | None, authorization_envelope: Any | None = None, *, verification_expectation: dict[str, Any] | None = None, verification_receipt: dict[str, Any] | None = None, trusted_root: Path | None = None, trusted_root_expected: tuple[str, int] | None = None) -> tuple[tuple[str, int] | None, tuple[str, int] | None, dict[str, tuple[str, int]] | None]:
     identity_payload = json.dumps(_identity_payload(identity), sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
     provenance._write_private_bytes(staging / "identity.json", identity_payload, "published identity")
     target = staging / "artifact-service.zip"
@@ -785,6 +795,7 @@ def _publication_payload(staging: Path, identity: Any, service_zip_snapshot: pro
         authorization_result = hashlib.sha256(payload).hexdigest(), len(payload)
     else:
         authorization_result = None
+    verification_result = None
     if verification_expectation is not None and verification_receipt is not None and trusted_root is not None:
         expectation_copy = staging / "verification-expectation.json"
         expectation_payload = provenance._canonical_json(verification_expectation) + b"\n"
@@ -792,8 +803,15 @@ def _publication_payload(staging: Path, identity: Any, service_zip_snapshot: pro
         receipt_copy = staging / "verification-receipt.json"
         receipt_payload = provenance._canonical_json(verification_receipt) + b"\n"
         provenance._write_private_bytes(receipt_copy, receipt_payload, "published verification receipt")
-        _bounded_copy(trusted_root, staging / "trusted-root.jsonl", MAX_BUNDLE_BYTES, "published trusted root")
-    return bundle_result, authorization_result
+        root_result = _bounded_copy(trusted_root, staging / "trusted-root.jsonl", MAX_BUNDLE_BYTES, "published trusted root")
+        if trusted_root_expected is not None:
+            _require(root_result == trusted_root_expected, "trusted root changed after authenticated verification")
+        verification_result = {
+            "verification-expectation.json": (hashlib.sha256(expectation_payload).hexdigest(), len(expectation_payload)),
+            "verification-receipt.json": (hashlib.sha256(receipt_payload).hexdigest(), len(receipt_payload)),
+            "trusted-root.jsonl": root_result,
+        }
+    return bundle_result, authorization_result, verification_result
 
 
 def _assert_delivery_storage(receiving_root: Path, limits: DeliveryLimits, publication_root: Path | None = None) -> None:
@@ -811,6 +829,7 @@ def _assert_delivery_storage(receiving_root: Path, limits: DeliveryLimits, publi
             temporary_bytes=limits.max_temporary_bytes,
             persistent_bytes=limits.max_service_zip_bytes + (3 * limits.max_bundle_bytes) + limits.max_authorization_bytes,
             preserved_runtime_bytes=retention.retained_bytes(publication_root),
+            incremental_preservation_bytes=limits.incremental_preservation_bytes,
             database_headroom_bytes=limits.database_headroom_bytes,
             host_headroom_bytes=limits.host_headroom_bytes,
         )
@@ -819,8 +838,14 @@ def _assert_delivery_storage(receiving_root: Path, limits: DeliveryLimits, publi
 
 def _register_retained_delivery(publication_root: Path, repository_root: Path, destination: Path, identity: Any, *, authorization_reserved: bool) -> None:
     store = retention.RetentionStore(publication_root, repository_root=repository_root)
-    store.initialize(assume_locked=True)
+    store.load()
     store.register_delivery(_identity_payload(identity), destination, authorization_reserved=authorization_reserved, assume_locked=True)
+
+
+@contextmanager
+def _initialized_retention(publication_root: Path, repository_root: Path) -> Iterator[None]:
+    retention.RetentionStore(publication_root, repository_root=repository_root).initialize(assume_locked=True)
+    yield
 
 
 class _OwnedTempDirectory:
@@ -935,7 +960,7 @@ def publish_development_delivery(
     _assert_private_input(service_zip, repository_root, "received artifact-service ZIP", limits.max_service_zip_bytes)
     _assert_private_input(attestation_bundle, repository_root, "received attestation bundle", limits.max_bundle_bytes)
     _assert_private_input(trusted_root, repository_root, "independently configured trusted root", limits.max_bundle_bytes)
-    with _receiver_lock(receiving_root), retention.activity_lock(publication_root), _owned_temp_directory(receiving_root, "clashcookies-delivery-") as attempt_owner:
+    with _receiver_lock(receiving_root), retention.activity_lock(publication_root), _initialized_retention(publication_root, repository_root), _owned_temp_directory(receiving_root, "clashcookies-delivery-") as attempt_owner:
         _assert_delivery_storage(receiving_root, limits, publication_root)
         attempt = attempt_owner.path
         assert attempt is not None
@@ -969,11 +994,13 @@ def publish_development_delivery(
             with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload_owner:
                 payload = payload_owner.path
                 assert payload is not None
-                root_digest, root_bytes = provenance._sha256_file(trusted_root, MAX_BUNDLE_BYTES, "independently configured trusted root")
+                root_digest = verified.get("_trustedRootSha256")
+                root_bytes = verified.get("_trustedRootBytes")
+                _require(isinstance(root_digest, str) and provenance.SHA256_RE.fullmatch(root_digest) is not None and type(root_bytes) is int and root_bytes > 0, "authenticated verifier did not return the exact trusted-root snapshot identity")
                 retained_expectation = dict(offline_expectation)
                 retained_expectation.update({"contract": "clashcookies.retained-verification-expectation", "version": 1, "identity_sha256": _identity_digest(expected_identity), "trusted_root_sha256": root_digest, "trusted_root_bytes": root_bytes, "trusted_root_version": root_digest[:16], "verifier_version": offline_expectation.get("verifier_version", provenance.SUPPORTED_GH_VERSION)})
-                expected_bundle, _ = _publication_payload(payload, expected_identity, snapshot, attestation_bundle, verification_expectation=retained_expectation, verification_receipt=authenticated.diagnostic_json(), trusted_root=trusted_root)
-                destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle, staging_owner=payload_owner)
+                expected_bundle, _, expected_verification = _publication_payload(payload, expected_identity, snapshot, attestation_bundle, verification_expectation=retained_expectation, verification_receipt=authenticated.diagnostic_json(), trusted_root=trusted_root, trusted_root_expected=(root_digest, root_bytes))
+                destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle, expected_verification=expected_verification, staging_owner=payload_owner)
                 _register_retained_delivery(publication_root, repository_root, destination, expected_identity, authorization_reserved=False)
         finally:
             provenance.close_zip_snapshot(snapshot)
@@ -1007,7 +1034,7 @@ def publish_synthetic_authorized_delivery_for_test(
     _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory")])
     _assert_delivery_storage(receiving_root, DeliveryLimits(), publication_root)
     _assert_private_input(service_zip, repository_root, "received artifact-service ZIP", MAX_SERVICE_ZIP_BYTES)
-    with _receiver_lock(receiving_root), retention.activity_lock(publication_root), _owned_temp_directory(receiving_root, "clashcookies-synthetic-delivery-") as attempt_owner:
+    with _receiver_lock(receiving_root), retention.activity_lock(publication_root), _initialized_retention(publication_root, repository_root), _owned_temp_directory(receiving_root, "clashcookies-synthetic-delivery-") as attempt_owner:
         _assert_delivery_storage(receiving_root, DeliveryLimits(), publication_root)
         attempt = attempt_owner.path
         assert attempt is not None
@@ -1019,7 +1046,7 @@ def publish_synthetic_authorized_delivery_for_test(
             with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload_owner:
                 payload = payload_owner.path
                 assert payload is not None
-                _, expected_authorization = _publication_payload(payload, expected_identity, snapshot, None, authorization_envelope)
+                _, expected_authorization, _ = _publication_payload(payload, expected_identity, snapshot, None, authorization_envelope)
                 destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_authorization=expected_authorization, staging_owner=payload_owner)
                 _register_retained_delivery(publication_root, repository_root, destination, expected_identity, authorization_reserved=True)
         finally:
@@ -1239,7 +1266,7 @@ def receive_command(args: argparse.Namespace) -> int:
     _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory"), (expected_identity_path, "expected identity")])
     limits = DeliveryLimits()
     _assert_delivery_storage(receiving_root, limits, publication_root)
-    with _receiver_deadline(limits.max_elapsed_seconds) as deadline, _receiver_lock(receiving_root), retention.activity_lock(publication_root), _owned_temp_directory(receiving_root, "clashcookies-receive-") as attempt_owner:
+    with _receiver_deadline(limits.max_elapsed_seconds) as deadline, _receiver_lock(receiving_root), retention.activity_lock(publication_root), _initialized_retention(publication_root, repository_root), _owned_temp_directory(receiving_root, "clashcookies-receive-") as attempt_owner:
         _assert_delivery_storage(receiving_root, limits, publication_root)
         attempt = attempt_owner.path
         assert attempt is not None
@@ -1290,11 +1317,13 @@ def receive_command(args: argparse.Namespace) -> int:
             with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload_owner:
                 payload = payload_owner.path
                 assert payload is not None
-                root_digest, root_bytes = provenance._sha256_file(trusted_root, MAX_BUNDLE_BYTES, "independently configured trusted root")
+                root_digest = verified.get("_trustedRootSha256")
+                root_bytes = verified.get("_trustedRootBytes")
+                _require(isinstance(root_digest, str) and provenance.SHA256_RE.fullmatch(root_digest) is not None and type(root_bytes) is int and root_bytes > 0, "authenticated verifier did not return the exact trusted-root snapshot identity")
                 retained_expectation = dict(expectation)
                 retained_expectation.update({"contract": "clashcookies.retained-verification-expectation", "version": 1, "identity_sha256": _identity_digest(expected_identity), "trusted_root_sha256": root_digest, "trusted_root_bytes": root_bytes, "trusted_root_version": root_digest[:16], "verifier_version": expectation.get("verifier_version", provenance.SUPPORTED_GH_VERSION)})
-                expected_bundle, _ = _publication_payload(payload, expected_identity, snapshot, files["attestation-bundle.json"], verification_expectation=retained_expectation, verification_receipt=authenticated.diagnostic_json(), trusted_root=trusted_root)
-                destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle, staging_owner=payload_owner)
+                expected_bundle, _, expected_verification = _publication_payload(payload, expected_identity, snapshot, files["attestation-bundle.json"], verification_expectation=retained_expectation, verification_receipt=authenticated.diagnostic_json(), trusted_root=trusted_root, trusted_root_expected=(root_digest, root_bytes))
+                destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle, expected_verification=expected_verification, staging_owner=payload_owner)
                 _register_retained_delivery(publication_root, repository_root, destination, expected_identity, authorization_reserved=False)
             result = DeliveryResult("retry-success" if retry else "published", str(destination), _identity_digest(expected_identity), expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes, expected_identity.archive_sha256, expected_identity.archive_bytes, True, False)
             print(json.dumps(asdict(result), sort_keys=True))
