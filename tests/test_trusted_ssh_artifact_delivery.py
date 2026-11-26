@@ -541,7 +541,10 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=tampered, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
             store = delivery.retention.RetentionStore(publication, repository_root=checkout, require_durable=False)
             store.consume_reserved_authorization(result.identity_sha256, envelope, allowlist, trust, journal, operation="forward-release", now=now)
-            self.assertEqual(store.load()["releases"][result.identity_sha256]["reconciliation"]["authorization"], "consumed")
+            record = store.load()["releases"][result.identity_sha256]
+            self.assertEqual(record["reconciliation"]["authorization"], "consumed")
+            self.assertIn("recovery-protected", record["roles"])
+            self.assertNotIn(result.identity_sha256, store.garbage_collect()["candidates"])
             with self.assertRaises(delivery.provenance.ProvenanceError):
                 journal.consume(envelope, identity, allowlist, trust, operation="forward-release", now=now)
             with self.assertRaises(delivery.provenance.ProvenanceError):

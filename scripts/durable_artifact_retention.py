@@ -88,6 +88,18 @@ def _safe_directory(path: Path, label: str) -> None:
         _require(stat.S_IMODE(metadata.st_mode) & 0o077 == 0, f"{label} is not private")
 
 
+def _mutable_directory(path: Path, label: str) -> None:
+    """Validate a checkout boundary without applying private-custody rules."""
+    _require(path.is_absolute(), f"{label} must be absolute")
+    try:
+        metadata = os.lstat(path)
+    except OSError as error:
+        _fail(f"{label} is unavailable: {error}")
+    _require(stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), f"{label} must be a real directory")
+    if os.name == "posix":
+        _require(metadata.st_uid == os.geteuid(), f"{label} is not owner-controlled")
+
+
 def _private_regular_file(path: Path, label: str) -> os.stat_result:
     try:
         metadata = os.lstat(path)
@@ -372,12 +384,12 @@ def retained_bytes(publication_root: Path) -> int:
     total = 0
     if not publication_root.exists():
         return 0
-    release_count = 0
+    entry_count = 0
     for child in publication_root.iterdir():
+        entry_count += 1
+        _require(entry_count <= MAX_INVENTORY_ENTRIES, "retained storage inventory exceeds its bound")
         if not child.is_dir() or child.is_symlink() or not child.name.startswith("release-"):
             continue
-        release_count += 1
-        _require(release_count <= MAX_INVENTORY_ENTRIES, "retained storage inventory exceeds its bound")
         entries: list[Path] = []
         for path in child.iterdir():
             if len(entries) >= MAX_RELEASE_ENTRIES:
@@ -398,7 +410,7 @@ class RetentionStore:
         self.repository_root = repository_root
         self.require_durable = require_durable
         _safe_directory(publication_root, "publication root")
-        _safe_directory(repository_root, "repository root")
+        _mutable_directory(repository_root, "repository root")
         try:
             publication_root.resolve().relative_to(repository_root.resolve())
         except ValueError:
@@ -434,6 +446,7 @@ class RetentionStore:
         state["updated_at"] = _now()
         temporary = self.root / f".{STATE_FILENAME}.tmp-{os.getpid()}-{time.time_ns()}"
         payload = _canonical(state) + b"\n"
+        _require(len(payload) <= MAX_STATE_BYTES, "retention metadata exceeds its serialized size limit")
         descriptor = None
         try:
             descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -547,10 +560,11 @@ class RetentionStore:
             state = self.load()
             record = state["releases"].get(identity_sha256)
             _require(record is not None and "reserved" in record["roles"], "retained reservation changed during authorization consumption")
-            record["roles"] = [role for role in record["roles"] if role not in {"pending", "reserved"}]
-            if not record["roles"]:
-                record["roles"] = ["retired"]
-                record["retired_at"] = _now()
+            record["roles"] = [role for role in record["roles"] if role not in {"pending", "reserved", "retired"}]
+            _require(set(record["roles"]) <= {"in-flight", "recovery-protected"}, "retained authorization has an unexpected lifecycle role")
+            if "recovery-protected" not in record["roles"]:
+                record["roles"].append("recovery-protected")
+            record["retired_at"] = None
             record["reconciliation"]["authorization"] = "consumed"
             self._save(state)
         if assume_locked:
@@ -627,10 +641,7 @@ class RetentionStore:
             if execute and os.name != "posix":
                 _fail("destructive retention garbage collection requires POSIX descriptor safety")
             state = self.load()
-            if execute:
-                self._recover_gc_transactions(state)
-            else:
-                self._validate_gc_transactions(state)
+            self._validate_gc_transactions(state)
             state = self.load()
             inventory = self.inventory(assume_locked=True)
             transaction_ids = set(state["gc_transactions"])
@@ -663,6 +674,22 @@ class RetentionStore:
             return collect()
         with activity_lock(self.root):
             return collect()
+
+    def recover(self, *, assume_locked: bool = False) -> dict[str, Any]:
+        """Explicitly reconcile interrupted GC transactions under the shared lock."""
+        def apply() -> dict[str, Any]:
+            state = self.load()
+            self._recover_gc_transactions(state)
+            final_state = self.load()
+            recovered = sorted(
+                digest for digest, record in final_state["releases"].items()
+                if "recovery-protected" in record["roles"] and digest in final_state["gc_transactions"]
+            )
+            return {"recovered": recovered, "dry_run": False}
+        if assume_locked:
+            return apply()
+        with activity_lock(self.root):
+            return apply()
 
     def _recover_gc_transactions(self, state: dict[str, Any]) -> None:
         self._validate_gc_transactions(state)
@@ -807,12 +834,17 @@ class RetentionStore:
                         _require(source.read(1) == b"", "retained archive exceeds the verification limit")
                 actual_version = verifier_version or expectation.get("verifier_version", provenance.SUPPORTED_GH_VERSION)
                 verified = provenance.run_gh_attestation_verify(archive_path, bundle=path / "attestation-bundle.json", repository=expectation["repository"], signer_workflow=expectation["signer_workflow"], signer_revision=expectation["signer_revision"], source_ref=expectation["source_ref"], source_sha=expectation["source_sha"], verifier_version=actual_version, custom_trusted_root=trusted_root, offline=True, repository_root=self.repository_root, excluded_roots=(self.repository_root, self.root))
+                _require(verified.get("_trustedRootSha256") == root_digest and verified.get("_trustedRootBytes") == root_bytes, "offline verifier did not report the independently pinned trusted-root snapshot")
                 authenticated = provenance.validate_verified_result(verified, archive_name=identity["archive_name"], archive_digest=identity["archive_sha256"], archive_bytes=identity["archive_bytes"], expected=expectation, run_metadata=None, require_run_metadata=False)
-                return authenticated.diagnostic_json()
+                fresh_receipt = authenticated.diagnostic_json()
+                _require(receipt == fresh_receipt, "retained verification receipt does not match reverified authenticated provenance")
+                return fresh_receipt
 
 
-def gc_command(publication_root: Path, repository_root: Path, *, execute: bool, max_deletions: int) -> dict[str, Any]:
+def gc_command(publication_root: Path, repository_root: Path, *, execute: bool, max_deletions: int, recover: bool = False) -> dict[str, Any]:
     store = RetentionStore(publication_root, repository_root=repository_root)
+    if recover:
+        return store.recover()
     return store.garbage_collect(execute=execute, max_deletions=max_deletions)
 
 
@@ -821,11 +853,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="bounded durable artifact retention inventory and GC")
     parser.add_argument("--publication-root", required=True)
     parser.add_argument("--repository-root", required=True)
-    parser.add_argument("--execute", action="store_true", help="execute the separately requested bounded deletion")
+    action_group = parser.add_mutually_exclusive_group()
+    action_group.add_argument("--execute", action="store_true", help="execute the separately requested bounded deletion")
+    action_group.add_argument("--recover", action="store_true", help="explicitly reconcile interrupted deletion transactions")
     parser.add_argument("--max-deletions", type=int, default=MAX_GC_DELETIONS)
     args = parser.parse_args()
     try:
-        print(json.dumps(gc_command(Path(args.publication_root), Path(args.repository_root), execute=args.execute, max_deletions=args.max_deletions), sort_keys=True))
+        print(json.dumps(gc_command(Path(args.publication_root), Path(args.repository_root), execute=args.execute, recover=args.recover, max_deletions=args.max_deletions), sort_keys=True))
     except (RetentionError, OSError, ValueError) as error:
         print(f"[durable-artifact-retention] blocked: {error}", file=__import__("sys").stderr)
         raise SystemExit(1)

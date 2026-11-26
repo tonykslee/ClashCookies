@@ -189,12 +189,20 @@ class DurableRetentionTests(unittest.TestCase):
         result = restarted.garbage_collect()
         self.assertEqual(restarted.state_path.read_bytes(), before_dry_run)
         self.assertNotIn(first, result["candidates"])
+        self.assertIn(first, result["protected"])
+        self.assertEqual(restarted.load()["releases"][first]["roles"], ["retired"])
+        recovery = restarted.recover()
+        self.assertEqual(recovery["recovered"], [first])
         self.assertIn("recovery-protected", restarted.load()["releases"][first]["roles"])
         owner = restarted.load()["gc_transactions"][first]["owner"]
         shutil.rmtree(self.publication / f"release-{first}")
         restarted = retention.RetentionStore(self.publication, repository_root=self.repo, require_durable=False)
+        before_missing_dry_run = restarted.state_path.read_bytes()
         restarted.garbage_collect()
+        self.assertEqual(restarted.state_path.read_bytes(), before_missing_dry_run)
         self.assertIn(first, restarted.load()["releases"])
+        with self.assertRaises(retention.RetentionError):
+            restarted.acknowledge_gc_deletion(first, {**owner, "st_ino": owner["st_ino"] + 1})
         restarted.acknowledge_gc_deletion(first, owner)
         self.assertNotIn(first, restarted.load()["releases"])
 
@@ -210,7 +218,11 @@ class DurableRetentionTests(unittest.TestCase):
         process = subprocess.run([sys.executable, "-c", child_code, str(ROOT / "scripts"), str(self.publication), str(self.repo)], check=False)
         self.assertEqual(process.returncode, -signal.SIGKILL)
         restarted = retention.RetentionStore(self.publication, repository_root=self.repo, require_durable=False)
-        restarted.garbage_collect()
+        before_dry_run = restarted.state_path.read_bytes()
+        result = restarted.garbage_collect()
+        self.assertEqual(restarted.state_path.read_bytes(), before_dry_run)
+        self.assertNotIn(first, result["candidates"])
+        restarted.recover()
         self.assertIn("recovery-protected", restarted.load()["releases"][first]["roles"])
 
     @unittest.skipUnless(os.name == "posix", "inode admission regression requires POSIX statvfs")
@@ -282,6 +294,26 @@ class DurableRetentionTests(unittest.TestCase):
         self.assertEqual(assessment.filesystems[0]["paths"], 2)
         self.assertEqual(assessment.required_bytes, 3)
 
+    def test_metadata_serialized_size_is_bounded_before_write(self) -> None:
+        before = self.store.state_path.read_bytes()
+        state = self.store.load()
+        state["legacy_baseline"]["description"] = "x" * (retention.MAX_STATE_BYTES + 1)
+        with self.assertRaisesRegex(retention.RetentionError, "serialized size limit"):
+            self.store._save(state)
+        self.assertEqual(self.store.state_path.read_bytes(), before)
+
+    def test_storage_inventory_bounds_unknown_entries(self) -> None:
+        for index in range(retention.MAX_INVENTORY_ENTRIES + 1):
+            (self.publication / f"unknown-{index}").mkdir()
+        with self.assertRaisesRegex(retention.RetentionError, "inventory exceeds its bound"):
+            retention.retained_bytes(self.publication)
+
+    @unittest.skipUnless(os.name == "posix", "checkout permission compatibility requires POSIX")
+    def test_mutable_checkout_may_be_non_private_but_publication_remains_private(self) -> None:
+        self.repo.chmod(0o755)
+        store = retention.RetentionStore(self.publication, repository_root=self.repo, require_durable=False)
+        self.assertEqual(store.load()["previous_known_good_release"], retention.LEGACY_BASELINE_ID)
+
     def test_incremental_runtime_preservation_reserve_affects_admission_without_double_counting_retained_bytes(self) -> None:
         assessment = retention.assess_storage([self.publication], temporary_bytes=1, persistent_bytes=2, preserved_runtime_bytes=100, incremental_preservation_bytes=7)
         self.assertEqual(assessment.required_bytes, 10)
@@ -351,6 +383,8 @@ class DurableRetentionTests(unittest.TestCase):
             with retention.activity_lock(self.publication, timeout_seconds=1):
                 pass
         finally:
+            if process.stdout is not None:
+                process.stdout.close()
             process.kill() if process.poll() is None else None
             process.wait()
 
