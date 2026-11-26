@@ -591,16 +591,20 @@ def _validate_inner_archive(archive: Path, checksum: Path, manifest: Path, ident
         embedded = validator.read_json_bytes(metadata_files["runtime-artifact-manifest.json"], "embedded manifest")
         external = validator.read_sidecar_json(manifest, limits, "published manifest")
         context = expected_context or {}
-        expected = argparse.Namespace(
+        expected = validator.make_manifest_expectation(
             expected_sha=identity.source_sha,
             expected_platform=identity.platform,
-            expected_repository=context.get("repository", identity.repository),
+            expected_repository=identity.repository,
+            expected_repository_id=str(identity.repository_id),
+            expected_repository_owner_id=str(identity.repository_owner_id),
             expected_workflow=context.get("workflow_name"),
             expected_run_id=str(context.get("run_id", identity.run_id)),
             expected_run_attempt=str(context.get("run_attempt", identity.run_attempt)),
             expected_event=context.get("event", identity.event),
             expected_source_ref=context.get("source_ref", identity.source_ref),
             expected_artifact_class=identity.artifact_class,
+            expected_signer_workflow=identity.signer_workflow,
+            expected_signer_revision=identity.signer_revision,
             expected_base_image=identity.image,
             expected_base_image_digest=identity.image_digest,
         )

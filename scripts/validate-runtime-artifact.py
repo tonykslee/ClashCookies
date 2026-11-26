@@ -85,6 +85,65 @@ class Limits:
 
 
 @dataclass(frozen=True)
+class ManifestExpectation:
+    """Complete independent expectation contract consumed by manifest validation."""
+
+    expected_sha: str
+    expected_platform: str
+    expected_repository: str | None
+    expected_repository_id: str | None
+    expected_repository_owner_id: str | None
+    expected_workflow: str | None
+    expected_run_id: str | None
+    expected_run_attempt: str | None
+    expected_event: str | None
+    expected_source_ref: str | None
+    expected_artifact_class: str
+    expected_signer_workflow: str | None
+    expected_signer_revision: str | None
+    expected_base_image: str | None
+    expected_base_image_digest: str | None
+
+
+def make_manifest_expectation(
+    *,
+    expected_sha: str,
+    expected_platform: str,
+    expected_repository: str | None,
+    expected_repository_id: str | None,
+    expected_repository_owner_id: str | None,
+    expected_workflow: str | None,
+    expected_run_id: str | None,
+    expected_run_attempt: str | None,
+    expected_event: str | None,
+    expected_source_ref: str | None,
+    expected_artifact_class: str,
+    expected_signer_workflow: str | None,
+    expected_signer_revision: str | None,
+    expected_base_image: str | None,
+    expected_base_image_digest: str | None,
+) -> ManifestExpectation:
+    """Construct the full validator contract; callers must bind every field explicitly."""
+    return ManifestExpectation(
+        expected_sha=expected_sha,
+        expected_platform=expected_platform,
+        expected_repository=expected_repository,
+        expected_repository_id=expected_repository_id,
+        expected_repository_owner_id=expected_repository_owner_id,
+        expected_workflow=expected_workflow,
+        expected_run_id=expected_run_id,
+        expected_run_attempt=expected_run_attempt,
+        expected_event=expected_event,
+        expected_source_ref=expected_source_ref,
+        expected_artifact_class=expected_artifact_class,
+        expected_signer_workflow=expected_signer_workflow,
+        expected_signer_revision=expected_signer_revision,
+        expected_base_image=expected_base_image,
+        expected_base_image_digest=expected_base_image_digest,
+    )
+
+
+@dataclass(frozen=True)
 class Entry:
     name: str
     kind: str
@@ -621,7 +680,7 @@ def validate_checksum(archive_path: Path, checksum_path: Path, digest: str) -> N
     require(match.group(2) == archive_path.name, "checksum metadata names a different archive")
 
 
-def validate_manifest(manifest: dict, archive_name: str, archive_size: int, digest: str, expected: argparse.Namespace, embedded: bool = False) -> None:
+def validate_manifest(manifest: dict, archive_name: str, archive_size: int, digest: str, expected: ManifestExpectation, embedded: bool = False) -> None:
     if expected.expected_artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
         require(expected.expected_event == RELEASE_EVENT, "candidate manifest expectation event must be push")
         require(expected.expected_source_ref == RELEASE_SOURCE_REF, "candidate manifest expectation source ref must be main")
@@ -1154,6 +1213,23 @@ def peak_memory_bytes() -> int | None:
 
 def main() -> int:
     args = parse_args()
+    expected = make_manifest_expectation(
+        expected_sha=args.expected_sha,
+        expected_platform=args.expected_platform,
+        expected_repository=args.expected_repository,
+        expected_repository_id=str(args.expected_repository_id) if args.expected_repository_id is not None else None,
+        expected_repository_owner_id=str(args.expected_repository_owner_id) if args.expected_repository_owner_id is not None else None,
+        expected_workflow=args.expected_workflow,
+        expected_run_id=str(args.expected_run_id) if args.expected_run_id is not None else None,
+        expected_run_attempt=str(args.expected_run_attempt) if args.expected_run_attempt is not None else None,
+        expected_event=args.expected_event,
+        expected_source_ref=args.expected_source_ref,
+        expected_artifact_class=args.expected_artifact_class,
+        expected_signer_workflow=args.expected_signer_workflow,
+        expected_signer_revision=args.expected_signer_revision,
+        expected_base_image=args.expected_base_image,
+        expected_base_image_digest=args.expected_base_image_digest,
+    )
     require(args.expected_artifact_class in {DEVELOPMENT_ARTIFACT_CLASS, PRODUCTION_CANDIDATE_ARTIFACT_CLASS}, "expected artifact class is unsupported")
     if args.expected_artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
         require(args.expected_repository == RELEASE_REPOSITORY, "candidate expected repository is not approved")
@@ -1243,8 +1319,8 @@ def main() -> int:
         snapshot.verify(digest)
         embedded = read_json_bytes(metadata_files["runtime-artifact-manifest.json"], "embedded manifest")
         external = read_sidecar_json(manifest_path, limits, "published manifest")
-        validate_manifest(embedded, snapshot.name, snapshot.size, digest, args, embedded=True)
-        validate_manifest(external, snapshot.name, snapshot.size, digest, args, embedded=False)
+        validate_manifest(embedded, snapshot.name, snapshot.size, digest, expected, embedded=True)
+        validate_manifest(external, snapshot.name, snapshot.size, digest, expected, embedded=False)
         compare_manifests(embedded, external)
         manifest_inputs = external["inputs"]
         require(archive_input_hashes(metadata_files, entries) == manifest_inputs, "packaged input hashes or migration inventory do not match manifest")

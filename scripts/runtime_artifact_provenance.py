@@ -2551,16 +2551,20 @@ def validate_candidate_archive_contents(service_zip: Path, identity: TrustedRele
         entries, metadata_files, file_hashes = validator.collect_entries(snapshot, limits)
         embedded = validator.read_json_bytes(metadata_files["runtime-artifact-manifest.json"], "embedded manifest")
         external = validator.read_sidecar_json(manifest, limits, "published manifest")
-        expected = argparse.Namespace(
+        expected = validator.make_manifest_expectation(
             expected_sha=identity.source_sha,
             expected_platform=identity.platform,
             expected_repository=identity.repository,
+            expected_repository_id=str(identity.repository_id),
+            expected_repository_owner_id=str(identity.repository_owner_id),
             expected_workflow=run_metadata.get("name"),
             expected_run_id=str(identity.run_id),
             expected_run_attempt=str(identity.run_attempt),
             expected_event=identity.event,
             expected_source_ref=identity.source_ref,
             expected_artifact_class=identity.artifact_class,
+            expected_signer_workflow=identity.signer_workflow,
+            expected_signer_revision=identity.signer_revision,
             expected_base_image=identity.image,
             expected_base_image_digest=identity.image_digest,
         )
