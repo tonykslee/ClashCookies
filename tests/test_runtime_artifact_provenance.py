@@ -5,8 +5,10 @@ from __future__ import annotations
 import copy
 import base64
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stdout
 import hashlib
 import importlib.util
+from io import StringIO
 import json
 import shutil
 import struct
@@ -493,6 +495,60 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
     def test_main_push_development_classification_is_rejected(self) -> None:
         with self.assertRaisesRegex(provenance.ProvenanceError, "main push cannot"):
             provenance.validate_selection_request(replace(main_selection_request(), artifact_class=provenance.DEVELOPMENT_ARTIFACT_CLASS, authorization_context="ci-selection-only"))
+
+    def test_candidate_classification_rejects_pr_and_local_contexts(self) -> None:
+        candidate_pr = replace(selection_request(), artifact_class=provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS, authorization_context=provenance.CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT)
+        with self.assertRaisesRegex(provenance.ProvenanceError, "event must be push"):
+            provenance.validate_selection_request(candidate_pr)
+        candidate_local = replace(candidate_pr, event="local")
+        with self.assertRaisesRegex(provenance.ProvenanceError, "event is unsupported"):
+            provenance.validate_selection_request(candidate_local)
+
+    def test_shared_attestation_verification_rejects_candidate_context_reclassification(self) -> None:
+        candidate_pr = expected()
+        candidate_pr["artifact_class"] = provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS
+        candidate_pr["source_ref"] = PR_SOURCE_REF
+        with self.assertRaisesRegex(provenance.ProvenanceError, "event must be push"):
+            provenance.validate_verified_result(verified_result(candidate_pr), archive_name=f"clashcookies-runtime-{SOURCE_SHA}.tar.gz", archive_digest=ARCHIVE_SHA, archive_bytes=101, expected=candidate_pr, run_metadata=run_metadata(candidate_pr))
+        development_main = expected("push")
+        development_main["source_ref"] = provenance.RELEASE_SOURCE_REF
+        with self.assertRaisesRegex(provenance.ProvenanceError, "main push cannot"):
+            provenance.validate_verified_result(verified_result(development_main), archive_name=f"clashcookies-runtime-{SOURCE_SHA}.tar.gz", archive_digest=ARCHIVE_SHA, archive_bytes=101, expected=development_main, run_metadata=run_metadata(development_main))
+
+    def test_candidate_handoff_consumes_actual_selector_cli_shape_and_requires_true_boolean(self) -> None:
+        request = main_selection_request()
+        identity = trusted_identity()
+        diagnostic = authoritative_evidence_for(identity).diagnostic_json()
+        diagnostic["productionEligibility"] = {"eligible": False, "authoritative": False, "reasonCode": "missing-trusted-release-identity", "detail": "candidate evidence only"}
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            request_path = root / "selection-request.json"
+            service_zip = root / "artifact-service.zip"
+            request_path.write_text(json.dumps(request.__dict__), encoding="utf-8")
+            with ZipFile(service_zip, "w") as archive:
+                archive.writestr(request.archive_name, b"runtime-bytes")
+            outer_digest = hashlib.sha256(service_zip.read_bytes()).hexdigest()
+            metadata = selection_artifact_metadata(request)
+            metadata.update({"digest": "sha256:" + outer_digest, "size_in_bytes": service_zip.stat().st_size})
+            with patch.object(provenance, "fetch_run_metadata", return_value=selection_run_metadata(request)), patch.object(provenance, "fetch_run_artifacts", return_value={"total_count": 1, "artifacts": [metadata]}), patch.object(provenance, "_now_utc", return_value=datetime(2026, 11, 25, 20, tzinfo=timezone.utc)), patch.object(sys, "argv", [str(SCRIPT), "--selection-request", str(request_path), "--selection-service-zip", str(service_zip)]):
+                output = StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(provenance.main(), 0)
+            selector_output = json.loads(output.getvalue())
+            self.assertIs(type(selector_output["byteVerified"]), bool)
+            self.assertTrue(selector_output["byteVerified"])
+            selected = dict(selector_output["selection"], byteVerified=selector_output["byteVerified"])
+            selection_request = json.loads(request_path.read_text(encoding="utf-8"))
+            parsed = provenance.candidate_evidence_request_from_json({"selectionRequest": selection_request, "selection": selected, "provenance": diagnostic, "validation": {"sha256": identity.archive_sha256, "archiveBytes": identity.archive_bytes, "sourceSha": identity.source_sha, "authenticatedProvenance": diagnostic, "measurements": {}}})
+            self.assertTrue(parsed["selection"].byte_verified)
+            for value in (None, False, 1, "true"):
+                malformed = {"selectionRequest": selection_request, "selection": dict(selected), "provenance": diagnostic, "validation": {"sha256": identity.archive_sha256, "archiveBytes": identity.archive_bytes, "sourceSha": identity.source_sha, "authenticatedProvenance": diagnostic, "measurements": {}}}
+                if value is None:
+                    malformed["selection"].pop("byteVerified")
+                else:
+                    malformed["selection"]["byteVerified"] = value
+                with self.subTest(byteVerified=value), self.assertRaisesRegex(provenance.ProvenanceError, "byteVerified"):
+                    provenance.candidate_evidence_request_from_json(malformed)
 
     def test_shared_cli_selection_validates_complete_pr_attempt_and_metadata_response(self) -> None:
         request = selection_request()

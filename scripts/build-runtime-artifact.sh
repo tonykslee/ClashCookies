@@ -59,7 +59,7 @@ docker run --rm --platform "${platform}" -i \
   -e "GITHUB_REPOSITORY=${GITHUB_REPOSITORY:-local}" \
   -e "GITHUB_REPOSITORY_ID=${GITHUB_REPOSITORY_ID:-local}" \
   -e "GITHUB_REPOSITORY_OWNER_ID=${GITHUB_REPOSITORY_OWNER_ID:-local}" \
-  -e "GITHUB_SHA=${GITHUB_SHA:-${source_sha}}" \
+  -e "GITHUB_SHA=${GITHUB_SHA:-}" \
   -e "GITHUB_SERVER_URL=${GITHUB_SERVER_URL:-}" \
   -e "ARTIFACT_NAME=${artifact_name}" \
   -e "BUILD_STARTED_AT=${started_at}" \

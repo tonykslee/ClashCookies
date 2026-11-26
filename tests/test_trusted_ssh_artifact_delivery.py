@@ -12,6 +12,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
+from types import SimpleNamespace
 import base64
 import ctypes
 import hashlib
@@ -151,6 +152,66 @@ class TrustedSshDeliveryTests(unittest.TestCase):
         identity = synthetic_canonical_identity()
         self.assertIs(type(identity), delivery.provenance.TrustedReleaseIdentity)
         delivery.provenance.validate_trusted_release_identity(identity)
+
+    def test_development_receiver_passes_explicit_class_to_manifest_validator(self) -> None:
+        identity = development_identity()
+
+        class FakeValidator:
+            class Limits:
+                pass
+
+            def __init__(self) -> None:
+                self.expected = []
+
+            def snapshot_source(self, _archive: Path, _limits: object, workspace_root: Path | None = None) -> object:
+                return SimpleNamespace(digest=identity.archive_sha256, size=identity.archive_bytes)
+
+            def validate_checksum(self, *_args: object) -> None:
+                return None
+
+            def preflight_metadata(self, *_args: object) -> None:
+                return None
+
+            def collect_entries(self, *_args: object) -> tuple[list[object], dict[str, Path], dict[str, str]]:
+                return [], {"runtime-artifact-manifest.json": Path("embedded-manifest")}, {}
+
+            def read_json_bytes(self, *_args: object) -> dict:
+                return {"artifact": {"artifactClass": delivery.provenance.DEVELOPMENT_ARTIFACT_CLASS}}
+
+            def read_sidecar_json(self, *_args: object) -> dict:
+                return {"inputs": {"fixture": "hash"}}
+
+            def validate_manifest(self, _manifest: dict, _archive_name: str, _size: int, _digest: str, expected: object, embedded: bool = False) -> None:
+                self.expected.append(expected)
+
+            def compare_manifests(self, *_args: object) -> None:
+                return None
+
+            def archive_input_hashes(self, *_args: object) -> dict[str, str]:
+                return {"fixture": "hash"}
+
+            def extract_archive(self, *_args: object) -> None:
+                return None
+
+            def cleanup_snapshot(self, *_args: object) -> None:
+                return None
+
+        validator = FakeValidator()
+        with TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            archive = root / identity.archive_name
+            checksum = root / f"{identity.archive_name}.sha256"
+            manifest = root / f"{identity.archive_name}.manifest.json"
+            staging = root / "staging"
+            archive.write_bytes(b"test")
+            checksum.write_text("checksum", encoding="utf-8")
+            manifest.write_text("{}", encoding="utf-8")
+            staging.mkdir()
+            with patch.object(delivery, "_load_validator", return_value=validator):
+                delivery._validate_inner_archive(archive, checksum, manifest, identity, staging)
+
+        self.assertEqual(len(validator.expected), 2)
+        self.assertTrue(all(getattr(expected, "expected_artifact_class") == delivery.provenance.DEVELOPMENT_ARTIFACT_CLASS for expected in validator.expected))
 
     def test_snapshot_copy_uses_the_zip_snapshot_sha256_contract(self) -> None:
         with TemporaryDirectory() as root_name:

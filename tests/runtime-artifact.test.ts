@@ -173,6 +173,29 @@ function runValidation(archivePath: string, ...extra: string[]) {
   return execFileSync(command, [...commandArgs, "--archive", archivePath, "--checksum", `${archivePath}.sha256`, "--manifest", `${archivePath}.manifest.json`, "--expected-sha", sourceSha, ...extra], { cwd: process.cwd(), encoding: "utf8", stdio: "pipe" });
 }
 
+function workflowRunBlocks(workflow: string): string[] {
+  const lines = readFileSync(workflow, "utf8").split(/\r?\n/);
+  const blocks: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^(\s*)run:\s*\|\s*$/.exec(lines[index]);
+    if (!match) continue;
+    const runIndent = match[1].length;
+    const body: string[] = [];
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      const line = lines[cursor];
+      if (line.trim() === "") {
+        body.push("");
+        continue;
+      }
+      const indentation = line.match(/^\s*/)?.[0].length ?? 0;
+      if (indentation <= runIndent) break;
+      body.push(line.slice(Math.min(line.length, runIndent + 2)));
+    }
+    blocks.push(body.join("\n"));
+  }
+  return blocks;
+}
+
 function attestationCli(root: string) {
   const script = join(root, "fake-gh.js");
   const source = `#!/usr/bin/env node
@@ -256,14 +279,16 @@ function refreshExternalIntegrity(archivePath: string) {
   writeFileSync(`${archivePath}.sha256`, `${digest}  ${archivePath.split(/[\\/]/).pop()}\n`);
 }
 
-function producerContractFixture(options: { candidate?: boolean } = {}) {
+function producerContractFixture(options: { candidate?: boolean; githubSha?: string; image?: string; platform?: string; architecture?: string } = {}) {
   const root = mkdtempSync(join(tmpdir(), "clashcookies-runtime-producer-contract-"));
   const payload = join(root, "payload");
   const name = `clashcookies-runtime-${sourceSha}.tar.gz`;
   const archivePath = join(root, name);
-  const image = options.candidate
+  const image = options.image ?? (options.candidate
     ? "node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5"
-    : "node:20-bookworm@sha256:" + "a".repeat(64);
+    : "node:20-bookworm@sha256:" + "a".repeat(64));
+  const platform = options.platform ?? "linux/amd64";
+  const architecture = options.architecture ?? platform.split("/", 2)[1];
   const writePayload = (name: string, content: string, mode = 0o644) => {
     const path = join(payload, ...name.split("/"));
     mkdirSync(dirname(path), { recursive: true });
@@ -284,11 +309,11 @@ function producerContractFixture(options: { candidate?: boolean } = {}) {
   const env = {
     ...process.env,
     SOURCE_SHA: sourceSha,
-    GITHUB_SHA: options.candidate ? sourceSha : "",
+    GITHUB_SHA: options.candidate ? (options.githubSha ?? sourceSha) : "",
     ARTIFACT_NAME: name,
     BUILD_IMAGE: image,
-    BUILD_PLATFORM: "linux/amd64",
-    BUILD_ARCHITECTURE: "amd64",
+    BUILD_PLATFORM: platform,
+    BUILD_ARCHITECTURE: architecture,
     NODE_VERSION: "v20.0.0",
     YARN_VERSION: "1.22.22",
     BUILD_DURATION_MS: "7",
@@ -315,6 +340,16 @@ function producerContractFixture(options: { candidate?: boolean } = {}) {
 }
 
 describe("runtime artifact validation", () => {
+  it("syntax-checks every actual workflow YAML Bash run block", () => {
+    const workflow = join(process.cwd(), ".github", "workflows", "runtime-artifact.yml");
+    const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+    const blocks = workflowRunBlocks(workflow);
+    expect(blocks.length).toBeGreaterThan(10);
+    for (const [index, block] of blocks.entries()) {
+      expect(() => execFileSync(bash, ["-n"], { input: `${block}\n`, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] })).not.toThrow(`workflow run block ${index + 1}`);
+    }
+  });
+
   it("normalizes group-writable, setgid, and sticky producer directories/files without following dependency symlinks", () => {
     if (process.platform === "win32") return;
     const root = mkdtempSync(join(tmpdir(), "clashcookies-runtime-permissions-test-"));
@@ -445,6 +480,27 @@ describe("runtime artifact validation", () => {
       "--expected-base-image", value.image,
       "--expected-base-image-digest", "sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5",
     )).toContain(sourceSha);
+    const manifestPath = `${value.archivePath}.manifest.json`;
+    const externalManifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { artifact: { artifactClass: string } };
+    externalManifest.artifact.artifactClass = "development-runtime-evidence";
+    writeFileSync(manifestPath, `${JSON.stringify(externalManifest, null, 2)}\n`);
+    expectValidationFailure(value.archivePath, "manifest artifact class", "--expected-repository", "tonykslee/ClashCookies", "--expected-repository-id", "668452496", "--expected-repository-owner-id", "18295450", "--expected-workflow", "contract", "--expected-run-id", "42", "--expected-run-attempt", "3", "--expected-event", "push", "--expected-source-ref", "refs/heads/main", "--expected-signer-workflow", ".github/workflows/runtime-artifact.yml", "--expected-signer-revision", "b".repeat(40), "--expected-artifact-class", "production-candidate-runtime-evidence-v1", "--expected-base-image", value.image, "--expected-base-image-digest", "sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5");
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it.each([
+    ["missing event SHA", { githubSha: "" }],
+    ["wrong event SHA", { githubSha: "f".repeat(40) }],
+    ["unapproved image", { image: "node:20-bookworm@sha256:" + "a".repeat(64) }],
+    ["unapproved platform", { platform: "linux/arm64", architecture: "arm64" }],
+    ["unapproved architecture", { architecture: "x64" }],
+  ] as const)("does not emit the candidate profile for %s", (_label, options) => {
+    if (process.platform === "win32") return;
+    if (!execFileSync("tar", ["--version"], { encoding: "utf8" }).startsWith("tar (GNU tar)")) return;
+    const value = producerContractFixture({ candidate: true, ...options });
+    const manifest = JSON.parse(readFileSync(join(value.root, "payload", "runtime-artifact-manifest.json"), "utf8")) as { artifact: { artifactClass: string }; identity: { kind: string } };
+    expect(manifest.artifact.artifactClass).toBe("development-runtime-evidence");
+    expect(manifest.identity.kind).not.toBe("production_candidate_main_push");
     rmSync(value.root, { recursive: true, force: true });
   });
 

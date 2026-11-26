@@ -317,7 +317,7 @@ jobs:
           mapfile -t bundles < <(find "$RUNNER_TEMP/retrieved-runtime-attestation" -maxdepth 2 -type f -name '*.json' -print)
           test "${#bundles[@]}" -eq 1
           bundle="${bundles[0]}"
-          validation_output="$(bash ./scripts/validate-runtime-artifact.sh \
+          bash ./scripts/validate-runtime-artifact.sh \
             --archive "$archive" \
             --checksum "$archive.sha256" \
             --manifest "$archive.manifest.json" \
@@ -364,7 +364,7 @@ jobs:
             --slurpfile selection "$RUNNER_TEMP/exact-selection.json" \
             --slurpfile provenance "$RUNNER_TEMP/authenticated-development-provenance.json" \
             --slurpfile validation "$RUNNER_TEMP/validation-output.json" \
-            '{selectionRequest:$selection_request[0],selection:$selection[0].selection,provenance:$provenance[0],validation:$validation[0]}' \
+            '{selectionRequest:$selection_request[0],selection:($selection[0].selection + {byteVerified:$selection[0].byteVerified}),provenance:$provenance[0],validation:$validation[0]}' \
             > "$RUNNER_TEMP/candidate-evidence-request.json"
           python scripts/runtime_artifact_provenance.py \
             --candidate-evidence-request "$RUNNER_TEMP/candidate-evidence-request.json" \

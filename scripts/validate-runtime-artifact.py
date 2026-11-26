@@ -622,6 +622,18 @@ def validate_checksum(archive_path: Path, checksum_path: Path, digest: str) -> N
 
 
 def validate_manifest(manifest: dict, archive_name: str, archive_size: int, digest: str, expected: argparse.Namespace, embedded: bool = False) -> None:
+    if expected.expected_artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
+        require(expected.expected_event == RELEASE_EVENT, "candidate manifest expectation event must be push")
+        require(expected.expected_source_ref == RELEASE_SOURCE_REF, "candidate manifest expectation source ref must be main")
+        require(expected.expected_repository == RELEASE_REPOSITORY, "candidate manifest expectation repository is not approved")
+        require(str(expected.expected_repository_id) == str(RELEASE_REPOSITORY_ID), "candidate manifest expectation repository ID is not approved")
+        require(str(expected.expected_repository_owner_id) == str(RELEASE_REPOSITORY_OWNER_ID), "candidate manifest expectation owner ID is not approved")
+        require(expected.expected_signer_workflow == RELEASE_SIGNER_WORKFLOW, "candidate manifest expectation signer workflow is not approved")
+        require(expected.expected_platform == RELEASE_PLATFORM, "candidate manifest expectation platform is unsupported")
+        require(expected.expected_base_image == RELEASE_IMAGE, "candidate manifest expectation runtime image is not approved")
+        require(expected.expected_base_image_digest == RELEASE_IMAGE.split("@", 1)[1], "candidate manifest expectation runtime image digest is not approved")
+    else:
+        require(not (expected.expected_event == RELEASE_EVENT and expected.expected_source_ref == RELEASE_SOURCE_REF), "main push cannot be validated as development evidence")
     require(manifest.get("schemaVersion") == 1, "unsupported manifest schema")
     artifact = manifest.get("artifact")
     require(isinstance(artifact, dict), "manifest artifact section is missing")

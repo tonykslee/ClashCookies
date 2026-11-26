@@ -13,6 +13,8 @@ const RELEASE_REPOSITORY_ID = "668452496";
 const RELEASE_REPOSITORY_OWNER_ID = "18295450";
 const RELEASE_SOURCE_REF = "refs/heads/main";
 const RELEASE_WORKFLOW_PATH = ".github/workflows/runtime-artifact.yml";
+const RELEASE_PLATFORM = "linux/amd64";
+const RELEASE_IMAGE = "node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5";
 
 function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -61,7 +63,11 @@ function buildManifest(root) {
     && process.env.GITHUB_REPOSITORY_OWNER_ID === RELEASE_REPOSITORY_OWNER_ID
     && process.env.GITHUB_WORKFLOW_PATH === RELEASE_WORKFLOW_PATH
     && /^[0-9a-f]{40}$/i.test(process.env.GITHUB_WORKFLOW_SHA || "")
-    && (!process.env.GITHUB_SHA || process.env.GITHUB_SHA.toLowerCase() === sourceSha?.toLowerCase());
+    && /^[0-9a-f]{40}$/i.test(process.env.GITHUB_SHA || "")
+    && process.env.GITHUB_SHA.toLowerCase() === sourceSha?.toLowerCase()
+    && process.env.BUILD_IMAGE === RELEASE_IMAGE
+    && process.env.BUILD_PLATFORM === RELEASE_PLATFORM
+    && process.env.BUILD_ARCHITECTURE === "amd64";
   if (!/^[0-9a-f]{40}$/i.test(sourceSha || "")) throw new Error("SOURCE_SHA must be a full Git SHA");
   const image = process.env.BUILD_IMAGE || "node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5";
   const digest = image.match(/@(?<digest>sha256:[0-9a-f]{64})$/i)?.groups?.digest;

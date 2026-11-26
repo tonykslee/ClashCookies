@@ -493,15 +493,17 @@ def validate_selection_request(request: ArtifactSelectionRequest) -> None:
     require(request.run_head_repository_owner_id == request.repository_owner_id, "selection head repository owner ID mismatch")
     _require_canonical_ref(request.run_head_ref, "selection.run_head_ref", "refs/heads/")
     require_sha(request.run_head_sha, "selection.run_head_sha")
+    if request.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
+        require(request.event == RELEASE_EVENT, "production candidate selection event must be push")
+        require(source_ref == RELEASE_SOURCE_REF, "production candidate selection must use the exact main ref")
+        require(request.run_head_ref == RELEASE_SOURCE_REF, "production candidate selection head ref must be main")
+        require(request.authorization_context == CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT, "production candidate selection authorization context is invalid")
+    elif request.event == RELEASE_EVENT and source_ref == RELEASE_SOURCE_REF:
+        require(False, "main push cannot be selected as development evidence")
     if request.event == "push":
         require(source_ref == request.run_head_ref and source_sha == request.run_head_sha, "main/development push source and head identity mismatch")
         for value in (request.pull_request_number, request.pull_request_head_sha, request.pull_request_head_ref, request.pull_request_base_sha, request.pull_request_base_ref):
             require(value is None, "push selection must not carry PR correlation")
-        if request.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
-            require(source_ref == RELEASE_SOURCE_REF, "production candidate selection must use the exact main ref")
-            require(request.authorization_context == CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT, "production candidate selection authorization context is invalid")
-        else:
-            require(source_ref != RELEASE_SOURCE_REF, "main push cannot be selected as development evidence")
     else:
         require(type(request.pull_request_number) is int and request.pull_request_number >= 1, "PR selection number is invalid")
         require(request.source_ref == f"refs/pull/{request.pull_request_number}/merge", "PR selection source ref is not canonical")
@@ -2091,6 +2093,27 @@ def validate_run_metadata(metadata: dict[str, Any], expected: dict[str, Any]) ->
     return None
 
 
+def validate_authenticated_expectation_context(expected: dict[str, Any]) -> None:
+    """Reject candidate/dev class substitution before shared attestation verification."""
+    require(isinstance(expected, dict), "authenticated provenance expectation must be an object")
+    artifact_class = expected.get("artifact_class")
+    source_ref = expected.get("source_ref")
+    event = expected.get("event")
+    require(artifact_class in {DEVELOPMENT_ARTIFACT_CLASS, PRODUCTION_CANDIDATE_ARTIFACT_CLASS}, "authenticated provenance artifact class is unsupported")
+    if artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
+        require(event == RELEASE_EVENT, "production candidate authenticated event must be push")
+        require(source_ref == RELEASE_SOURCE_REF, "production candidate authenticated source ref must be main")
+        require(expected.get("repository") == RELEASE_REPOSITORY, "production candidate authenticated repository is not approved")
+        require(str(expected.get("repository_id")) == str(RELEASE_REPOSITORY_ID), "production candidate authenticated repository ID is not approved")
+        require(str(expected.get("repository_owner_id")) == str(RELEASE_REPOSITORY_OWNER_ID), "production candidate authenticated owner ID is not approved")
+        require(expected.get("signer_workflow") == RELEASE_SIGNER_WORKFLOW, "production candidate authenticated signer workflow is not approved")
+        require(expected.get("platform") == RELEASE_PLATFORM, "production candidate authenticated platform is unsupported")
+        require(expected.get("image") == RELEASE_IMAGE, "production candidate authenticated runtime image is not approved")
+        require(expected.get("image_digest") == RELEASE_IMAGE.split("@", 1)[1], "production candidate authenticated runtime image digest is not approved")
+    elif event == RELEASE_EVENT and source_ref == RELEASE_SOURCE_REF:
+        require(False, "main push cannot be authenticated as development evidence")
+
+
 def _certificate(result: dict[str, Any]) -> dict[str, Any]:
     """Return the cryptographically verified certificate claims from gh output."""
     verification = result.get("verificationResult")
@@ -2113,6 +2136,7 @@ def validate_verified_result(
     require_run_metadata: bool = True,
 ) -> AuthenticatedProvenance:
     """Validate verified certificate claims and bind them to one artifact contract."""
+    validate_authenticated_expectation_context(expected)
     verification = result.get("verificationResult")
     require(isinstance(verification, dict), "attestation verification result is missing")
     require(verification.get("mediaType") == "application/vnd.dev.sigstore.verificationresult+json;version=0.1", "unsupported official verifier result media type")
@@ -2226,7 +2250,7 @@ def _candidate_identity_from_selection(request: ArtifactSelectionRequest, select
     """Build the candidate-shaped identity only after exact byte selection."""
     require(request.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS, "candidate evidence requires the production-candidate artifact class")
     require(request.authorization_context == CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT, "candidate evidence authorization context is invalid")
-    require(selection.byte_verified, "candidate evidence requires byte-verified artifact selection")
+    require(type(selection.byte_verified) is bool and selection.byte_verified is True, "candidate evidence requires byte-verified artifact selection")
     require(selection.archive_sha256 is not None and selection.archive_bytes is not None, "candidate evidence selection is missing inner archive identity")
     identity = TrustedReleaseIdentity(
         repository=request.repository,
@@ -2364,7 +2388,9 @@ def candidate_evidence_request_from_json(value: Any) -> dict[str, Any]:
     selected = value["selection"]
     require(isinstance(selected, dict), "candidate evidence selection is malformed")
     fields = {"artifactId", "artifactName", "artifactServiceZipSha256", "artifactServiceZipBytes", "archiveName", "archiveSha256", "archiveBytes", "byteVerified"}
+    require("byteVerified" in selected, "candidate evidence byteVerified is required")
     require(set(selected) == fields, "candidate evidence selection fields are incomplete")
+    require(type(selected["byteVerified"]) is bool and selected["byteVerified"] is True, "candidate evidence byteVerified must be exactly true")
     try:
         selection = ExactArtifactSelection(
             artifact_id=selected["artifactId"], artifact_name=selected["artifactName"],
