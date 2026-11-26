@@ -6,12 +6,14 @@ from io import BytesIO
 import importlib.util
 import json
 import getpass
+import errno
 import os
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 import base64
+import ctypes
 import hashlib
 import shlex
 import shutil
@@ -96,6 +98,17 @@ def synthetic_canonical_identity() -> delivery.provenance.TrustedReleaseIdentity
 
 
 class TrustedSshDeliveryTests(unittest.TestCase):
+    def test_rename_noreplace_collision_preserves_destination_error_cross_platform(self) -> None:
+        class FakeLibc:
+            def __init__(self) -> None:
+                self.renameat2 = lambda *_args: -1
+
+        fake_libc = FakeLibc()
+        with patch.object(ctypes, "CDLL", return_value=fake_libc), patch.object(ctypes, "get_errno", return_value=errno.EEXIST), patch.object(delivery.os, "name", "posix"):
+            with self.assertRaises(FileExistsError) as context:
+                delivery._rename_noreplace(7, "staging-directory", "accepted-directory")
+        self.assertEqual(context.exception.args, ("accepted-directory",))
+
     def test_synthetic_authorization_fixture_uses_delivery_provenance_module(self) -> None:
         identity = synthetic_canonical_identity()
         self.assertIs(type(identity), delivery.provenance.TrustedReleaseIdentity)

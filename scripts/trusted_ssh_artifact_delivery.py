@@ -631,7 +631,7 @@ def _rename_noreplace(directory_fd: int, source_name: str, destination_name: str
             return
         error = ctypes.get_errno()
         if error == errno.EEXIST:
-            raise FileExistsError(destination)
+            raise FileExistsError(destination_name)
         raise OSError(error, os.strerror(error))
     except AttributeError:
         _fail("Linux renameat2 no-replacement publication is unavailable")
