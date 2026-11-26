@@ -1182,6 +1182,54 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         with self.assertRaisesRegex(provenance.ProvenanceError, "exact run attempt"):
             provenance.validate_completed_candidate_run(request, candidate_run_metadata(request), wrong_job_attempt)
 
+    def test_retained_verification_context_rejects_duplicate_chronology_boundary_and_workflow_drift(self) -> None:
+        identity = trusted_identity()
+        base, _ = provenance.independent_candidate_verification_context(
+            provenance.validate_completed_candidate_run(main_selection_request(), candidate_run_metadata(), candidate_jobs()),
+            identity,
+        )
+        cases = []
+
+        duplicate_job_id = copy.deepcopy(base)
+        duplicate_job_id["jobs"][1]["id"] = duplicate_job_id["jobs"][0]["id"]
+        cases.append((duplicate_job_id, "job ID is duplicated"))
+
+        duplicate_step = copy.deepcopy(base)
+        duplicate_step["jobs"][0]["steps"][1]["name"] = duplicate_step["jobs"][0]["steps"][0]["name"]
+        cases.append((duplicate_step, "step is duplicated"))
+
+        contradictory_job_time = copy.deepcopy(base)
+        contradictory_job_time["jobs"][0]["completedAt"] = "2026-11-25T19:45:15Z"
+        cases.append((contradictory_job_time, "timestamp chronology is contradictory"))
+
+        incorrect_boundary = copy.deepcopy(base)
+        incorrect_boundary["run"]["jobCompletionBoundary"] = "2026-11-25T19:48:11Z"
+        cases.append((incorrect_boundary, "completion boundary is not the exact maximum"))
+
+        early_verification = copy.deepcopy(base)
+        early_verification["verificationCompletedAt"] = "2026-11-25T19:48:11Z"
+        cases.append((early_verification, "verification completion is before mandatory job completion"))
+
+        contradictory_workflow = copy.deepcopy(base)
+        contradictory_workflow["workflowIdentity"] = {"producerWorkflow": "wrong.yml", "producerRevision": identity.producer_revision, "signerWorkflow": identity.signer_workflow, "signerRevision": identity.signer_revision, "policy": "immutable-owner-allowlist"}
+        cases.append((contradictory_workflow, "workflow path is contradictory"))
+
+        for candidate, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(provenance.ProvenanceError, message):
+                provenance.validate_candidate_verification_context(candidate, identity)
+
+        missing_owner_evidence = copy.deepcopy(base)
+        missing_owner_evidence.update({
+            "attestation": {"status": "official-verifier-authenticated", "authenticated": True, "verifier": "official-gh", "verifierVersion": provenance.SUPPORTED_GH_VERSION, "subjectDigest": identity.archive_sha256},
+            "archiveValidation": {"status": "hardened-validated", "archiveSha256": identity.archive_sha256, "archiveBytes": identity.archive_bytes, "extracted": True},
+            "verificationCompletedAt": "2026-11-25T19:50:00Z",
+        })
+        with TemporaryDirectory() as directory:
+            context_path = Path(directory) / "independent-verification-context.json"
+            context_path.write_bytes(provenance._canonical_json(missing_owner_evidence) + b"\n")
+            with self.assertRaisesRegex(provenance.ProvenanceError, "missing or unexpected evidence"):
+                provenance.load_owner_approval_context(context_path, identity)
+
     def test_exact_attempt_job_pagination_is_bounded_and_complete(self) -> None:
         responses = [{"total_count": 3, "jobs": candidate_jobs()[:2]}, {"total_count": 3, "jobs": candidate_jobs()[2:]}]
         with patch.object(provenance, "_run_gh_api_json", side_effect=responses) as api:
@@ -1224,7 +1272,7 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             allowlist_path = custody / "revision-allowlist.json"
             allowlist_path.write_bytes(provenance._canonical_json({"producer_workflow": provenance.RELEASE_PRODUCER_WORKFLOW, "producer_revisions": [identity.producer_revision], "signer_workflow": provenance.RELEASE_SIGNER_WORKFLOW, "signer_revisions": [identity.signer_revision]}) + b"\n")
             context, _ = provenance.independent_candidate_verification_context(provenance.validate_completed_candidate_run(main_selection_request(), candidate_run_metadata(), candidate_jobs()), identity)
-            context.update({"attestation": {"status": "official-verifier-authenticated", "authenticated": True, "subjectDigest": identity.archive_sha256}, "archiveValidation": {"status": "hardened-validated", "archiveSha256": identity.archive_sha256, "archiveBytes": identity.archive_bytes, "extracted": True}, "workflowIdentity": {"producerRevision": identity.producer_revision, "signerRevision": identity.signer_revision, "policy": "immutable-owner-allowlist"}, "verificationCompletedAt": "2026-11-25T19:50:00Z"})
+            context.update({"attestation": {"status": "official-verifier-authenticated", "authenticated": True, "verifier": "official-gh", "verifierVersion": provenance.SUPPORTED_GH_VERSION, "subjectDigest": identity.archive_sha256}, "archiveValidation": {"status": "hardened-validated", "archiveSha256": identity.archive_sha256, "archiveBytes": identity.archive_bytes, "extracted": True}, "workflowIdentity": {"producerWorkflow": identity.producer_workflow, "producerRevision": identity.producer_revision, "signerWorkflow": identity.signer_workflow, "signerRevision": identity.signer_revision, "policy": "immutable-owner-allowlist"}, "verificationCompletedAt": "2026-11-25T19:50:00Z"})
             context_path.write_bytes(provenance._canonical_json(context) + b"\n")
             now = datetime.now(timezone.utc).replace(microsecond=0)
             issued = now - timedelta(minutes=1)

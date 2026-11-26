@@ -735,7 +735,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 "artifactClass": identity.artifact_class,
                 "run": {"id": identity.run_id, "attempt": identity.run_attempt, "status": "completed", "conclusion": "success", "createdAt": "2026-11-25T19:45:14Z", "startedAt": "2026-11-25T19:45:15Z", "updatedAt": "2026-11-25T19:48:13Z", "jobCompletionBoundary": "2026-11-25T19:48:12Z"},
                 "jobs": [
-                    {"id": index, "runId": identity.run_id, "runAttempt": identity.run_attempt, "headSha": identity.source_sha, "name": name, "status": "completed", "conclusion": "success", "steps": [{"name": step, "status": "completed", "conclusion": "success"} for step in steps]}
+                    {"id": index, "runId": identity.run_id, "runAttempt": identity.run_attempt, "headSha": identity.source_sha, "name": name, "status": "completed", "conclusion": "success", "startedAt": "2026-11-25T19:45:16Z", "completedAt": "2026-11-25T19:48:12Z", "steps": [{"name": step, "status": "completed", "conclusion": "success"} for step in steps]}
                     for index, (name, steps) in enumerate(delivery.provenance.CANDIDATE_REQUIRED_JOBS.items(), 1)
                 ],
             }
@@ -1390,7 +1390,7 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                 "contract": delivery.provenance.CANDIDATE_VERIFICATION_CONTEXT_CONTRACT, "version": delivery.provenance.CANDIDATE_VERIFICATION_CONTEXT_VERSION, "authoritative": False, "independentlyCompleted": True,
                 "identitySha256": delivery.provenance._identity_fingerprint(candidate_identity), "sourceSha": source_sha, "artifactClass": candidate_identity.artifact_class,
                 "run": {"id": run_id, "attempt": run_attempt, "status": "completed", "conclusion": "success", "createdAt": (now - timedelta(minutes=7)).isoformat().replace("+00:00", "Z"), "startedAt": (now - timedelta(minutes=6)).isoformat().replace("+00:00", "Z"), "updatedAt": verification_completed, "jobCompletionBoundary": completion_boundary},
-                "jobs": [{"id": index, "runId": run_id, "runAttempt": run_attempt, "headSha": source_sha, "name": name, "status": "completed", "conclusion": "success", "steps": [{"name": step, "status": "completed", "conclusion": "success"} for step in steps]} for index, (name, steps) in enumerate(delivery.provenance.CANDIDATE_REQUIRED_JOBS.items(), 1)],
+                "jobs": [{"id": index, "runId": run_id, "runAttempt": run_attempt, "headSha": source_sha, "name": name, "status": "completed", "conclusion": "success", "startedAt": (now - timedelta(minutes=6)).isoformat().replace("+00:00", "Z"), "completedAt": completion_boundary, "steps": [{"name": step, "status": "completed", "conclusion": "success"} for step in steps]} for index, (name, steps) in enumerate(delivery.provenance.CANDIDATE_REQUIRED_JOBS.items(), 1)],
                 "attestation": {"status": "official-verifier-authenticated", "authenticated": True, "verifier": "synthetic-harness", "verifierVersion": delivery.provenance.SUPPORTED_GH_VERSION, "subjectDigest": archive_digest},
                 "archiveValidation": {"status": "hardened-validated", "archiveSha256": archive_digest, "archiveBytes": len(candidate_archive_bytes), "extracted": True},
                 "workflowIdentity": {"producerWorkflow": candidate_identity.producer_workflow, "producerRevision": producer_revision, "signerWorkflow": candidate_identity.signer_workflow, "signerRevision": signer_revision, "policy": "immutable-owner-allowlist"},

@@ -1935,25 +1935,66 @@ def validate_completed_candidate_run(request: ArtifactSelectionRequest, run_meta
     }
 
 
+def _validate_candidate_workflow_identity(value: Any, identity: TrustedReleaseIdentity) -> None:
+    """Bind retained producer/signer paths and revisions to the approved identity."""
+    require(isinstance(value, dict) and set(value) == {"producerWorkflow", "producerRevision", "signerWorkflow", "signerRevision", "policy"}, "candidate verification context workflow identity is missing or malformed")
+    require(value["producerWorkflow"] == identity.producer_workflow and value["signerWorkflow"] == identity.signer_workflow, "candidate verification context workflow path is contradictory")
+    require(value["producerRevision"] == identity.producer_revision and value["signerRevision"] == identity.signer_revision, "candidate verification context workflow revision is contradictory")
+    require(value["policy"] == "immutable-owner-allowlist", "candidate verification context workflow policy is contradictory")
+
+
 def validate_candidate_verification_context(context: Any, identity: TrustedReleaseIdentity) -> None:
     """Validate retained completed-run context without treating it as authority."""
     validate_trusted_release_identity(identity)
     require(isinstance(context, dict), "candidate verification context must be an object")
+    allowed_keys = {"contract", "version", "authoritative", "independentlyCompleted", "identitySha256", "sourceSha", "artifactClass", "run", "jobs", "attestation", "archiveValidation", "workflowIdentity", "verificationCompletedAt"}
+    require(set(context).issubset(allowed_keys), "candidate verification context has unexpected evidence")
     require(context.get("contract") == CANDIDATE_VERIFICATION_CONTEXT_CONTRACT and context.get("version") == CANDIDATE_VERIFICATION_CONTEXT_VERSION, "candidate verification context contract is unsupported")
     require(context.get("authoritative") is False and context.get("independentlyCompleted") is True, "candidate verification context is not independent completed-run evidence")
     require(context.get("identitySha256") == _identity_fingerprint(identity) and context.get("sourceSha") == identity.source_sha and context.get("artifactClass") == identity.artifact_class, "candidate verification context is not bound to the exact candidate identity")
     run = context.get("run")
-    require(isinstance(run, dict) and run.get("id") == identity.run_id and run.get("attempt") == identity.run_attempt and run.get("status") == "completed" and run.get("conclusion") == "success", "candidate verification context run identity or completion is invalid")
-    require("completedAt" not in run and isinstance(run.get("jobCompletionBoundary"), str), "candidate verification context uses an unsupported run completion field")
+    require(isinstance(run, dict) and set(run) == {"id", "attempt", "status", "conclusion", "createdAt", "startedAt", "updatedAt", "jobCompletionBoundary"}, "candidate verification context run evidence is missing or malformed")
+    require(type(run["id"]) is int and run["id"] == identity.run_id and type(run["attempt"]) is int and run["attempt"] == identity.run_attempt and run["status"] == "completed" and run["conclusion"] == "success", "candidate verification context run identity or completion is invalid")
+    run_created = _parse_timestamp(run["createdAt"], "context.run.createdAt")
+    run_started = _parse_timestamp(run["startedAt"], "context.run.startedAt")
+    run_updated = _parse_timestamp(run["updatedAt"], "context.run.updatedAt")
+    boundary = _parse_timestamp(run["jobCompletionBoundary"], "context.run.jobCompletionBoundary")
+    require(run_created <= run_started <= run_updated, "candidate verification context run timestamp chronology is contradictory")
     jobs = context.get("jobs")
     require(isinstance(jobs, list) and len(jobs) == len(CANDIDATE_REQUIRED_JOBS), "candidate verification context jobs are incomplete")
-    names = set()
+    names: set[str] = set()
+    job_ids: set[int] = set()
+    completion_times: list[datetime] = []
     for job in jobs:
-        require(isinstance(job, dict) and type(job.get("id")) is int and job.get("runId") == identity.run_id and job.get("runAttempt") == identity.run_attempt and job.get("headSha") == identity.source_sha and job.get("name") in CANDIDATE_REQUIRED_JOBS and job.get("name") not in names and job.get("status") == "completed" and job.get("conclusion") == "success", "candidate verification context job is invalid")
-        names.add(job["name"])
-        step_names = {step.get("name") for step in job.get("steps", []) if isinstance(step, dict) and step.get("status") == "completed" and step.get("conclusion") == "success"}
-        require(set(CANDIDATE_REQUIRED_JOBS[job["name"]]).issubset(step_names), f"candidate verification context mandatory steps are incomplete: {job['name']}")
+        require(isinstance(job, dict) and set(job) == {"id", "runId", "runAttempt", "headSha", "name", "status", "conclusion", "startedAt", "completedAt", "steps"}, "candidate verification context job evidence is missing or malformed")
+        job_id = job["id"]
+        require(type(job_id) is int and job_id > 0 and job_id not in job_ids, "candidate verification context job ID is duplicated or malformed")
+        job_ids.add(job_id)
+        name = require_string(job["name"], "context.job.name")
+        require(name in CANDIDATE_REQUIRED_JOBS and name not in names, f"candidate verification context job is duplicated or unexpected: {name}")
+        names.add(name)
+        require(type(job["runId"]) is int and job["runId"] == identity.run_id and type(job["runAttempt"]) is int and job["runAttempt"] == identity.run_attempt and job["headSha"] == identity.source_sha and job["status"] == "completed" and job["conclusion"] == "success", f"candidate verification context job identity or completion is invalid: {name}")
+        job_started = _parse_timestamp(job["startedAt"], f"context.jobs.{name}.startedAt")
+        job_completed = _parse_timestamp(job["completedAt"], f"context.jobs.{name}.completedAt")
+        require(run_created <= run_started <= job_started <= job_completed <= run_updated, f"candidate verification context job timestamp chronology is contradictory: {name}")
+        completion_times.append(job_completed)
+        steps = job["steps"]
+        require(isinstance(steps, list) and len(steps) == len(CANDIDATE_REQUIRED_JOBS[name]), f"candidate verification context steps are missing or unbounded: {name}")
+        step_names: set[str] = set()
+        for step in steps:
+            require(isinstance(step, dict) and set(step) == {"name", "status", "conclusion"}, f"candidate verification context step evidence is malformed: {name}")
+            step_name = require_string(step["name"], f"context.jobs.{name}.step.name")
+            require(step_name not in step_names, f"candidate verification context step is duplicated: {name}/{step_name}")
+            step_names.add(step_name)
+            require(step_name in CANDIDATE_REQUIRED_JOBS[name] and step["status"] == "completed" and step["conclusion"] == "success", f"candidate verification context mandatory step is contradictory: {name}/{step_name}")
+        require(step_names == set(CANDIDATE_REQUIRED_JOBS[name]), f"candidate verification context mandatory steps are incomplete: {name}")
     require(names == set(CANDIDATE_REQUIRED_JOBS), "candidate verification context job set is incomplete")
+    require(boundary == max(completion_times), "candidate verification context job completion boundary is not the exact maximum")
+    if "workflowIdentity" in context:
+        _validate_candidate_workflow_identity(context["workflowIdentity"], identity)
+    if "verificationCompletedAt" in context:
+        verification_completed = _parse_timestamp(context["verificationCompletedAt"], "context.verificationCompletedAt")
+        require(verification_completed >= boundary, "candidate verification context verification completion is before mandatory job completion")
 
 
 def independent_candidate_verification_context(context: dict[str, Any], identity: TrustedReleaseIdentity) -> tuple[dict[str, Any], str]:
@@ -1974,12 +2015,15 @@ def load_owner_approval_context(path: Path, identity: TrustedReleaseIdentity) ->
         fail(f"independent candidate verification context is malformed: {error}")
     require(raw == _canonical_json(context) + b"\n", "independent candidate verification context is not canonical")
     validate_candidate_verification_context(context, identity)
+    require(set(context) == {"contract", "version", "authoritative", "independentlyCompleted", "identitySha256", "sourceSha", "artifactClass", "run", "jobs", "attestation", "archiveValidation", "workflowIdentity", "verificationCompletedAt"}, "independent candidate verification context has missing or unexpected evidence")
     attestation = context.get("attestation")
-    require(isinstance(attestation, dict) and attestation.get("status") == "official-verifier-authenticated" and attestation.get("authenticated") is True and attestation.get("subjectDigest") == identity.archive_sha256, "independent context lacks authenticated official provenance")
+    require(isinstance(attestation, dict) and set(attestation) == {"status", "authenticated", "verifier", "verifierVersion", "subjectDigest"} and attestation.get("status") == "official-verifier-authenticated" and attestation.get("authenticated") is True and attestation.get("subjectDigest") == identity.archive_sha256, "independent context lacks authenticated official provenance")
+    require_string(attestation["verifier"], "context.attestation.verifier")
+    require_string(attestation["verifierVersion"], "context.attestation.verifierVersion")
     archive_validation = context.get("archiveValidation")
-    require(isinstance(archive_validation, dict) and archive_validation.get("status") == "hardened-validated" and archive_validation.get("archiveSha256") == identity.archive_sha256 and archive_validation.get("archiveBytes") == identity.archive_bytes and archive_validation.get("extracted") is True, "independent context lacks hardened archive validation")
-    workflow_identity = context.get("workflowIdentity")
-    require(isinstance(workflow_identity, dict) and workflow_identity.get("producerRevision") == identity.producer_revision and workflow_identity.get("signerRevision") == identity.signer_revision and workflow_identity.get("policy") == "immutable-owner-allowlist", "independent context lacks immutable revision policy evidence")
+    require(isinstance(archive_validation, dict) and set(archive_validation) == {"status", "archiveSha256", "archiveBytes", "extracted"} and archive_validation.get("status") == "hardened-validated" and archive_validation.get("archiveSha256") == identity.archive_sha256 and archive_validation.get("archiveBytes") == identity.archive_bytes and archive_validation.get("extracted") is True, "independent context lacks hardened archive validation")
+    require(type(archive_validation["archiveBytes"]) is int and archive_validation["archiveBytes"] > 0, "independent context archive validation bytes are malformed")
+    _validate_candidate_workflow_identity(context.get("workflowIdentity"), identity)
     verification_completed_at = require_string(context.get("verificationCompletedAt"), "verificationCompletedAt")
     verified_at = _parse_timestamp(verification_completed_at, "verificationCompletedAt")
     boundary = _parse_timestamp(context["run"]["jobCompletionBoundary"], "run.jobCompletionBoundary")
