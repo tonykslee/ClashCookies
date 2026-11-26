@@ -220,6 +220,12 @@ Rules:
 - FB-027 kernel-backed deployment locking, candidate ownership, bounded cleanup, health gates, rollback preservation, and resource admission remain the deployment authority. Authenticated artifact retention must coordinate with detached-volume cleanup by using exact ownership labels/metadata and must never broaden cleanup to unknown resources.
 - Retention GC is dry-run by default and does not mutate metadata; bounded execution revalidates ownership under the shared lock. Interrupted or missing-path deletion transactions remain recovery-protected until an explicit transaction-owner acknowledgment, and no automatic disk-pressure eviction is permitted.
 
+## FB-028B-3b candidate authorization/delivery checkpoint (repository-verified, 2026-11-26)
+
+- Owner-local candidate intake now independently checks exact completed main-push attempt metadata, all bounded exact-attempt job pages, required successful build/sign/validation steps, and exact ZIP/inner-archive identity before producing a canonical non-authoritative verification context.
+- Owner approval is a separate external Ed25519 signing procedure with an explicit immutable revision allowlist, distinct owner-approved candidate context, key ID/fingerprint, bounded forward validity, and durable replay reservation before atomic candidate publication. The receiver requires explicit custody paths and retains ZIP, attestation, authorization, verification context, expectation, receipt, and trusted-root evidence; it never consumes authorization or activates production.
+- Historical offline retention verification checks the signed record at its issuance time and the retained context without GitHub access, fresh authority, journal reservation, or consumption. Candidate delivery, promotion, runtime activation, and production eligibility remain disabled/NO-GO; no trust root, private key, VM state, production credential, or deployment default was created.
+
 Current production and staging deployments are droplet-based.
 
 - Production runs in active polling mode.

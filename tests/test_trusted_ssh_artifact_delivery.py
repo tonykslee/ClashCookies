@@ -164,7 +164,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 self.expected = []
 
             def snapshot_source(self, _archive: Path, _limits: object, workspace_root: Path | None = None) -> object:
-                return SimpleNamespace(digest=identity.archive_sha256, size=identity.archive_bytes)
+                return SimpleNamespace(digest=getattr(self, "archive_digest", identity.archive_sha256), size=getattr(self, "archive_size", identity.archive_bytes))
 
             def validate_checksum(self, *_args: object) -> None:
                 return None
@@ -176,7 +176,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 return [], {"runtime-artifact-manifest.json": Path("embedded-manifest")}, {}
 
             def read_json_bytes(self, *_args: object) -> dict:
-                return {"artifact": {"artifactClass": delivery.provenance.DEVELOPMENT_ARTIFACT_CLASS}}
+                return {"artifact": {"artifactClass": getattr(self, "artifact_class", delivery.provenance.DEVELOPMENT_ARTIFACT_CLASS)}}
 
             def read_sidecar_json(self, *_args: object) -> dict:
                 return {"inputs": {"fixture": "hash"}}
@@ -212,6 +212,40 @@ class TrustedSshDeliveryTests(unittest.TestCase):
 
         self.assertEqual(len(validator.expected), 2)
         self.assertTrue(all(getattr(expected, "expected_artifact_class") == delivery.provenance.DEVELOPMENT_ARTIFACT_CLASS for expected in validator.expected))
+
+        candidate = replace(synthetic_canonical_identity(), archive_sha256=hashlib.sha256(b"test").hexdigest(), archive_bytes=4)
+        validator.expected.clear()
+        validator.artifact_class = candidate.artifact_class
+        validator.archive_digest = candidate.archive_sha256
+        validator.archive_size = candidate.archive_bytes
+        with TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            archive = root / candidate.archive_name
+            checksum = root / f"{candidate.archive_name}.sha256"
+            manifest = root / f"{candidate.archive_name}.manifest.json"
+            staging = root / "staging"
+            archive.write_bytes(b"test")
+            checksum.write_text("checksum", encoding="utf-8")
+            manifest.write_text("{}", encoding="utf-8")
+            staging.mkdir()
+            with patch.object(delivery, "_load_validator", return_value=validator):
+                delivery._validate_inner_archive(archive, checksum, manifest, candidate, staging)
+        self.assertTrue(all(getattr(expected, "expected_artifact_class") == delivery.provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS for expected in validator.expected))
+
+    def test_candidate_receiver_requires_explicit_authorization_custody(self) -> None:
+        identity = synthetic_canonical_identity()
+        with TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            checkout = root / "checkout"
+            checkout.mkdir(mode=0o700)
+            expected = root / "expected-identity.json"
+            expected.write_bytes(delivery.provenance._canonical_json(delivery._identity_payload(identity)) + b"\n")
+            args = SimpleNamespace(
+                repository_root=str(checkout), receiving_root=str(root / "receiving"), publication_root=str(root / "publication"), expected_identity=str(expected),
+                authorization_public_key=None, authorization_allowlist=None, authorization_journal=None, authorization_key_id=None, authorization_key_fingerprint=None,
+            )
+            with self.assertRaisesRegex(delivery.DeliveryError, "explicit authorization custody"):
+                delivery.receive_command(args)
 
     def test_snapshot_copy_uses_the_zip_snapshot_sha256_contract(self) -> None:
         with TemporaryDirectory() as root_name:

@@ -181,6 +181,7 @@ jobs:
           RUNTIME_ARTIFACT_REPOSITORY_ID: ${{ github.repository_id }}
           RUNTIME_ARTIFACT_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
           RUNTIME_ARTIFACT_SIGNER_REVISION: ${{ github.workflow_sha }}
+          RUNTIME_ARTIFACT_PRODUCER_REVISION: ${{ github.workflow_sha }}
           RUNTIME_ARTIFACT_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
           RUNTIME_ARTIFACT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
           RUNTIME_ARTIFACT_PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
@@ -205,6 +206,7 @@ jobs:
             --arg event "$GITHUB_EVENT_NAME" \
             --arg signer_workflow "$RUNTIME_ARTIFACT_SIGNER_WORKFLOW" \
             --arg signer_revision "$RUNTIME_ARTIFACT_SIGNER_REVISION" \
+            --arg producer_revision "$RUNTIME_ARTIFACT_PRODUCER_REVISION" \
             --argjson run_id "$GITHUB_RUN_ID" \
             --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg artifact_name "runtime-artifact-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
@@ -224,7 +226,7 @@ jobs:
             --arg pr_head_ref "$RUNTIME_ARTIFACT_PR_HEAD_REF" \
             --arg pr_base_sha "$RUNTIME_ARTIFACT_PR_BASE_SHA" \
             --arg pr_base_ref "$RUNTIME_ARTIFACT_PR_BASE_REF" \
-            '{repository:$repository,repository_id:$repository_id,repository_owner_id:$repository_owner_id,source_ref:$source_ref,source_sha:$source_sha,event:$event,signer_workflow:$signer_workflow,signer_revision:$signer_revision,run_id:$run_id,run_attempt:$run_attempt,artifact_name:$artifact_name,artifact_class:$artifact_class,archive_name:$archive_name,platform:$platform,image:$image,image_digest:$image_digest,authorization_context:(if $artifact_class == "production-candidate-runtime-evidence-v1" then "production-candidate-selection-only" else $authorization_context end),run_head_repository:$run_head_repository,run_head_repository_id:$run_head_repository_id,run_head_repository_owner_id:$run_head_repository_owner_id,run_head_ref:(if $event == "push" then $source_ref else ("refs/heads/" + $run_head_ref) end),run_head_sha:$run_head_sha,pull_request_number:(if $pr_number == "" then null else ($pr_number|tonumber) end),pull_request_head_sha:(if $pr_head_sha == "" then null else $pr_head_sha end),pull_request_head_ref:(if $pr_head_ref == "" then null else ("refs/heads/" + $pr_head_ref) end),pull_request_base_sha:(if $pr_base_sha == "" then null else $pr_base_sha end),pull_request_base_ref:(if $pr_base_ref == "" then null else ("refs/heads/" + $pr_base_ref) end)}' \
+            '{repository:$repository,repository_id:$repository_id,repository_owner_id:$repository_owner_id,source_ref:$source_ref,source_sha:$source_sha,event:$event,producer_revision:$producer_revision,signer_workflow:$signer_workflow,signer_revision:$signer_revision,run_id:$run_id,run_attempt:$run_attempt,artifact_name:$artifact_name,artifact_class:$artifact_class,archive_name:$archive_name,platform:$platform,image:$image,image_digest:$image_digest,authorization_context:(if $artifact_class == "production-candidate-runtime-evidence-v1" then "production-candidate-selection-only" else $authorization_context end),run_head_repository:$run_head_repository,run_head_repository_id:$run_head_repository_id,run_head_repository_owner_id:$run_head_repository_owner_id,run_head_ref:(if $event == "push" then $source_ref else ("refs/heads/" + $run_head_ref) end),run_head_sha:$run_head_sha,pull_request_number:(if $pr_number == "" then null else ($pr_number|tonumber) end),pull_request_head_sha:(if $pr_head_sha == "" then null else $pr_head_sha end),pull_request_head_ref:(if $pr_head_ref == "" then null else ("refs/heads/" + $pr_head_ref) end),pull_request_base_sha:(if $pr_base_sha == "" then null else $pr_base_sha end),pull_request_base_ref:(if $pr_base_ref == "" then null else ("refs/heads/" + $pr_base_ref) end)}' \
             > "$RUNNER_TEMP/exact-selection-request.json"
           python scripts/runtime_artifact_provenance.py \
             --selection-request "$RUNNER_TEMP/exact-selection-request.json" \
@@ -382,6 +384,18 @@ jobs:
           if-no-files-found: error
           retention-days: 3
           include-hidden-files: true
+
+      - name: Run candidate authorization and custody fixture regressions
+        if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'production-candidate-runtime-evidence-v1'
+        run: |
+          set -euo pipefail
+          python -m unittest \
+            tests.test_runtime_artifact_provenance.RuntimeArtifactProvenanceTests.test_completed_candidate_requires_exact_successful_jobs_and_steps \
+            tests.test_runtime_artifact_provenance.RuntimeArtifactProvenanceTests.test_exact_attempt_job_pagination_is_bounded_and_complete \
+            tests.test_runtime_artifact_provenance.RuntimeArtifactProvenanceTests.test_owner_candidate_authorization_is_separate_from_selection_context \
+            tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_candidate_receiver_requires_explicit_authorization_custody \
+            tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_development_receiver_passes_explicit_class_to_manifest_validator -v
+          echo "Candidate custody fixture regressions passed. This synthetic fixture does not claim a completed main-push authorization or genuine candidate delivery; owner-local exact-attempt verification remains required after this run completes." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install disposable OpenSSH receiver for integration evidence
         if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'development-runtime-evidence'

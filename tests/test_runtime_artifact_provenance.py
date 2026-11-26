@@ -311,7 +311,40 @@ def main_selection_request() -> object:
         pull_request_head_ref=None,
         pull_request_base_sha=None,
         pull_request_base_ref=None,
+        producer_revision=SIGNER_SHA,
     )
+
+
+def candidate_run_metadata(request: object | None = None) -> dict[str, object]:
+    """Return a completed exact main-push attempt for independent intake tests."""
+    request = request or main_selection_request()
+    return {
+        "id": request.run_id,
+        "run_attempt": request.run_attempt,
+        "event": "push",
+        "status": "completed",
+        "conclusion": "success",
+        "path": request.signer_workflow,
+        "created_at": "2026-11-25T19:45:14Z",
+        "run_started_at": "2026-11-25T19:45:15Z",
+        "completed_at": "2026-11-25T19:48:13Z",
+        "updated_at": "2026-11-25T19:48:13Z",
+        "head_sha": request.run_head_sha,
+        "head_branch": "main",
+        "repository": {"full_name": request.repository, "id": request.repository_id, "owner": {"id": request.repository_owner_id}},
+        "head_repository": {"full_name": request.repository, "id": request.repository_id, "owner": {"id": request.repository_owner_id}},
+        "pull_requests": [],
+    }
+
+
+def candidate_jobs() -> list[dict[str, object]]:
+    """Return the bounded mandatory job/step evidence required for candidate intake."""
+    required = {
+        "Build SHA-bound runtime artifact": ["Build runtime artifact in pinned Linux environment"],
+        "Generate authenticated runtime artifact attestation": ["Generate GitHub-native provenance attestation"],
+        "Retrieve and validate runtime artifact": ["Validate retrieved bytes and safely extract", "Produce non-authoritative production-candidate evidence", "Exercise extracted runtime without install, compile, or Prisma regeneration"],
+    }
+    return [{"id": index, "name": name, "status": "completed", "conclusion": "success", "started_at": "2026-11-25T19:45:16Z", "completed_at": "2026-11-25T19:48:12Z", "run_attempt": RUN_ATTEMPT, "steps": [{"name": step, "status": "completed", "conclusion": "success"} for step in steps]} for index, (name, steps) in enumerate(required.items(), 1)]
 
 
 def authoritative_evidence_for(identity: object) -> object:
@@ -1122,6 +1155,41 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         result = provenance.evaluate_synthetic_production_policy_fixture({"fixtureKind": "wrong", "synthetic": True})
         self.assertFalse(result.eligible)
         self.assertEqual(result.reason_code, "invalid-synthetic-fixture")
+
+    def test_completed_candidate_requires_exact_successful_jobs_and_steps(self) -> None:
+        request = main_selection_request()
+        context = provenance.validate_completed_candidate_run(request, candidate_run_metadata(request), candidate_jobs(), now=datetime(2026, 11, 25, 20, 0, tzinfo=timezone.utc))
+        self.assertFalse(context["authoritative"])
+        self.assertTrue(context["independentlyCompleted"])
+        failed = candidate_jobs()
+        failed[1]["conclusion"] = "failure"
+        with self.assertRaisesRegex(provenance.ProvenanceError, "did not succeed"):
+            provenance.validate_completed_candidate_run(request, candidate_run_metadata(request), failed)
+        missing = candidate_jobs()
+        missing[2]["steps"] = missing[2]["steps"][:-1]
+        with self.assertRaisesRegex(provenance.ProvenanceError, "mandatory step"):
+            provenance.validate_completed_candidate_run(request, candidate_run_metadata(request), missing)
+
+    def test_exact_attempt_job_pagination_is_bounded_and_complete(self) -> None:
+        responses = [{"total_count": 3, "jobs": candidate_jobs()[:2]}, {"total_count": 3, "jobs": candidate_jobs()[2:]}]
+        with patch.object(provenance, "_run_gh_api_json", side_effect=responses) as api:
+            jobs = provenance.fetch_exact_run_attempt_jobs(REPOSITORY, RUN_ID, RUN_ATTEMPT)
+        self.assertEqual(len(jobs), 3)
+        self.assertIn("/attempts/2/jobs?per_page=100&page=1", api.call_args_list[0].args[0])
+        with patch.object(provenance, "_run_gh_api_json", return_value={"total_count": 257, "jobs": []}), self.assertRaisesRegex(provenance.ProvenanceError, "unbounded"):
+            provenance.fetch_exact_run_attempt_jobs(REPOSITORY, RUN_ID, RUN_ATTEMPT)
+
+    def test_owner_candidate_authorization_is_separate_from_selection_context(self) -> None:
+        identity = trusted_identity()
+        context, context_digest = provenance.independent_candidate_verification_context(
+            provenance.validate_completed_candidate_run(main_selection_request(), candidate_run_metadata(), candidate_jobs()), identity
+        )
+        record = provenance.prepare_owner_authorization_record(identity, authorization_id="candidate-auth", issued_at="2026-11-25T12:00:00Z", expires_at="2026-11-26T12:00:00Z", signing_key_id="owner-key", verification_context_sha256=context_digest)
+        self.assertEqual(record["authorization"]["context"], provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT)
+        self.assertEqual(record["release"]["authorization_context"], provenance.OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT)
+        self.assertEqual(hashlib.sha256(provenance._canonical_json(context) + b"\n").hexdigest(), context_digest)
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.prepare_owner_authorization_record(identity, authorization_id="candidate-auth", issued_at="2026-11-25T12:00:00Z", expires_at="2026-11-26T12:00:00Z", signing_key_id="owner-key")
 
 
 if __name__ == "__main__":
