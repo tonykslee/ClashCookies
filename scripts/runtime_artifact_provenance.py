@@ -8,7 +8,7 @@ import base64
 import binascii
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -55,6 +55,10 @@ MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 MAX_ARTIFACT_BYTES = 1024 * 1024 * 1024
 MAX_VERIFIER_OUTPUT_BYTES = 4 * 1024 * 1024
 SUPPORTED_GH_VERSION = "2.89.0"
+# GitHub's run-attempt API can report created_at one second after run_started_at.
+# This tolerance applies only to that field ordering; all other chronology and
+# exact-attempt window checks remain strict.
+MAX_RUN_CREATION_START_INVERSION_SECONDS = 1
 RELEASE_REPOSITORY = "tonykslee/ClashCookies"
 RELEASE_REPOSITORY_ID = 668452496
 RELEASE_REPOSITORY_OWNER_ID = 18295450
@@ -546,7 +550,8 @@ def validate_exact_run_attempt_request_metadata(metadata: dict[str, Any], reques
     started = _parse_timestamp(metadata.get("run_started_at"), "run.run_started_at")
     updated = _parse_timestamp(metadata.get("updated_at"), "run.updated_at")
     current = (now or _now_utc()).astimezone(timezone.utc)
-    require(created <= started <= updated <= current, "run-attempt chronology is contradictory or future-dated")
+    require(created <= started + timedelta(seconds=MAX_RUN_CREATION_START_INVERSION_SECONDS), "run-attempt creation/start chronology is contradictory")
+    require(created <= updated and started <= updated <= current, "run-attempt chronology is contradictory or future-dated")
     if request.event == "push":
         require(head_sha == request.source_sha, "main/development push source SHA mismatch")
         require(request.source_ref == f"refs/heads/{head_branch}", "main/development push source ref mismatch")

@@ -485,6 +485,37 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             with self.subTest(artifact_field=field), patch.object(provenance, "fetch_run_metadata", return_value=base), patch.object(provenance, "fetch_run_artifacts", return_value=response), self.assertRaises(provenance.ProvenanceError):
                 provenance.select_artifact_request(request, now=datetime(2026, 11, 25, 20, tzinfo=timezone.utc))
 
+    def test_run_attempt_creation_start_tolerance_is_exactly_one_second(self) -> None:
+        request = selection_request()
+        now = datetime(2026, 11, 25, 20, tzinfo=timezone.utc)
+        normal = selection_run_metadata(request)
+        provenance.validate_exact_run_attempt_request_metadata(normal, request, now=now)
+
+        equal = copy.deepcopy(normal)
+        equal["created_at"] = equal["run_started_at"]
+        provenance.validate_exact_run_attempt_request_metadata(equal, request, now=now)
+
+        one_second = copy.deepcopy(normal)
+        one_second["created_at"] = "2026-11-25T19:45:15Z"
+        one_second["run_started_at"] = "2026-11-25T19:45:14Z"
+        provenance.validate_exact_run_attempt_request_metadata(one_second, request, now=now)
+
+        larger = copy.deepcopy(normal)
+        larger["created_at"] = "2026-11-25T19:45:16Z"
+        larger["run_started_at"] = "2026-11-25T19:45:14Z"
+        with self.assertRaisesRegex(provenance.ProvenanceError, "creation/start"):
+            provenance.validate_exact_run_attempt_request_metadata(larger, request, now=now)
+
+        future = copy.deepcopy(normal)
+        future["updated_at"] = "2026-11-25T20:00:01Z"
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.validate_exact_run_attempt_request_metadata(future, request, now=now)
+
+        contradictory = copy.deepcopy(normal)
+        contradictory["updated_at"] = "2026-11-25T19:45:13Z"
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.validate_exact_run_attempt_request_metadata(contradictory, request, now=now)
+
     def test_selection_rejects_incomplete_api_pages_future_artifacts_and_contradictory_time(self) -> None:
         request = selection_request()
         run = selection_run_metadata(request)
