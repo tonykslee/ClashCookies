@@ -212,7 +212,7 @@ Rules:
 
 # Deployment Model
 
-## FB-028B-3 retention/readiness checkpoint (repository-verified, 2026-11-25)
+## FB-028B-2b-3 retention/readiness checkpoint (repository-verified, 2026-11-25)
 
 - Implemented on the feature branch: identity-bound durable retention metadata, first-legacy rollback baseline representation, shared delivery/retention/GC locking, atomic metadata durability, bounded dry-run/explicit GC, shared-filesystem byte/inode admission, conservative interrupted-operation handling, and sanitized repository-local readiness assessment.
 - Retained evidence remains independent of GitHub Actions expiry. Authorization private keys, trusted roots, replay journals, and historical verification evidence remain distinct custody domains; no production key, credential, trust anchor, or VM change was created.

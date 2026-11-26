@@ -612,6 +612,10 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             publication = root / "publication"
             receiving.mkdir(mode=0o700)
             publication.mkdir(mode=0o700)
+            if os.name == "posix":
+                root.chmod(0o700)
+                receiving.chmod(0o700)
+                publication.chmod(0o700)
             server_key = root / "server_key"
             client_key = root / "client_key"
             subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(server_key)], check=True, capture_output=True)

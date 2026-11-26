@@ -11,7 +11,10 @@ import tempfile
 import threading
 import time
 import unittest
+import shutil
+from types import SimpleNamespace
 from unittest.mock import patch
+from zipfile import ZipFile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,22 +47,26 @@ class DurableRetentionTests(unittest.TestCase):
             self.repo.chmod(0o700)
             self.publication.chmod(0o700)
         self.store = retention.RetentionStore(self.publication, repository_root=self.repo, require_durable=False)
+        self.store.initialize()
 
     def tearDown(self) -> None:
         self.temp.cleanup()
 
     def release(self, token: str) -> tuple[dict[str, object], str]:
         artifact = (token.encode("ascii") * 1024)[:1024]
+        source_sha = hashlib.sha256(f"{token}:source".encode("ascii")).hexdigest()[:40]
+        producer_revision = hashlib.sha256(f"{token}:producer".encode("ascii")).hexdigest()[:40]
+        signer_revision = hashlib.sha256(f"{token}:signer".encode("ascii")).hexdigest()[:40]
         digest = hashlib.sha256(token.encode("ascii")).hexdigest()
         artifact_digest = hashlib.sha256(artifact).hexdigest()
         identity: dict[str, object] = {
             "repository": "tonykslee/ClashCookies", "repository_id": 668452496, "repository_owner_id": 18295450,
-            "source_ref": "refs/heads/dev", "source_sha": token * 40, "event": "push",
-            "producer_workflow": ".github/workflows/runtime-artifact.yml", "producer_revision": token * 40,
-            "signer_workflow": ".github/workflows/runtime-artifact.yml", "signer_revision": token * 40,
+            "source_ref": "refs/heads/dev", "source_sha": source_sha, "event": "push",
+            "producer_workflow": ".github/workflows/runtime-artifact.yml", "producer_revision": producer_revision,
+            "signer_workflow": ".github/workflows/runtime-artifact.yml", "signer_revision": signer_revision,
             "run_id": 1, "run_attempt": 1, "artifact_id": 1, "artifact_name": "runtime-artifact-1-1",
             "artifact_class": "development-runtime-evidence", "artifact_service_zip_sha256": artifact_digest,
-            "artifact_service_zip_bytes": len(artifact), "archive_name": f"runtime-{token * 40}.tar.gz",
+            "artifact_service_zip_bytes": len(artifact), "archive_name": f"runtime-{source_sha}.tar.gz",
             "archive_sha256": digest, "archive_bytes": 1, "platform": "linux/amd64", "image": "node:20-bookworm",
             "image_digest": digest, "authorization_context": "development",
         }
@@ -106,6 +113,10 @@ class DurableRetentionTests(unittest.TestCase):
         dry_run = self.store.garbage_collect()
         self.assertEqual(dry_run["candidates"], [first])
         self.assertTrue((self.publication / f"release-{first}").exists())
+        if os.name != "posix":
+            with self.assertRaises(retention.RetentionError):
+                self.store.garbage_collect(execute=True, max_deletions=1)
+            return
         executed = self.store.garbage_collect(execute=True, max_deletions=1)
         self.assertEqual(executed["deleted"], [first])
         self.assertFalse((self.publication / f"release-{first}").exists())
@@ -115,6 +126,10 @@ class DurableRetentionTests(unittest.TestCase):
         unknown = self.publication / ("release-" + "0" * 64)
         unknown.mkdir()
         (unknown / "identity.json").write_text("{}", encoding="utf-8")
+        if os.name != "posix":
+            with self.assertRaises(retention.RetentionError):
+                self.store.garbage_collect(execute=True)
+            return
         result = self.store.garbage_collect(execute=True)
         self.assertEqual(result["deleted"], [])
         self.assertTrue(unknown.exists())
@@ -123,7 +138,7 @@ class DurableRetentionTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix", "Linux ownership and permission regression")
     def test_gc_preserves_release_with_unsafe_private_permissions(self) -> None:
         _, digest = self.release("unsafe")
-        self.store.retire(digest)
+        self.store.retire(digest, authorization_resolution="released")
         release_path = self.publication / f"release-{digest}"
         release_path.chmod(0o755)
         result = self.store.garbage_collect(execute=True)
@@ -135,10 +150,94 @@ class DurableRetentionTests(unittest.TestCase):
         with self.assertRaises(retention.RetentionError):
             retention.assess_storage([self.publication], temporary_bytes=-1, persistent_bytes=0)
 
+    def test_missing_state_requires_explicit_initialization_and_existing_material_is_not_adopted(self) -> None:
+        self.store.state_path.unlink()
+        with self.assertRaisesRegex(retention.RetentionError, "missing"):
+            self.store.load()
+        self.store.initialize()
+        _, digest = self.release("adopt")
+        self.store.state_path.unlink()
+        restarted = retention.RetentionStore(self.publication, repository_root=self.repo, require_durable=False)
+        with self.assertRaisesRegex(retention.RetentionError, "missing"):
+            restarted.initialize()
+        self.assertTrue((self.publication / f"release-{digest}").exists())
+
+    def test_retirement_requires_explicit_protection_reconciliation(self) -> None:
+        _, digest = self.release("reconcile")
+        with self.assertRaisesRegex(retention.RetentionError, "authorization reconciliation"):
+            self.store.retire(digest)
+        self.store.retire(digest, authorization_resolution="released")
+        self.assertEqual(self.store.load()["releases"][digest]["roles"], ["retired"])
+
+    @unittest.skipUnless(os.name == "posix", "GC interruption recovery requires POSIX destructive-operation semantics")
+    def test_interrupted_gc_is_recovery_protected_and_reconciled_after_restart(self) -> None:
+        _, first = self.release("gc-a")
+        _, second = self.release("gc-b")
+        _, third = self.release("gc-c")
+        self.store.transition_active_for_test(first, health_gate=lambda: True, consume_authorization=lambda: None)
+        self.store.transition_active_for_test(second, health_gate=lambda: True, consume_authorization=lambda: None)
+        self.store.transition_active_for_test(third, health_gate=lambda: True, consume_authorization=lambda: None)
+        self.store.retire(first)
+        with patch.object(self.store, "_delete_owned_release", side_effect=retention.RetentionError("simulated pre-delete interruption")):
+            with self.assertRaises(retention.RetentionError):
+                self.store.garbage_collect(execute=True, max_deletions=1)
+        restarted = retention.RetentionStore(self.publication, repository_root=self.repo, require_durable=False)
+        result = restarted.garbage_collect()
+        self.assertNotIn(first, result["candidates"])
+        self.assertIn("recovery-protected", restarted.load()["releases"][first]["roles"])
+        shutil.rmtree(self.publication / f"release-{first}")
+        restarted = retention.RetentionStore(self.publication, repository_root=self.repo, require_durable=False)
+        restarted.garbage_collect()
+        self.assertNotIn(first, restarted.load()["releases"])
+
+    @unittest.skipUnless(os.name == "posix", "inode admission regression requires POSIX statvfs")
+    def test_inode_exhaustion_blocks_admission(self) -> None:
+        with patch.object(retention.os, "statvfs", return_value=SimpleNamespace(f_bavail=10**9, f_frsize=1, f_favail=0)):
+            assessment = retention.assess_storage([self.publication], temporary_bytes=1, persistent_bytes=1)
+        self.assertEqual(assessment.status, "BLOCKED")
+
+    def test_arbitrary_private_pass_evidence_is_not_readiness_pass(self) -> None:
+        evidence = self.root / "health.json"
+        evidence.write_text(json.dumps({"status": "PASS"}), encoding="utf-8")
+        if os.name == "posix":
+            evidence.chmod(0o600)
+        finding = readiness._evidence_finding("runtime-health", str(evidence), required=False)
+        self.assertEqual(finding.status, "UNKNOWN")
+
+    @unittest.skipUnless(os.environ.get("CC_REAL_RETENTION_OFFLINE") == "1", "mandatory real retained offline verification requires Linux CI evidence")
+    def test_real_retained_offline_verification(self) -> None:
+        self.assertEqual(os.name, "posix")
+        service_zip = Path(os.environ["CC_RETENTION_SERVICE_ZIP"])
+        bundle = Path(os.environ["CC_RETENTION_BUNDLE"])
+        trusted_root = Path(os.environ["CC_RETENTION_TRUSTED_ROOT"])
+        identity = json.loads(Path(os.environ["CC_RETENTION_EXPECTED_IDENTITY"]).read_text(encoding="utf-8"))
+        expectation = json.loads(Path(os.environ["CC_RETENTION_OFFLINE_EXPECTATION"]).read_text(encoding="utf-8"))
+        with ZipFile(service_zip) as service:
+            archive_path = self.root / identity["archive_name"]
+            archive_path.write_bytes(service.read(identity["archive_name"]))
+        verified_result = retention.provenance.run_gh_attestation_verify(archive_path, bundle=bundle, repository=expectation["repository"], signer_workflow=expectation["signer_workflow"], signer_revision=expectation["signer_revision"], source_ref=expectation["source_ref"], source_sha=expectation["source_sha"], verifier_version=expectation.get("verifier_version", retention.provenance.SUPPORTED_GH_VERSION), custom_trusted_root=trusted_root, offline=True, repository_root=self.repo)
+        authenticated = retention.provenance.validate_verified_result(verified_result, archive_name=identity["archive_name"], archive_digest=identity["archive_sha256"], archive_bytes=identity["archive_bytes"], expected=expectation, run_metadata=None, require_run_metadata=False)
+        root_digest, root_bytes = retention.provenance._sha256_file(trusted_root, retention.MAX_BUNDLE_BYTES, "trusted root")
+        expectation.update({"contract": "clashcookies.retained-verification-expectation", "version": 1, "identity_sha256": retention.identity_digest(identity), "trusted_root_sha256": root_digest, "trusted_root_bytes": root_bytes, "trusted_root_version": root_digest[:16], "verifier_version": expectation.get("verifier_version", retention.provenance.SUPPORTED_GH_VERSION)})
+        release = self.publication / f"release-{retention.identity_digest(identity)}"
+        release.mkdir(mode=0o700)
+        for path, payload in ((release / "identity.json", identity), (release / "verification-expectation.json", expectation), (release / "verification-receipt.json", authenticated.diagnostic_json())):
+            path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+            path.chmod(0o600)
+        for source, name in ((service_zip, "artifact-service.zip"), (bundle, "attestation-bundle.json"), (trusted_root, "trusted-root.jsonl")):
+            target = release / name
+            target.write_bytes(source.read_bytes())
+            target.chmod(0o600)
+        store = retention.RetentionStore(self.publication, repository_root=self.repo, require_durable=False)
+        store.register_delivery(identity, release)
+        receipt = store.verify_retained_offline(retention.identity_digest(identity))
+        self.assertEqual(receipt["status"], "verified-provenance-only")
+        self.assertTrue(receipt["authenticated"])
+
     def test_atomic_metadata_generation_and_malformed_state_fail_closed(self) -> None:
         _, digest = self.release("a")
         first = self.store.load()["generation"]
-        self.store.retire(digest)
+        self.store.retire(digest, authorization_resolution="released")
         self.assertGreater(self.store.load()["generation"], first)
         self.store.state_path.write_text("{\"contract\":\"wrong\"}", encoding="utf-8")
         with self.assertRaises(retention.RetentionError):
@@ -149,7 +248,7 @@ class DurableRetentionTests(unittest.TestCase):
         before = self.store.state_path.read_bytes()
         with patch.object(retention.os, "replace", side_effect=OSError("simulated interruption")):
             with self.assertRaises(retention.RetentionError):
-                self.store.retire(digest)
+                self.store.retire(digest, authorization_resolution="released")
         self.assertEqual(self.store.state_path.read_bytes(), before)
         self.assertFalse(any(path.name.startswith(f".{retention.STATE_FILENAME}.tmp-") for path in self.publication.iterdir()))
 
@@ -175,6 +274,10 @@ class DurableRetentionTests(unittest.TestCase):
         if os.name == "posix":
             trust.chmod(0o600)
             (journal / "reserved.json").chmod(0o600)
+        if os.name != "posix":
+            with self.assertRaises(retention.RetentionError):
+                self.store.garbage_collect(execute=True)
+            return
         self.store.garbage_collect(execute=True)
         self.assertTrue(trust.exists())
         self.assertEqual((journal / "reserved.json").read_text(encoding="utf-8"), "replay-state")
@@ -207,7 +310,7 @@ class DurableRetentionTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix", "real lock contention requires Linux/POSIX")
     def test_linux_lock_contention_is_bounded_and_retryable(self) -> None:
         ready = self.root / "ready"
-        code = "import fcntl, pathlib, sys, time; p=pathlib.Path(sys.argv[1]); fd=open(p,'a+'); fcntl.flock(fd, fcntl.LOCK_EX); p.with_name('ready').write_text('ready'); time.sleep(.35); fcntl.flock(fd, fcntl.LOCK_UN); fd.close()"
+        code = "import fcntl, os, pathlib, sys, time; p=pathlib.Path(sys.argv[1]); fd=os.open(p, os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW, 0o600); os.fchmod(fd, 0o600); fcntl.flock(fd, fcntl.LOCK_EX); ready=p.with_name('ready'); ready.write_text('ready'); os.chmod(ready, 0o600); time.sleep(.35); fcntl.flock(fd, fcntl.LOCK_UN); os.close(fd)"
         process = subprocess.Popen([sys.executable, "-c", code, str(self.publication / retention.LOCK_FILENAME)])
         try:
             for _ in range(100):

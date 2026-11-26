@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 import argparse
 import ctypes
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -25,6 +26,7 @@ import time
 from typing import Any
 
 import durable_artifact_retention as retention
+import runtime_artifact_provenance as provenance
 
 
 READINESS_CONTRACT = "clashcookies.vm-readiness"
@@ -68,10 +70,13 @@ def _command(executable: str, *arguments: str) -> tuple[bool, str]:
     if path is None:
         return False, "not found"
     try:
-        result = subprocess.run([path, *arguments], shell=False, capture_output=True, text=True, timeout=2, check=False, env={"PATH": str(Path(path).parent)})
-    except (OSError, subprocess.TimeoutExpired):
+        result = provenance.run_bounded([path, *arguments], timeout_seconds=2, max_output_bytes=MAX_COMMAND_OUTPUT, label="readiness tool probe", environment={"PATH": str(Path(path).parent)})
+    except Exception:
         return False, "probe unavailable"
-    text = _safe_text((result.stdout or result.stderr or "").strip())
+    output = result.stdout or result.stderr or ""
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", errors="replace")
+    text = _safe_text(output.strip())
     return result.returncode == 0, text or "version unavailable"
 
 
@@ -146,14 +151,18 @@ def _filesystem_findings(config: dict[str, Any]) -> list[Finding]:
         return [_finding("filesystem", "UNKNOWN", "storage-paths-missing", "filesystem admission paths require an authorized probe")]
     if len(paths) != len(configured):
         return [_finding("filesystem", "BLOCKED", "storage-paths-invalid", "all storage paths must be explicit absolute paths")]
+    database_headroom = config.get("database_headroom_bytes")
+    host_headroom = config.get("host_headroom_bytes")
+    if type(database_headroom) is not int or database_headroom < 0 or type(host_headroom) is not int or host_headroom < 0:
+        return [_finding("filesystem", "UNKNOWN", "operating-reserve-policy-missing", "explicit database and host operating reserves are required")]
     try:
         assessment = retention.assess_storage(
             paths,
             temporary_bytes=int(config.get("temporary_bytes", 0)),
             persistent_bytes=int(config.get("persistent_bytes", 0)),
             preserved_runtime_bytes=int(config.get("preserved_runtime_bytes", 0)),
-            database_headroom_bytes=int(config.get("database_headroom_bytes", 0)),
-            host_headroom_bytes=int(config.get("host_headroom_bytes", 0)),
+            database_headroom_bytes=database_headroom,
+            host_headroom_bytes=host_headroom,
         )
     except (retention.RetentionError, OSError, ValueError):
         return [_finding("filesystem", "UNKNOWN", "storage-probe-unavailable", "filesystem admission evidence is unavailable")]
@@ -250,7 +259,11 @@ def _resource_findings(config: dict[str, Any]) -> list[Finding]:
     else:
         pid_status, pid_code = ("PASS", "pid-headroom") if pid_limit - process_count >= minimum_pid_headroom else ("BLOCKED", "pid-headroom")
     findings.append(_finding("pid-headroom", pid_status, pid_code, "bounded PID headroom observed", {"pid_max": pid_limit, "processes": process_count}))
-    cgroup = Path("/sys/fs/cgroup")
+    configured_cgroup = config.get("cgroup_path")
+    cgroup = Path(configured_cgroup) if isinstance(configured_cgroup, str) and Path(configured_cgroup).is_absolute() else None
+    if cgroup is None:
+        findings.append(_finding("cgroup-headroom", "UNKNOWN", "cgroup-path-missing", "an explicit applicable cgroup path is required"))
+        return findings
     memory_max = _read_proc(cgroup / "memory.max") if cgroup.is_dir() else None
     memory_current = _read_proc(cgroup / "memory.current") if cgroup.is_dir() else None
     pids_max = _read_proc(cgroup / "pids.max") if cgroup.is_dir() else None
@@ -262,8 +275,15 @@ def _resource_findings(config: dict[str, Any]) -> list[Finding]:
             return None if value.strip() == "max" else int(value.strip()) if value.strip().isdigit() else -1
         memory_limit, pids_limit = _limit(memory_max), _limit(pids_max)
         memory_used, pids_used = int(memory_current.strip()) if memory_current.strip().isdigit() else -1, int(pids_current.strip()) if pids_current.strip().isdigit() else -1
-        cgroup_ok = memory_limit != -1 and pids_limit != -1 and memory_used >= 0 and pids_used >= 0 and (memory_limit is None or memory_limit >= memory_used) and (pids_limit is None or pids_limit >= pids_used)
-        findings.append(_finding("cgroup-headroom", "PASS" if cgroup_ok else "BLOCKED", "cgroup-headroom", "cgroup memory and PID headroom observed" if cgroup_ok else "cgroup limits are malformed or exhausted", {"memory_headroom_bytes": -1 if memory_limit is None else max(memory_limit - memory_used, 0), "pid_headroom": -1 if pids_limit is None else max(pids_limit - pids_used, 0)}))
+        memory_headroom = -1 if memory_limit is None else max(memory_limit - memory_used, 0)
+        pid_headroom = -1 if pids_limit is None else max(pids_limit - pids_used, 0)
+        required_memory = config.get("minimum_cgroup_memory_headroom_bytes")
+        required_pids = config.get("minimum_cgroup_pid_headroom")
+        thresholds_valid = type(required_memory) is int and required_memory >= 0 and type(required_pids) is int and required_pids >= 0
+        unlimited = memory_limit is None or pids_limit is None
+        cgroup_ok = thresholds_valid and not unlimited and memory_limit != -1 and pids_limit != -1 and memory_used >= 0 and pids_used >= 0 and memory_headroom >= required_memory and pid_headroom >= required_pids
+        code = "cgroup-headroom" if cgroup_ok else "cgroup-policy-missing" if not thresholds_valid or unlimited else "cgroup-headroom"
+        findings.append(_finding("cgroup-headroom", "PASS" if cgroup_ok else "UNKNOWN" if not thresholds_valid or unlimited else "BLOCKED", code, "cgroup headroom meets the explicit policy" if cgroup_ok else "cgroup headroom cannot be proven against the explicit policy", {"memory_headroom_bytes": memory_headroom, "pid_headroom": pid_headroom}))
     return findings
 
 
@@ -309,7 +329,19 @@ def _evidence_finding(name: str, value: Any, *, required: bool) -> Finding:
         payload = json.loads(_read_private_file(path, MAX_EVIDENCE_BYTES, name).decode("utf-8"))
     except (ReadinessError, UnicodeDecodeError, json.JSONDecodeError):
         return _finding(name, "UNKNOWN", "evidence-unavailable", "sanitized evidence could not be read")
-    status = payload.get("status") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or payload.get("contract") != "clashcookies.vm-readiness-evidence" or payload.get("version") != 1:
+        return _finding(name, "UNKNOWN", "evidence-unbound", "evidence is not bound to the readiness evidence contract")
+    if not isinstance(payload.get("subject_sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", payload["subject_sha256"]):
+        return _finding(name, "UNKNOWN", "evidence-unbound", "evidence subject binding is missing or malformed")
+    observed_at = payload.get("observed_at")
+    try:
+        observed = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+        fresh = abs(time.time() - observed.timestamp()) <= 300
+    except (TypeError, ValueError, OverflowError):
+        fresh = False
+    if not fresh or payload.get("authenticated") is not True or not isinstance(payload.get("source"), str) or not payload["source"].startswith("clashcookies:"):
+        return _finding(name, "UNKNOWN", "evidence-stale-or-untrusted", "evidence freshness or source binding is not acceptable")
+    status = payload.get("status")
     if status not in {"PASS", "BLOCKED", "UNKNOWN"}:
         return _finding(name, "UNKNOWN", "evidence-ambiguous", "evidence status is missing or ambiguous")
     return _finding(name, status, "evidence-status", "sanitized status evidence accepted")

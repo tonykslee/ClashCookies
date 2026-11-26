@@ -59,6 +59,8 @@ MAX_SIDECAR_BYTES = MAX_CHECKSUM_BYTES + MAX_MANIFEST_BYTES
 # retained-publication verification snapshot, bundle/root snapshots, archive
 # snapshots, extracted archive/sidecars, and validator expansion.
 MAX_TEMPORARY_BYTES = (4 * MAX_SERVICE_ZIP_BYTES) + (3 * provenance.MAX_BUNDLE_BYTES) + (2 * provenance.MAX_ARCHIVE_BYTES) + MAX_SIDECAR_BYTES + MAX_VALIDATOR_EXPANDED_BYTES
+DEFAULT_DATABASE_HEADROOM_BYTES = 512 * 1024 * 1024
+DEFAULT_HOST_HEADROOM_BYTES = 256 * 1024 * 1024
 ALLOWED_FILES = {"artifact-service.zip", "attestation-bundle.json", "authorization-envelope.json"}
 
 
@@ -76,6 +78,8 @@ class DeliveryLimits:
     max_elapsed_seconds: int = MAX_RECEIVING_SECONDS
     max_subprocess_output_bytes: int = MAX_SSH_OUTPUT_BYTES
     max_temporary_bytes: int = MAX_TEMPORARY_BYTES
+    database_headroom_bytes: int = DEFAULT_DATABASE_HEADROOM_BYTES
+    host_headroom_bytes: int = DEFAULT_HOST_HEADROOM_BYTES
 
 
 @dataclass(frozen=True)
@@ -764,7 +768,7 @@ def _write_snapshot(snapshot: provenance.ZipSnapshot, destination: Path) -> None
         _fail(f"verified artifact snapshot copy failed: {error}")
 
 
-def _publication_payload(staging: Path, identity: Any, service_zip_snapshot: provenance.ZipSnapshot, bundle: Path | None, authorization_envelope: Any | None = None) -> tuple[tuple[str, int] | None, tuple[str, int] | None]:
+def _publication_payload(staging: Path, identity: Any, service_zip_snapshot: provenance.ZipSnapshot, bundle: Path | None, authorization_envelope: Any | None = None, *, verification_expectation: dict[str, Any] | None = None, verification_receipt: dict[str, Any] | None = None, trusted_root: Path | None = None) -> tuple[tuple[str, int] | None, tuple[str, int] | None]:
     identity_payload = json.dumps(_identity_payload(identity), sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
     provenance._write_private_bytes(staging / "identity.json", identity_payload, "published identity")
     target = staging / "artifact-service.zip"
@@ -781,6 +785,14 @@ def _publication_payload(staging: Path, identity: Any, service_zip_snapshot: pro
         authorization_result = hashlib.sha256(payload).hexdigest(), len(payload)
     else:
         authorization_result = None
+    if verification_expectation is not None and verification_receipt is not None and trusted_root is not None:
+        expectation_copy = staging / "verification-expectation.json"
+        expectation_payload = provenance._canonical_json(verification_expectation) + b"\n"
+        provenance._write_private_bytes(expectation_copy, expectation_payload, "published verification expectation")
+        receipt_copy = staging / "verification-receipt.json"
+        receipt_payload = provenance._canonical_json(verification_receipt) + b"\n"
+        provenance._write_private_bytes(receipt_copy, receipt_payload, "published verification receipt")
+        _bounded_copy(trusted_root, staging / "trusted-root.jsonl", MAX_BUNDLE_BYTES, "published trusted root")
     return bundle_result, authorization_result
 
 
@@ -797,14 +809,17 @@ def _assert_delivery_storage(receiving_root: Path, limits: DeliveryLimits, publi
         assessment = retention.assess_storage(
             [receiving_root, publication_root],
             temporary_bytes=limits.max_temporary_bytes,
-            persistent_bytes=limits.max_service_zip_bytes + limits.max_bundle_bytes + limits.max_authorization_bytes,
+            persistent_bytes=limits.max_service_zip_bytes + (3 * limits.max_bundle_bytes) + limits.max_authorization_bytes,
             preserved_runtime_bytes=retention.retained_bytes(publication_root),
+            database_headroom_bytes=limits.database_headroom_bytes,
+            host_headroom_bytes=limits.host_headroom_bytes,
         )
         _require(assessment.status == "PASS", "delivery storage admission is insufficient for bounded temporary and retained evidence capacity")
 
 
 def _register_retained_delivery(publication_root: Path, repository_root: Path, destination: Path, identity: Any, *, authorization_reserved: bool) -> None:
     store = retention.RetentionStore(publication_root, repository_root=repository_root)
+    store.initialize(assume_locked=True)
     store.register_delivery(_identity_payload(identity), destination, authorization_reserved=authorization_reserved, assume_locked=True)
 
 
@@ -948,13 +963,16 @@ def publish_development_delivery(
                 repository_root=repository_root,
                 excluded_roots=(receiving_root, publication_root),
             )
-            provenance.validate_verified_result(verified, archive_name=expected_identity.archive_name, archive_digest=expected_identity.archive_sha256, archive_bytes=expected_identity.archive_bytes, expected=offline_expectation, run_metadata=None, require_run_metadata=False)
+            authenticated = provenance.validate_verified_result(verified, archive_name=expected_identity.archive_name, archive_digest=expected_identity.archive_sha256, archive_bytes=expected_identity.archive_bytes, expected=offline_expectation, run_metadata=None, require_run_metadata=False)
             _validate_provenance_binding(expected_identity, offline_expectation, verified)
             _attempt_bytes(attempt, limits.max_temporary_bytes)
             with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload_owner:
                 payload = payload_owner.path
                 assert payload is not None
-                expected_bundle, _ = _publication_payload(payload, expected_identity, snapshot, attestation_bundle)
+                root_digest, root_bytes = provenance._sha256_file(trusted_root, MAX_BUNDLE_BYTES, "independently configured trusted root")
+                retained_expectation = dict(offline_expectation)
+                retained_expectation.update({"contract": "clashcookies.retained-verification-expectation", "version": 1, "identity_sha256": _identity_digest(expected_identity), "trusted_root_sha256": root_digest, "trusted_root_bytes": root_bytes, "trusted_root_version": root_digest[:16], "verifier_version": offline_expectation.get("verifier_version", provenance.SUPPORTED_GH_VERSION)})
+                expected_bundle, _ = _publication_payload(payload, expected_identity, snapshot, attestation_bundle, verification_expectation=retained_expectation, verification_receipt=authenticated.diagnostic_json(), trusted_root=trusted_root)
                 destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle, staging_owner=payload_owner)
                 _register_retained_delivery(publication_root, repository_root, destination, expected_identity, authorization_reserved=False)
         finally:
@@ -1266,13 +1284,16 @@ def receive_command(args: argparse.Namespace) -> int:
                 excluded_roots=(receiving_root, publication_root),
                 deadline=deadline,
             )
-            provenance.validate_verified_result(verified, archive_name=expected_identity.archive_name, archive_digest=expected_identity.archive_sha256, archive_bytes=expected_identity.archive_bytes, expected=expectation, run_metadata=None, require_run_metadata=False)
+            authenticated = provenance.validate_verified_result(verified, archive_name=expected_identity.archive_name, archive_digest=expected_identity.archive_sha256, archive_bytes=expected_identity.archive_bytes, expected=expectation, run_metadata=None, require_run_metadata=False)
             _validate_provenance_binding(expected_identity, expectation, verified)
             _attempt_bytes(attempt, limits.max_temporary_bytes)
             with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload_owner:
                 payload = payload_owner.path
                 assert payload is not None
-                expected_bundle, _ = _publication_payload(payload, expected_identity, snapshot, files["attestation-bundle.json"])
+                root_digest, root_bytes = provenance._sha256_file(trusted_root, MAX_BUNDLE_BYTES, "independently configured trusted root")
+                retained_expectation = dict(expectation)
+                retained_expectation.update({"contract": "clashcookies.retained-verification-expectation", "version": 1, "identity_sha256": _identity_digest(expected_identity), "trusted_root_sha256": root_digest, "trusted_root_bytes": root_bytes, "trusted_root_version": root_digest[:16], "verifier_version": expectation.get("verifier_version", provenance.SUPPORTED_GH_VERSION)})
+                expected_bundle, _ = _publication_payload(payload, expected_identity, snapshot, files["attestation-bundle.json"], verification_expectation=retained_expectation, verification_receipt=authenticated.diagnostic_json(), trusted_root=trusted_root)
                 destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle, staging_owner=payload_owner)
                 _register_retained_delivery(publication_root, repository_root, destination, expected_identity, authorization_reserved=False)
             result = DeliveryResult("retry-success" if retry else "published", str(destination), _identity_digest(expected_identity), expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes, expected_identity.archive_sha256, expected_identity.archive_bytes, True, False)

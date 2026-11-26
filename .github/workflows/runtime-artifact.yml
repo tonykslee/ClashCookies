@@ -426,6 +426,13 @@ jobs:
             echo "CC_RECEIVER_TRUSTED_ROOT=$custody/trusted_root.jsonl"
             echo "CC_RECEIVER_OFFLINE_EXPECTATION=$custody/receiver-offline-expectation.json"
             echo "CC_RECEIVER_GH=$GH_ATTESTATION_CLI"
+            echo "CC_REAL_RETENTION_OFFLINE=1"
+            echo "CC_RETENTION_REPOSITORY_ROOT=$GITHUB_WORKSPACE"
+            echo "CC_RETENTION_SERVICE_ZIP=$custody/artifact-service.zip"
+            echo "CC_RETENTION_BUNDLE=$custody/attestation-bundle.json"
+            echo "CC_RETENTION_TRUSTED_ROOT=$custody/trusted_root.jsonl"
+            echo "CC_RETENTION_EXPECTED_IDENTITY=$custody/receiver-expected-identity.json"
+            echo "CC_RETENTION_OFFLINE_EXPECTATION=$custody/receiver-offline-expectation.json"
           } >> "$GITHUB_ENV"
 
       - name: Run mandatory genuine Linux/OpenSSH receiver integration
@@ -516,6 +523,12 @@ jobs:
           assert not verified.run_metadata_independently_checked
           print("genuine pinned-gh offline attestation verification passed without token or network")
           PY
+
+      - name: Verify retained artifact offline after source expiry boundary
+        run: |
+          set -euo pipefail
+          test "$CC_REAL_RETENTION_OFFLINE" = 1
+          python -m unittest tests.test_durable_artifact_retention.DurableRetentionTests.test_real_retained_offline_verification -v
 
       - name: Verify synthetic policy output is explicitly non-authoritative
         run: |
