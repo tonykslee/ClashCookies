@@ -78,6 +78,7 @@ class DurableActivationBoundaryTests(unittest.TestCase):
             "phase": "successful-activation",
             "intent": {},
             "rollback_consumption": None,
+            "delivery_consumption": {},
         }
         tx.store = Mock()
         tx.store.load.return_value = {"activation_operations": {operation["operation_id"]: operation}}

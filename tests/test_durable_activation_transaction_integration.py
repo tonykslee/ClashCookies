@@ -577,6 +577,89 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             self.assertIsNone(tx.store.load()["active_release"])
 
     @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_RECEIVER") == "1", "mandatory Linux coordinator integration")
+    def test_real_coordinator_direct_consumption_requires_durable_intent_and_reconciles_delivery(self) -> None:
+        # A visible intent after os.replace is not enough for a fresh
+        # coordinator to burn replay authority while its directory fsync is
+        # still failing.
+        with TemporaryDirectory() as directory_name:
+            fixture = self._fixture(Path(directory_name) / "forward")
+            tx = self._transaction(fixture)
+            result = self._forward_to_health(tx, fixture, "integration-direct-forward", "integration-direct-forward", consume_forward=False)
+            envelope = result["envelope"]
+            before = tx.store.load()
+            pointers = (before["active_release"], before["previous_known_good_release"], before["pointer_generation"])
+            with patch.object(retention, "_fsync_directory", side_effect=retention.RetentionError("forward intent rename-before-directory-fsync")):
+                with self.assertRaises(retention.RetentionError):
+                    tx.consume("integration-direct-forward", envelope)
+            self.assertEqual(tx.store.load()["activation_operations"]["integration-direct-forward"]["phase"], "authorization-consumption-pending")
+            with patch.object(retention, "_fsync_directory", side_effect=retention.RetentionError("persistent forward intent durability failure")):
+                with self.assertRaises(retention.RetentionError):
+                    self._transaction(fixture).consume("integration-direct-forward", envelope)
+            self.assertEqual(fixture["activation_journal"].inspect(envelope, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-forward")["state"], "reserved")
+            state = tx.store.load()
+            self.assertEqual((state["active_release"], state["previous_known_good_release"], state["pointer_generation"]), pointers)
+            consumed = self._transaction(fixture).consume("integration-direct-forward", envelope)
+            self.assertEqual(consumed["phase"], "authorization-consumed")
+
+        with TemporaryDirectory() as directory_name:
+            fixture = self._fixture(Path(directory_name) / "rollback")
+            tx = self._transaction(fixture)
+            self._forward_to_health(tx, fixture, "integration-direct-rollback", "integration-direct-rollback-forward")
+            tx.advance("integration-direct-rollback", "successful-activation")
+            state = tx.store.load()
+            fixture.update({"incumbent_release": None, "previous_known_good_release": retention.LEGACY_BASELINE_ID})
+            recovery, _ = self._activation_authorization(fixture, "integration-direct-rollback", "integration-direct-rollback-recovery", state["pointer_generation"], retention.LEGACY_BASELINE_ID, "post-activation", "activation-recovery")
+            fixture["activation_journal"].reserve(recovery, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-recovery")
+            with patch.object(retention, "_fsync_directory", side_effect=retention.RetentionError("rollback intent rename-before-directory-fsync")):
+                with self.assertRaises(retention.RetentionError):
+                    tx.begin_rollback("integration-direct-rollback", recovery)
+            pending = tx.store.load()["activation_operations"]["integration-direct-rollback"]
+            self.assertEqual(pending["phase"], "compensation-authorization-consumption-pending")
+            pointers = (tx.store.load()["active_release"], tx.store.load()["previous_known_good_release"], tx.store.load()["pointer_generation"])
+            with patch.object(retention, "_fsync_directory", side_effect=retention.RetentionError("persistent rollback intent durability failure")):
+                with self.assertRaises(retention.RetentionError):
+                    self._transaction(fixture).consume_rollback("integration-direct-rollback", recovery)
+            self.assertEqual(fixture["activation_journal"].inspect(recovery, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-recovery")["state"], "reserved")
+            state = tx.store.load()
+            self.assertEqual((state["active_release"], state["previous_known_good_release"], state["pointer_generation"]), pointers)
+            consumed = self._transaction(fixture).consume_rollback("integration-direct-rollback", recovery)
+            self.assertEqual(consumed["phase"], "rollback-intent")
+
+        with TemporaryDirectory() as directory_name:
+            fixture = self._fixture(Path(directory_name) / "delivery")
+            tx = self._transaction(fixture)
+            result = self._forward_to_health(tx, fixture, "integration-direct-delivery", "integration-direct-delivery-forward", consume_forward=False)
+            envelope = result["envelope"]
+            tx.consume("integration-direct-delivery", envelope)
+            before = tx.store.load()
+            pointers = (before["active_release"], before["previous_known_good_release"], before["pointer_generation"])
+            with patch.object(retention, "_fsync_directory", side_effect=retention.RetentionError("delivery intent durability failure")):
+                with self.assertRaises(retention.RetentionError):
+                    self._transaction(fixture).advance("integration-direct-delivery", "incumbent-stop-intent")
+            self.assertEqual(fixture["delivery_journal"].inspect(fixture["delivery_envelope"], fixture["identity"], fixture["allowlist"], fixture["trust"], operation="forward-release")["state"], "reserved")
+            state = tx.store.load()
+            self.assertEqual((state["active_release"], state["previous_known_good_release"], state["pointer_generation"]), pointers)
+            advanced = self._transaction(fixture).advance("integration-direct-delivery", "incumbent-stop-intent")
+            self.assertEqual(advanced["phase"], "incumbent-stop-intent")
+            self.assertIsNotNone(advanced["delivery_consumption"])
+
+        with TemporaryDirectory() as directory_name:
+            fixture = self._fixture(Path(directory_name) / "delivery-reconcile")
+            tx = self._transaction(fixture)
+            result = self._forward_to_health(tx, fixture, "integration-delivery-reconcile", "integration-delivery-reconcile-forward", consume_forward=False)
+            envelope = result["envelope"]
+            tx.consume("integration-delivery-reconcile", envelope)
+            with patch.object(tx.store, "record_delivery_consumption", side_effect=activation.ActivationError("interrupted before retention delivery proof publication")):
+                with self.assertRaises(activation.ActivationError):
+                    tx.advance("integration-delivery-reconcile", "incumbent-stop-intent")
+            self.assertEqual(fixture["delivery_journal"].inspect(fixture["delivery_envelope"], fixture["identity"], fixture["allowlist"], fixture["trust"], operation="forward-release")["state"], "consumed")
+            interrupted = tx.store.load()["activation_operations"]["integration-delivery-reconcile"]
+            self.assertIsNone(interrupted["delivery_consumption"])
+            reconciled = self._transaction(fixture).advance("integration-delivery-reconcile", "incumbent-stop-intent")
+            self.assertEqual(reconciled["phase"], "incumbent-stop-intent")
+            self.assertIsNotNone(reconciled["delivery_consumption"])
+
+    @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_RECEIVER") == "1", "mandatory Linux coordinator integration")
     def test_real_coordinator_rejects_substituted_historical_terminal_observations(self) -> None:
         with TemporaryDirectory() as directory_name:
             fixture = self._fixture(Path(directory_name))
