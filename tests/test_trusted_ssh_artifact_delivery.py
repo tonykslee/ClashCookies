@@ -146,16 +146,17 @@ def retained_candidate_context(identity: delivery.provenance.TrustedReleaseIdent
     }
 
 
-def build_candidate_validator_fixture(root: Path, source_service_zip: Path, source_identity: delivery.provenance.TrustedReleaseIdentity) -> dict[str, object]:
+def build_candidate_validator_fixture(root: Path, source_service_zip: Path, source_identity: delivery.provenance.TrustedReleaseIdentity, candidate_nonce: str = "default") -> dict[str, object]:
     """Build an explicitly synthetic candidate archive from the real dev artifact shape."""
     with ZipFile(source_service_zip) as source_service:
         source_archive_bytes = source_service.read(source_identity.archive_name)
         source_manifest = json.loads(source_service.read(f"{source_identity.archive_name}.manifest.json"))
-    source_sha = "1" * 40
-    run_id = 2987654321
+    nonce_digest = hashlib.sha256(candidate_nonce.encode("utf-8")).hexdigest()
+    source_sha = nonce_digest[:40]
+    run_id = 2987654321 + int(nonce_digest[:6], 16)
     run_attempt = 1
-    signer_revision = "3" * 40
-    producer_revision = "2" * 40
+    signer_revision = hashlib.sha256((candidate_nonce + ":signer").encode("utf-8")).hexdigest()[:40]
+    producer_revision = hashlib.sha256((candidate_nonce + ":producer").encode("utf-8")).hexdigest()[:40]
     archive_name = f"clashcookies-runtime-{source_sha}.tar.gz"
     candidate_manifest = json.loads(json.dumps(source_manifest))
     candidate_manifest["artifact"].update({"name": archive_name, "artifactClass": delivery.provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS, "profile": delivery.provenance.PRODUCTION_CANDIDATE_PROFILE, "nonProductionEvidence": True})

@@ -83,6 +83,24 @@ class DurableRetentionTests(unittest.TestCase):
         self.store.register_delivery(identity, path)
         return identity, identity_digest
 
+    def synthetic_pointer_for_retention_fixture(self, identity_sha256: str) -> None:
+        """Set pointer metadata for retention-only tests; not an activation path."""
+        state = self.store.load()
+        old_active = state["active_release"]
+        old_previous = state["previous_known_good_release"]
+        if old_previous not in (None, retention.LEGACY_BASELINE_ID, old_active):
+            previous_record = state["releases"][old_previous]
+            previous_record["roles"] = ["retired"]
+            previous_record["retired_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        if old_active and old_active != identity_sha256:
+            state["releases"][old_active]["roles"] = []
+        state["active_release"] = identity_sha256
+        state["previous_known_good_release"] = old_active or retention.LEGACY_BASELINE_ID
+        state["releases"][identity_sha256]["roles"] = []
+        state["releases"][identity_sha256]["retired_at"] = None
+        state["pointer_generation"] += 1
+        self.store._save(state)
+
     def test_first_legacy_baseline_is_distinct_and_protected(self) -> None:
         state = self.store.load()
         self.assertEqual(state["previous_known_good_release"], retention.LEGACY_BASELINE_ID)
@@ -94,8 +112,8 @@ class DurableRetentionTests(unittest.TestCase):
         _, second = self.release("b")
         _, third = self.release("c")
         _, fourth = self.release("d")
-        self.store.transition_active_for_test(first, health_gate=lambda: True, consume_authorization=lambda: None)
-        self.store.transition_active_for_test(second, health_gate=lambda: True, consume_authorization=lambda: None)
+        self.synthetic_pointer_for_retention_fixture(first)
+        self.synthetic_pointer_for_retention_fixture(second)
         self.store.mark_operation("recover-1", fourth, kind="delivery", recovery_required=True)
         dry_run = self.store.garbage_collect()
         self.assertNotIn(first, dry_run["candidates"])
@@ -126,9 +144,9 @@ class DurableRetentionTests(unittest.TestCase):
         _, first = self.release("a")
         _, second = self.release("b")
         _, third = self.release("c")
-        self.store.transition_active_for_test(first, health_gate=lambda: True, consume_authorization=lambda: None)
-        self.store.transition_active_for_test(second, health_gate=lambda: True, consume_authorization=lambda: None)
-        self.store.transition_active_for_test(third, health_gate=lambda: True, consume_authorization=lambda: None)
+        self.synthetic_pointer_for_retention_fixture(first)
+        self.synthetic_pointer_for_retention_fixture(second)
+        self.synthetic_pointer_for_retention_fixture(third)
         self.store.retire(first)
         dry_run = self.store.garbage_collect()
         self.assertEqual(dry_run["candidates"], [first])
@@ -159,8 +177,8 @@ class DurableRetentionTests(unittest.TestCase):
     def test_gc_preserves_release_with_unsafe_private_permissions(self) -> None:
         _, digest = self.release("unsafe")
         _, next_digest = self.release("unsafe-next")
-        self.store.transition_active_for_test(digest, health_gate=lambda: True, consume_authorization=lambda: None)
-        self.store.transition_active_for_test(next_digest, health_gate=lambda: True, consume_authorization=lambda: None)
+        self.synthetic_pointer_for_retention_fixture(digest)
+        self.synthetic_pointer_for_retention_fixture(next_digest)
         release_path = self.publication / f"release-{digest}"
         release_path.chmod(0o755)
         result = self.store.garbage_collect(execute=True)
@@ -195,9 +213,9 @@ class DurableRetentionTests(unittest.TestCase):
         _, first = self.release("gc-a")
         _, second = self.release("gc-b")
         _, third = self.release("gc-c")
-        self.store.transition_active_for_test(first, health_gate=lambda: True, consume_authorization=lambda: None)
-        self.store.transition_active_for_test(second, health_gate=lambda: True, consume_authorization=lambda: None)
-        self.store.transition_active_for_test(third, health_gate=lambda: True, consume_authorization=lambda: None)
+        self.synthetic_pointer_for_retention_fixture(first)
+        self.synthetic_pointer_for_retention_fixture(second)
+        self.synthetic_pointer_for_retention_fixture(third)
         self.store.retire(first)
         with patch.object(self.store, "_delete_owned_release", side_effect=retention.RetentionError("simulated pre-delete interruption")):
             with self.assertRaises(retention.RetentionError):
@@ -229,9 +247,9 @@ class DurableRetentionTests(unittest.TestCase):
         _, first = self.release("sigkill-a")
         _, second = self.release("sigkill-b")
         _, third = self.release("sigkill-c")
-        self.store.transition_active_for_test(first, health_gate=lambda: True, consume_authorization=lambda: None)
-        self.store.transition_active_for_test(second, health_gate=lambda: True, consume_authorization=lambda: None)
-        self.store.transition_active_for_test(third, health_gate=lambda: True, consume_authorization=lambda: None)
+        self.synthetic_pointer_for_retention_fixture(first)
+        self.synthetic_pointer_for_retention_fixture(second)
+        self.synthetic_pointer_for_retention_fixture(third)
         child_code = "import os, sys; sys.path.insert(0, sys.argv[1]); import durable_artifact_retention as r; s=r.RetentionStore(__import__('pathlib').Path(sys.argv[2]), repository_root=__import__('pathlib').Path(sys.argv[3]), require_durable=False); s._delete_owned_release=lambda *args: os.kill(os.getpid(), 9); s.garbage_collect(execute=True, max_deletions=1)"
         process = subprocess.run([sys.executable, "-c", child_code, str(ROOT / "scripts"), str(self.publication), str(self.repo)], check=False)
         self.assertEqual(process.returncode, -signal.SIGKILL)
@@ -282,9 +300,9 @@ class DurableRetentionTests(unittest.TestCase):
         _, digest = self.release("a")
         _, next_digest = self.release("a-next")
         _, final_digest = self.release("a-final")
-        self.store.transition_active_for_test(digest, health_gate=lambda: True, consume_authorization=lambda: None)
-        self.store.transition_active_for_test(next_digest, health_gate=lambda: True, consume_authorization=lambda: None)
-        self.store.transition_active_for_test(final_digest, health_gate=lambda: True, consume_authorization=lambda: None)
+        self.synthetic_pointer_for_retention_fixture(digest)
+        self.synthetic_pointer_for_retention_fixture(next_digest)
+        self.synthetic_pointer_for_retention_fixture(final_digest)
         first = self.store.load()["generation"]
         self.store.retire(digest)
         self.assertGreater(self.store.load()["generation"], first)
@@ -296,9 +314,9 @@ class DurableRetentionTests(unittest.TestCase):
         _, digest = self.release("a")
         _, next_digest = self.release("a-next")
         _, final_digest = self.release("a-final")
-        self.store.transition_active_for_test(digest, health_gate=lambda: True, consume_authorization=lambda: None)
-        self.store.transition_active_for_test(next_digest, health_gate=lambda: True, consume_authorization=lambda: None)
-        self.store.transition_active_for_test(final_digest, health_gate=lambda: True, consume_authorization=lambda: None)
+        self.synthetic_pointer_for_retention_fixture(digest)
+        self.synthetic_pointer_for_retention_fixture(next_digest)
+        self.synthetic_pointer_for_retention_fixture(final_digest)
         before = self.store.state_path.read_bytes()
         with patch.object(retention.os, "replace", side_effect=OSError("simulated interruption")):
             with self.assertRaises(retention.RetentionError):
@@ -342,9 +360,9 @@ class DurableRetentionTests(unittest.TestCase):
         _, first = self.release("a")
         _, second = self.release("b")
         _, third = self.release("c")
-        self.store.transition_active_for_test(first, health_gate=lambda: True, consume_authorization=lambda: None)
-        self.store.transition_active_for_test(second, health_gate=lambda: True, consume_authorization=lambda: None)
-        self.store.transition_active_for_test(third, health_gate=lambda: True, consume_authorization=lambda: None)
+        self.synthetic_pointer_for_retention_fixture(first)
+        self.synthetic_pointer_for_retention_fixture(second)
+        self.synthetic_pointer_for_retention_fixture(third)
         self.store.retire(first)
         trust = self.root / "trusted-root.jsonl"
         journal = self.root / "authorization-journal"

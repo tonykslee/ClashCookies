@@ -1482,6 +1482,27 @@ class AuthorizationReplayJournal:
         observed = self.inspect(envelope, identity, revision_allowlist, trust, operation=operation, allow_consumed=True, now=now)
         require(observed.get("state") == "consumed", "authorization replay entry is not consumed")
 
+    def inspect_consumed_record(self, authorization_id: str, *, record_sha256: str, identity_sha256: str | None = None, retry_key: str, scope: str, operation: str) -> dict[str, Any]:
+        """Reconcile one already-verified consumed record without fresh authority."""
+        require_string(authorization_id, "authorization_id")
+        require_digest(record_sha256, "record_sha256")
+        if identity_sha256 is not None:
+            require_digest(identity_sha256, "identity_sha256")
+        require_string(retry_key, "retry_key")
+        require(operation in {"forward-release", "recovery-release", "activation-forward", "activation-recovery"}, "authorization operation context is required")
+        with self._locked():
+            path = self.root / f"{hashlib.sha256(authorization_id.encode('utf-8')).hexdigest()}.json"
+            require(self._entry_exists(path), "authorization replay entry is missing")
+            current = self._read(path)
+            require(current.get("state") == "consumed", "authorization replay entry is not consumed")
+            expected = {"authorization_id": authorization_id, "record_sha256": record_sha256, "retry_key": retry_key, "scope": scope, "operation": operation}
+            if identity_sha256 is not None:
+                expected["identity_sha256"] = identity_sha256
+            for field, value in expected.items():
+                require(current.get(field) == value, f"authorization replay consumed evidence conflicts on {field}")
+            self._reestablish_existing_durability(path)
+            return dict(current)
+
 
 def validate_independent_authorization(authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, *, revision_allowlist: AuthorizationRevisionAllowlist | None = None, now: datetime | None = None) -> None:
     """Check binding, explicit revisions, and lifecycle semantics for a verified record."""

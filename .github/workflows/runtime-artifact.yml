@@ -529,7 +529,13 @@ jobs:
             tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_candidate_manifest_expectation_rejects_repository_owner_and_signer_mismatches \
             tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_real_openssh_candidate_receiver_uses_hardened_validator_and_authorization_custody \
             tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_receiver_lock_contention_is_bounded_and_retryable \
-            tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_synthetic_authorized_delivery_composes_reservation_publication_and_durable_retry -v
+            tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_synthetic_authorized_delivery_composes_reservation_publication_and_durable_retry \
+            tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_first_activation_and_first_rollback \
+            tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_three_successive_activations_and_subsequent_rollback \
+            tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_failed_runtime_observations_compensate \
+            tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_reconciliation_and_interrupted_rollback \
+            tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_subprocess_termination_at_journal_boundaries \
+            tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_lock_durability_and_gc_boundaries -v
 
       - name: Verify genuine attestation offline without token or network
         if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'development-runtime-evidence'
