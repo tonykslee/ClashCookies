@@ -366,16 +366,22 @@ class ActivationTransaction:
                 "successful-rollback": set(), "recovery-required": {operation["intent"].get("recovery_phase")},
             }
             _require(phase == operation["phase"] or phase in legal.get(operation["phase"], set()), f"illegal activation phase transition: {operation['phase']} -> {phase}")
+            recovery = phase in {"rollback-intent", "rollback-observed", "successful-rollback"} or operation["rollback_consumption"] is not None
+            # Establish the actual forward/recovery journal authority before
+            # any delivery replay side effect.  A structurally valid retention
+            # proof is not enough to authorize consumption.
+            authority = self._consumed_authority(operation, recovery=recovery, assume_locked=True)
             if phase in {"incumbent-stop-intent", "successful-activation"}:
+                if phase == "successful-activation":
+                    _require(operation["phase"] == "candidate-health-verified" and operation["observations"].get("candidate-health-verified", {}).get("outcome") == "healthy", "activation commit prerequisites are incomplete")
                 # Delivery and activation replay consumption are both durable
                 # prerequisites for any incumbent disruption.  This runs only
                 # after the legal-transition check, so an illegal transition
-                # cannot consume delivery authority as a side effect.
+                # or missing forward authority cannot consume delivery authority
+                # as a side effect.
                 self._ensure_delivery_consumed(operation, assume_locked=True)
                 operation = self.store.load()["activation_operations"].get(operation_id)
                 _require(operation is not None, "activation operation is unknown")
-            recovery = phase in {"rollback-intent", "rollback-observed", "successful-rollback"} or operation["rollback_consumption"] is not None
-            authority = self._consumed_authority(operation, recovery=recovery, assume_locked=True)
             return self.store.transition_activation(operation_id, phase=phase, authority=authority, assume_locked=True)
 
     def begin_rollback(self, operation_id: str, envelope: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
@@ -428,7 +434,10 @@ class ActivationTransaction:
         operation = state["activation_operations"].get(operation_id)
         _require(operation is not None, "activation operation is unknown")
         if operation["phase"] not in {"compensation-authorization-consumption-pending", "recovery-required"}:
-            return operation
+            with self._locked():
+                durable_state = self.store.load()
+                self.store._reestablish_state_durability()
+                return durable_state["activation_operations"][operation_id]
         identity, _, _ = self._candidate(operation["candidate_release"])
         binding = self._operation_binding(operation, generation=operation["rollback_expected_pointer_generation"], recovery_kind=operation["rollback_kind"], authorization_retry_key=operation["rollback_retry_key"])
         authorization = self._verify_activation_authorization(envelope, identity, operation=ACTIVATION_AUTHORIZATION_RECOVERY, binding=binding, now=now, historical=True)
@@ -441,5 +450,6 @@ class ActivationTransaction:
                 if operation["phase"] == "recovery-required":
                     self.store.transition_activation(operation_id, phase="compensation-authorization-consumption-pending", expected_phase="recovery-required", authority=authority, assume_locked=True)
                 return self.store.transition_activation(operation_id, phase="rollback-intent", expected_phase="compensation-authorization-consumption-pending", authority=authority, assume_locked=True)
-        return operation
+            self.store._reestablish_state_durability()
+            return self.store.load()["activation_operations"][operation_id]
 

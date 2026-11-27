@@ -2,6 +2,34 @@
 
 Status: implemented as a non-operational repository foundation; production remains **NO-GO**.
 
+## Retrospective P0 corrections
+
+The post-merge review of PR #2198 identified three narrow defects, corrected on
+the follow-up feature branch before any operational 3d-2 work:
+
+- Rollback reconciliation now reopens the canonical deployment and retention
+  locks, reloads the exact retention state, and re-fsyncs both the state file
+  and publication directory before returning an already-terminal result.
+  Persistent file or directory fsync failure remains an error; a fresh retry
+  must complete the durability check before reporting success.
+- `ActivationTransaction.advance()` now derives and validates the actual
+  forward/recovery replay authority before it can reconcile or consume the
+  retained delivery reservation. Missing, conflicting, or substituted forward
+  journal evidence therefore leaves delivery authority reserved.
+- Retention validation now checks every stored observation, including
+  historical observations in terminal records, for exact contract, phase,
+  outcome, operation, runtime identity, subject, subject release, and bound
+  detail fields. It also enforces phase prerequisite chains, recovery resume
+  coherence, rollback binding, and per-transaction pointer-generation rules
+  without requiring historical terminal records to match the current
+  generation.
+
+The regressions are covered by the activation boundary tests and the retained
+state mutation test. Genuine Linux coordinator coverage remains authoritative
+for descriptor durability, process interruption, lock ordering, replay
+reconciliation, and Docker/filesystem behavior; Windows skips do not count as
+Linux evidence. Synthetic attestation seams remain explicitly non-authoritative.
+
 ## Ownership and contract
 
 `durable_artifact_retention.py` remains the single owner of `retention-state.json`, release custody, active/previous-known-good pointers, pointer generation, and garbage-collection protection. State version 2 accepts an existing version-1 document only through an exact validated compatibility upgrade; missing, malformed, or material-bearing state is never initialized over. Activation operations are stored inside this retention state, not in a competing active-release store.

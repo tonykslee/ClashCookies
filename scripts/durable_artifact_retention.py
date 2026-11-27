@@ -64,6 +64,14 @@ ACTIVATION_PHASES = (
 )
 ACTIVATION_TERMINAL_PHASES = {"successful-activation", "successful-rollback"}
 ACTIVATION_OBSERVED_PHASES = {"incumbent-stop-observed", "candidate-start-observed", "candidate-health-verified", "rollback-observed"}
+_ACTIVATION_OBSERVATION_FIELDS = {"contract", "version", "source", "phase", "outcome", "operation_id", "candidate_release", "runtime_identity_sha256", "subject", "subject_release", "details"}
+_ACTIVATION_OBSERVATION_ORDER = {
+    "incumbent-stop-observed": 1,
+    "candidate-start-observed": 2,
+    "candidate-health-verified": 3,
+    "rollback-observed": 4,
+}
+_ACTIVATION_OBSERVATION_OUTCOMES = {"stopped", "started", "healthy", "failed", "unhealthy", "uncertain"}
 
 
 class RetentionError(RuntimeError):
@@ -268,6 +276,69 @@ def _initial_state() -> dict[str, Any]:
     }
 
 
+def _activation_observation_expected_target(operation: dict[str, Any], phase: str) -> tuple[str, str]:
+    subject = {
+        "incumbent-stop-observed": "incumbent",
+        "candidate-start-observed": "candidate",
+        "candidate-health-verified": "candidate",
+        "rollback-observed": "rollback-target",
+    }[phase]
+    if subject == "candidate":
+        release = operation["candidate_release"]
+    elif subject == "incumbent":
+        release = operation["incumbent_release"] or LEGACY_BASELINE_ID
+    else:
+        release = operation["rollback_target"]
+    _require(isinstance(release, str), f"activation {phase} subject release is missing")
+    return subject, release
+
+
+def _activation_observation_limit(phase: str, recovery_phase: str | None) -> int:
+    effective_phase = recovery_phase if phase == "recovery-required" else phase
+    if effective_phase in {"validated-intent", "authorization-consumption-pending", "authorization-consumed", "incumbent-stop-intent"}:
+        return 0
+    if effective_phase in {"incumbent-stop-observed", "candidate-start-intent"}:
+        return 1
+    if effective_phase == "candidate-start-observed":
+        return 2
+    if effective_phase in {"candidate-health-verified", "successful-activation", "compensation-authorization-consumption-pending", "rollback-intent"}:
+        return 3
+    if effective_phase in {"rollback-observed", "successful-rollback"}:
+        return 4
+    _fail("activation observation phase has no bounded progress")
+
+
+def _validate_activation_observations(operation: dict[str, Any]) -> None:
+    observations = operation["observations"]
+    _require(isinstance(observations, dict), "activation observations are malformed")
+    _require(set(observations).issubset(ACTIVATION_OBSERVED_PHASES), "activation observations contain an unexpected phase")
+    recovery_phase = operation["intent"].get("recovery_phase") if operation["phase"] == "recovery-required" else None
+    limit = _activation_observation_limit(operation["phase"], recovery_phase)
+    for observed_phase, observation in observations.items():
+        _require(_ACTIVATION_OBSERVATION_ORDER[observed_phase] <= limit, "activation observation is ahead of the persisted transaction phase")
+        _require(isinstance(observation, dict) and set(observation) == _ACTIVATION_OBSERVATION_FIELDS, "activation observed outcome evidence is incomplete")
+        expected_subject, expected_release = _activation_observation_expected_target(operation, observed_phase)
+        _require(observation["contract"] == "clashcookies.activation-observation" and observation["version"] == 1 and observation["source"] == "isolated-test-harness", "activation observed outcome contract is malformed")
+        _require(observation["phase"] == observed_phase and observation["operation_id"] == operation["operation_id"] and observation["candidate_release"] == operation["candidate_release"] and observation["runtime_identity_sha256"] == operation["runtime_identity_sha256"], "activation observed outcome is not bound to the exact transaction")
+        _require(observation["subject"] == expected_subject and observation["subject_release"] == expected_release, "activation observed outcome subject is not the exact transaction target")
+        _require(isinstance(observation["outcome"], str) and observation["outcome"] in _ACTIVATION_OBSERVATION_OUTCOMES, "activation observed outcome is unsupported")
+        details = observation["details"]
+        _require(isinstance(details, dict) and details.get("subject") == expected_subject and details.get("subject_release") == expected_release, "activation observed outcome details are not bound to the exact target")
+
+    required_by_phase = {
+        "incumbent-stop-observed": {"incumbent-stop-observed"},
+        "candidate-start-intent": {"incumbent-stop-observed"},
+        "candidate-start-observed": {"incumbent-stop-observed", "candidate-start-observed"},
+        "candidate-health-verified": {"incumbent-stop-observed", "candidate-start-observed", "candidate-health-verified"},
+        "successful-activation": {"incumbent-stop-observed", "candidate-start-observed", "candidate-health-verified"},
+        "rollback-observed": {"rollback-observed"},
+        "successful-rollback": {"rollback-observed"},
+    }
+    effective_phase = recovery_phase if operation["phase"] == "recovery-required" else operation["phase"]
+    required = required_by_phase.get(effective_phase, set())
+    _require(required.issubset(observations), "activation phase is missing a required historical observation")
+
+
 def _validate_state(state: Any) -> dict[str, Any]:
     _require(isinstance(state, dict), "retention metadata must be an object")
     legacy_expected = {"contract", "version", "generation", "updated_at", "active_release", "previous_known_good_release", "legacy_baseline", "releases", "operations", "gc_transactions"}
@@ -360,6 +431,8 @@ def _validate_state(state: Any) -> dict[str, Any]:
             _require(value is None or value == LEGACY_BASELINE_ID or (isinstance(value, str) and provenance.SHA256_RE.fullmatch(value) is not None), f"activation operation {field} is malformed")
         _require(type(operation["expected_pointer_generation"]) is int and operation["expected_pointer_generation"] >= 0, "activation expected pointer generation is malformed")
         _require(operation["rollback_expected_pointer_generation"] is None or (type(operation["rollback_expected_pointer_generation"]) is int and operation["rollback_expected_pointer_generation"] >= 0), "rollback pointer generation is malformed")
+        _require(operation["expected_pointer_generation"] <= state["pointer_generation"], "activation forward pointer generation is from the future")
+        _require(operation["rollback_target"] == (operation["incumbent_release"] or LEGACY_BASELINE_ID), "activation rollback target is not bound to its incumbent")
         for field in ("forward_consumption", "rollback_consumption", "delivery_consumption"):
             consumption = operation[field]
             required_consumption = {"operation_id", "candidate_release", "preparation_metadata_sha256", "record_sha256", "authorization_id", "retry_key", "scope", "state", "pointer_generation", "observed_at"}
@@ -391,19 +464,31 @@ def _validate_state(state: Any) -> dict[str, Any]:
             _require(intent.get("recovery_phase") in ACTIVATION_PHASES and intent.get("recovery_phase") != "recovery-required", "recovery-required activation lacks an exact resume phase")
         else:
             _require("recovery_phase" not in intent, "recovery resume evidence is present outside recovery-required")
-        _require(isinstance(operation["observations"], dict), "activation observations are malformed")
+        _validate_activation_observations(operation)
         if operation["phase"] not in ACTIVATION_TERMINAL_PHASES:
             unresolved_activation_count += 1
-        if operation["phase"] in ACTIVATION_OBSERVED_PHASES:
-            observation = operation["observations"].get(operation["phase"])
-            observation_fields = {"contract", "version", "source", "phase", "outcome", "operation_id", "candidate_release", "runtime_identity_sha256", "subject", "subject_release", "details"}
-            _require(isinstance(observation, dict) and observation_fields.issubset(observation) and observation.get("contract") == "clashcookies.activation-observation" and observation.get("version") == 1 and observation.get("source") == "isolated-test-harness" and isinstance(observation.get("subject"), str) and isinstance(observation.get("subject_release"), (str, type(None))), "activation observed outcome evidence is missing")
-            expected_subject = {"incumbent-stop-observed": "incumbent", "candidate-start-observed": "candidate", "candidate-health-verified": "candidate", "rollback-observed": "rollback-target"}[operation["phase"]]
-            expected_release = operation["candidate_release"] if expected_subject == "candidate" else (operation["incumbent_release"] or LEGACY_BASELINE_ID if expected_subject == "incumbent" else operation["rollback_target"])
-            _require(observation["phase"] == operation["phase"] and observation["operation_id"] == operation_id and observation["candidate_release"] == operation["candidate_release"] and observation["runtime_identity_sha256"] == operation["runtime_identity_sha256"], "activation observed outcome is not bound to the exact transaction")
-            _require(observation["subject"] == expected_subject and observation["subject_release"] == expected_release, "activation observed outcome subject is not the exact transaction target")
-            _require(isinstance(observation.get("outcome"), str) and observation["outcome"] in {"stopped", "started", "healthy", "failed", "unhealthy", "uncertain"}, "activation observed outcome is unsupported")
         phase = operation["phase"]
+        recovery_phase = operation["intent"].get("recovery_phase") if phase == "recovery-required" else None
+        effective_phase = recovery_phase if recovery_phase is not None else phase
+        forward_phases = {"validated-intent", "authorization-consumption-pending", "authorization-consumed", "incumbent-stop-intent", "incumbent-stop-observed", "candidate-start-intent", "candidate-start-observed", "candidate-health-verified"}
+        rollback_phases = {"compensation-authorization-consumption-pending", "rollback-intent", "rollback-observed"}
+        if effective_phase in forward_phases:
+            _require(state["pointer_generation"] == operation["expected_pointer_generation"], "uncommitted activation has an unexpected pointer generation")
+        if effective_phase in rollback_phases:
+            _require(operation["rollback_expected_pointer_generation"] is not None and state["pointer_generation"] == operation["rollback_expected_pointer_generation"], "uncommitted rollback has an unexpected pointer generation")
+        if phase == "successful-activation":
+            _require(state["pointer_generation"] >= operation["expected_pointer_generation"] + 1, "successful activation did not publish a pointer generation")
+        if phase == "successful-rollback":
+            _require(operation["rollback_expected_pointer_generation"] is not None, "successful rollback is missing its pointer generation")
+            committed_generation = operation["rollback_expected_pointer_generation"] + (0 if operation["rollback_kind"] == "compensation" else 1)
+            _require(state["pointer_generation"] >= committed_generation, "successful rollback did not publish its pointer generation")
+        if operation["rollback_expected_pointer_generation"] is not None:
+            if operation["rollback_kind"] == "compensation":
+                _require(operation["rollback_expected_pointer_generation"] == operation["expected_pointer_generation"], "compensation rollback generation is not bound to forward generation")
+            elif operation["rollback_kind"] == "post-activation":
+                _require(operation["rollback_expected_pointer_generation"] == operation["expected_pointer_generation"] + 1, "post-activation rollback generation is not bound to the activation commit")
+        if phase in {"compensation-authorization-consumption-pending", "rollback-intent", "rollback-observed", "successful-rollback"}:
+            _require(operation["rollback_kind"] is not None and operation["rollback_authorization_record_sha256"] is not None and operation["rollback_authorization_id"] is not None and operation["rollback_retry_key"] is not None and operation["rollback_expected_pointer_generation"] is not None, "rollback phase is missing its exact authorization binding")
         if phase in {"incumbent-stop-intent", "incumbent-stop-observed", "candidate-start-intent", "candidate-start-observed", "candidate-health-verified", "successful-activation"}:
             _require(operation["forward_consumption"] is not None and operation["delivery_consumption"] is not None, "forward disruption requires exact activation and delivery consumption")
         if phase in {"candidate-start-intent", "candidate-start-observed", "candidate-health-verified", "successful-activation"}:

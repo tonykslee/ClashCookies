@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+from contextlib import nullcontext
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import Mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +22,7 @@ def load(name: str, filename: str):
 
 
 retention = load("activation_retention_boundary_test", "durable_artifact_retention.py")
+activation = load("activation_transaction_boundary_test", "durable_activation_transaction.py")
 
 
 class DurableActivationBoundaryTests(unittest.TestCase):
@@ -31,6 +34,42 @@ class DurableActivationBoundaryTests(unittest.TestCase):
 
     def test_transition_active_test_bypass_was_removed(self) -> None:
         self.assertFalse(hasattr(retention.RetentionStore, "transition_active_for_test"))
+
+    def test_advance_validates_forward_authority_before_delivery_consumption(self) -> None:
+        tx = object.__new__(activation.ActivationTransaction)
+        operation = {
+            "operation_id": "ordering-test",
+            "phase": "authorization-consumed",
+            "intent": {},
+            "rollback_consumption": None,
+        }
+        tx.store = Mock()
+        tx.store.load.return_value = {"activation_operations": {"ordering-test": operation}}
+        tx._locked = lambda: nullcontext()  # type: ignore[method-assign]
+        delivery_calls: list[dict[str, object]] = []
+        tx._ensure_delivery_consumed = lambda value, **_kwargs: delivery_calls.append(value)  # type: ignore[method-assign]
+        tx._consumed_authority = Mock(side_effect=retention.RetentionError("missing forward authority"))
+
+        with self.assertRaises(retention.RetentionError):
+            tx.advance("ordering-test", "incumbent-stop-intent")
+
+        self.assertEqual(delivery_calls, [])
+        tx._consumed_authority.assert_called_once_with(operation, recovery=False, assume_locked=True)
+
+    def test_rollback_reconciliation_revalidates_durability_on_terminal_retry(self) -> None:
+        tx = object.__new__(activation.ActivationTransaction)
+        operation = {
+            "operation_id": "rollback-durability-test",
+            "phase": "successful-rollback",
+        }
+        tx.store = Mock()
+        tx.store.load.return_value = {"activation_operations": {operation["operation_id"]: operation}}
+        tx._locked = lambda: nullcontext()  # type: ignore[method-assign]
+
+        result = tx.reconcile_rollback(operation["operation_id"], {})
+
+        self.assertIs(result, operation)
+        tx.store._reestablish_state_durability.assert_called_once_with()
 
 
 if __name__ == "__main__":
