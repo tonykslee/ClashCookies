@@ -10,6 +10,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 ## Product roadmaps
 
 - [Dusk Economy & Alliance Mobility](docs/roadmaps/dusk-economy.md) — living vision, decisions, phased implementation and open questions for Duskits, rewards, giveaways, and the voluntary transfer pool (**planning only; not shipped**).
+- [FB-028B-3c immutable runtime preparation](docs/diagnostics/fb-028b-3c-immutable-runtime-preparation.md) — exact retained-candidate custody and unauthenticated first-legacy rollback preservation (**preparation only; production NO-GO**).
 
 ## Highlights
 - TypeScript + Node.js application with a command-first Discord UX

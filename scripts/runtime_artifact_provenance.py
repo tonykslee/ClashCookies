@@ -959,6 +959,35 @@ def _write_private_bytes(path: Path, payload: bytes, label: str) -> None:
             os.close(descriptor)
 
 
+def _write_private_stream(source: Any, path: Path, maximum: int, expected_size: int, label: str) -> None:
+    """Stream one bounded archive member into a private file."""
+    descriptor = None
+    total = 0
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        descriptor = os.open(path, flags, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            require(total <= maximum, f"{label} exceeds the size limit")
+            offset = 0
+            while offset < len(chunk):
+                offset += os.write(descriptor, chunk[offset:])
+        require(total == expected_size, f"{label} was truncated")
+        os.fsync(descriptor)
+    except OSError as error:
+        fail(f"{label} write failed: {error}")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def _private_snapshot(source: Path, directory: Path, label: str, *, maximum: int = MAX_AUTHORIZATION_PUBLIC_KEY_BYTES, filename: str = "trusted-public-key.pem") -> Path:
     """Copy one bounded regular input and use only that private snapshot thereafter."""
     source_descriptor, source_size = _open_nofollow_regular(source, maximum, label)
@@ -2562,9 +2591,8 @@ def _extract_candidate_service_entries(service_zip: Path, identity: TrustedRelea
                 maximum = identity.archive_bytes if name == identity.archive_name else MAX_BUNDLE_BYTES
                 require(info.file_size <= maximum, "candidate validator entry exceeds its bound")
                 target = directory / Path(name).name
-                payload = archive.read(info)
-                require(len(payload) == info.file_size, "candidate validator entry was truncated")
-                _write_private_bytes(target, payload, f"candidate validator entry {name}")
+                with archive.open(info, "r") as member:
+                    _write_private_stream(member, target, maximum, info.file_size, f"candidate validator entry {name}")
                 outputs[name] = target
         return outputs[identity.archive_name], outputs[f"{identity.archive_name}.sha256"], outputs[f"{identity.archive_name}.manifest.json"]
     finally:

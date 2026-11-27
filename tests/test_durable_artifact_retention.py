@@ -104,6 +104,24 @@ class DurableRetentionTests(unittest.TestCase):
         self.assertNotIn(fourth, dry_run["candidates"])
         self.assertEqual(dry_run["candidates"], [])
 
+    def test_completed_preparation_keeps_release_protected_and_records_phase(self) -> None:
+        identity, digest = self.release("prepared")
+        operation = f"prepare-{digest}"
+        self.store.mark_operation(operation, digest, kind="immutable-runtime-preparation", phase="admission-approved")
+        self.store.update_operation(operation, phase="legacy-registered")
+        # A restart re-enters through the idempotent admission marker without
+        # moving the durable operation phase backward.
+        self.store.mark_operation(operation, digest, kind="immutable-runtime-preparation", phase="admission-approved")
+        self.store.update_operation(operation, phase="candidate-published")
+        self.store.update_operation(operation, phase="completed", metadata_sha256="a" * 64)
+        state = self.store.load()
+        self.assertEqual(state["operations"][operation]["phase"], "completed")
+        self.assertEqual(state["operations"][operation]["metadata_sha256"], "a" * 64)
+        self.assertIn("prepared", state["releases"][digest]["roles"])
+        self.assertNotIn("in-flight", state["releases"][digest]["roles"])
+        self.assertNotIn(digest, self.store.garbage_collect()["candidates"])
+        self.store.register_delivery(identity, self.publication / f"release-{digest}")
+
     def test_retired_release_is_dry_run_then_bounded_deleted(self) -> None:
         _, first = self.release("a")
         _, second = self.release("b")

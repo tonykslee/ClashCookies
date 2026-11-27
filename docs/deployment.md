@@ -249,6 +249,12 @@ Future production B-2b/B-3 consumption must carry the exact main-push event SHA,
 - The current container path uses `ops/deploy/container-start.sh`, which runs the dependency guard and then starts the app.
 - `yarn start` rebuilds from `src` before launching the compiled `dist` app, and the build step cleans `dist` first so stale artifacts do not survive between deploys.
 
+FB-028B-3c preparation is separate from this activation path. The immutable
+preparation entry point creates read-only candidate and legacy runtime material
+outside the checkout, but the existing wrapper, active/previous pointers,
+migrations, and production workflow remain unchanged until the separately
+reviewed FB-028B-3d activation consumer.
+
 ## Install Links
 
 Prod guild install:
