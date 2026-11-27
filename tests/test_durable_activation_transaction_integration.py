@@ -173,7 +173,12 @@ class DurableActivationIntegrationTests(unittest.TestCase):
         verifier_output_path = custody / "verifier-output.json"
         verifier_output_path.write_bytes(provenance._canonical_json(verifier_output) + b"\n")
         gh_wrapper = custody / "gh-integration-wrapper"
-        gh_wrapper.write_text("#!/bin/sh\nif [ \"$1\" = version ]; then echo 'gh version 2.89.0'; else cat \"$CC_SYNTHETIC_VERIFIER_OUTPUT\"; fi\n", encoding="utf-8")
+        gh_wrapper.write_text(
+            '#!/bin/sh\n'
+            'if [ "$1" = version ]; then echo "gh version 2.89.0"; '
+            'else printf "[%s]\\n" "$(cat "$CC_SYNTHETIC_VERIFIER_OUTPUT")"; fi\n',
+            encoding="utf-8",
+        )
         gh_wrapper.chmod(0o700)
 
         allowlist_path = custody / "revision-allowlist.json"
