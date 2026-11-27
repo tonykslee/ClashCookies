@@ -1188,6 +1188,8 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
             try:
                 custody = _protect_legacy_image_custody(legacy_observation or {})
                 legacy_image_observation.update(custody)
+                if legacy_observation is not None:
+                    legacy_observation.update(custody)
             except BaseException:
                 store.update_operation(operation_id, phase="recovery-required", assume_locked=True)
                 raise
