@@ -1728,6 +1728,7 @@ module.prepare_immutable_runtime(**args)
                 shutil.rmtree(candidate_runtime.parent)
                 with self.assertRaisesRegex(preparation.PreparationError, "committed preparation metadata"):
                     preparation.prepare_immutable_runtime(**prepare_kwargs)
+                subprocess.run(["docker", "rm", "--force", retry["legacy"]["identity"]["image_observation"]["protected_container_id"]], check=True, capture_output=True)
 
                 lost_root = root / "lost-ack-custody"
                 lost_receiving = lost_root / "receiving"

@@ -738,7 +738,19 @@ def _verify_legacy_container(source: dict[str, Any], components: dict[str, Path]
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         _fail(f"legacy protected image inspection is malformed: {error}")
     _require(isinstance(protected_image, dict) and protected_image.get("Id") == container_image_id and protected_image.get("Architecture") == "amd64" and protected_image.get("Os") == "linux" and type(protected_image.get("Size")) is int and protected_image["Size"] == image["Size"], "legacy protected image identity is not exact")
-    return {"container_id": source["container_id"], "image": source["image"], "image_digest": digest, "image_id": container_image_id, "image_bytes": image["Size"], "checkout_revision": source["checkout_revision"], "mounts": sorted(observed), "protected_image_ref": protected_ref}
+    protected_container_name = f"clashcookies-legacy-custody-{digest.split(':', 1)[1][:32]}"
+    anchor_result = subprocess.run(["docker", "container", "inspect", "--format", "{{json .}}", protected_container_name], capture_output=True, text=True, timeout=20, check=False)
+    if anchor_result.returncode != 0:
+        anchor_create = subprocess.run(["docker", "container", "create", "--name", protected_container_name, protected_ref, "true"], capture_output=True, text=True, timeout=20, check=False)
+        _require(anchor_create.returncode == 0, "legacy exact image custody anchor could not be created")
+        anchor_result = subprocess.run(["docker", "container", "inspect", "--format", "{{json .}}", protected_container_name], capture_output=True, text=True, timeout=20, check=False)
+    _require(anchor_result.returncode == 0, "legacy exact image custody anchor is unavailable")
+    try:
+        anchor = json.loads(anchor_result.stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        _fail(f"legacy exact image custody anchor inspection is malformed: {error}")
+    _require(isinstance(anchor, dict) and anchor.get("Name") == "/" + protected_container_name and anchor.get("Image") == container_image_id, "legacy exact image custody anchor is not bound to the recorded image")
+    return {"container_id": source["container_id"], "image": source["image"], "image_digest": digest, "image_id": container_image_id, "image_bytes": image["Size"], "checkout_revision": source["checkout_revision"], "mounts": sorted(observed), "protected_image_ref": protected_ref, "protected_container_id": anchor.get("Id"), "protected_container_name": protected_container_name}
 
 
 def _verify_pinned_image(image: str, platform: str, *, protected_fallback: str | None = None) -> dict[str, Any]:
@@ -815,6 +827,19 @@ def _verify_legacy_image_available(identity: dict[str, Any]) -> dict[str, Any]:
     _require(isinstance(expected_image_id, str) and expected_image_id and inspected.get("Id") == expected_image_id, "preserved legacy protected image tag no longer names the exact recorded image")
     _require(isinstance(inspected.get("RepoDigests"), list) and any(isinstance(item, str) and item.endswith("@" + digest) for item in inspected["RepoDigests"]), "preserved legacy protected image digest is not available")
     _require(inspected.get("Architecture") == "amd64" and inspected.get("Os") == "linux" and type(inspected.get("Size")) is int and inspected["Size"] > 0, "preserved legacy image platform or size is unavailable")
+    protected_container_id = (identity.get("image_observation") or {}).get("protected_container_id")
+    protected_container_name = (identity.get("image_observation") or {}).get("protected_container_name")
+    _require(isinstance(protected_container_id, str) and protected_container_id and isinstance(protected_container_name, str) and protected_container_name, "preserved legacy image custody anchor identity is incomplete")
+    try:
+        anchor_result = subprocess.run(["docker", "container", "inspect", "--format", "{{json .}}", protected_container_name], capture_output=True, text=True, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        _fail(f"preserved legacy image custody anchor inspection failed: {error}")
+    _require(anchor_result.returncode == 0, "preserved legacy image custody anchor is no longer available")
+    try:
+        anchor = json.loads(anchor_result.stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        _fail(f"preserved legacy image custody anchor inspection is malformed: {error}")
+    _require(isinstance(anchor, dict) and anchor.get("Id") == protected_container_id and anchor.get("Image") == expected_image_id, "preserved legacy image custody anchor changed")
     return {"image": image, "platform": platform, "digest": digest, "bytes": inspected["Size"], "image_id": inspected.get("Id"), "architecture": inspected["Architecture"], "os": inspected["Os"]}
 
 
@@ -1026,7 +1051,7 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
         source_value = _read_json(legacy_source, MAX_SOURCE_METADATA_BYTES, "legacy source evidence", newline=True)
         components = _legacy_components(source_value, repository_root)
         legacy_observation = _verify_legacy_container(source_value, components, repository_root)
-        legacy_image_observation = {"image": source_value["image"], "platform": source_value["platform"], "digest": source_value["image_digest"], "bytes": legacy_observation["image_bytes"], "image_id": legacy_observation.get("image_id"), "protected_image_ref": legacy_observation.get("protected_image_ref"), "architecture": "amd64", "os": "linux"}
+        legacy_image_observation = {"image": source_value["image"], "platform": source_value["platform"], "digest": source_value["image_digest"], "bytes": legacy_observation["image_bytes"], "image_id": legacy_observation.get("image_id"), "protected_image_ref": legacy_observation.get("protected_image_ref"), "protected_container_id": legacy_observation.get("protected_container_id"), "protected_container_name": legacy_observation.get("protected_container_name"), "architecture": "amd64", "os": "linux"}
         legacy_integrity = None
         legacy_identity = None
     source_estimate = _mapped_bounds(components) if components else {"bytes": 0, "allocated_bytes": 0, "entries": 0, "inodes": 0}
@@ -1066,7 +1091,7 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
         source_estimate = _mapped_bounds(components) if components else {"bytes": 0, "allocated_bytes": 0, "entries": 0, "inodes": 0}
         if source_value is not None:
             legacy_observation = _verify_legacy_container(source_value, components, repository_root)
-            legacy_image_observation = {"image": source_value["image"], "platform": source_value["platform"], "digest": source_value["image_digest"], "bytes": legacy_observation["image_bytes"], "image_id": legacy_observation.get("image_id"), "protected_image_ref": legacy_observation.get("protected_image_ref"), "architecture": "amd64", "os": "linux"}
+            legacy_image_observation = {"image": source_value["image"], "platform": source_value["platform"], "digest": source_value["image_digest"], "bytes": legacy_observation["image_bytes"], "image_id": legacy_observation.get("image_id"), "protected_image_ref": legacy_observation.get("protected_image_ref"), "protected_container_id": legacy_observation.get("protected_container_id"), "protected_container_name": legacy_observation.get("protected_container_name"), "architecture": "amd64", "os": "linux"}
         source_allocated = source_estimate["allocated_bytes"]
         legacy_image_bytes = legacy_image_observation.get("bytes", 0)
         assessment = retention.assess_storage(
