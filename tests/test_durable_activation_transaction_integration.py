@@ -630,10 +630,20 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             tx = self._transaction(fixture)
             result = self._forward_to_health(tx, fixture, "integration-direct-delivery", "integration-direct-delivery-forward", consume_forward=False)
             envelope = result["envelope"]
-            tx.consume("integration-direct-delivery", envelope)
             before = tx.store.load()
             pointers = (before["active_release"], before["previous_known_good_release"], before["pointer_generation"])
-            with patch.object(retention, "_fsync_directory", side_effect=retention.RetentionError("delivery intent durability failure")):
+            # The original authorization-consumed publication is visible
+            # after os.replace, but its parent-directory fsync fails.  A
+            # fresh coordinator must not use that visible record to consume
+            # delivery authority while the fault persists.
+            with patch.object(retention, "_fsync_directory", side_effect=retention.RetentionError("authorization-consumed rename-before-directory-fsync")):
+                with self.assertRaises(retention.RetentionError):
+                    tx.consume("integration-direct-delivery", envelope)
+            interrupted_activation = tx.store.load()["activation_operations"]["integration-direct-delivery"]
+            self.assertEqual(interrupted_activation["phase"], "authorization-consumed")
+            self.assertEqual(fixture["activation_journal"].inspect(envelope, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-forward", allow_consumed=True)["state"], "consumed")
+            self.assertEqual(fixture["delivery_journal"].inspect(fixture["delivery_envelope"], fixture["identity"], fixture["allowlist"], fixture["trust"], operation="forward-release")["state"], "reserved")
+            with patch.object(retention, "_fsync_directory", side_effect=retention.RetentionError("persistent delivery intent durability failure")):
                 with self.assertRaises(retention.RetentionError):
                     self._transaction(fixture).advance("integration-direct-delivery", "incumbent-stop-intent")
             self.assertEqual(fixture["delivery_journal"].inspect(fixture["delivery_envelope"], fixture["identity"], fixture["allowlist"], fixture["trust"], operation="forward-release")["state"], "reserved")
@@ -652,7 +662,7 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             with patch.object(tx.store, "record_delivery_consumption", side_effect=activation.ActivationError("interrupted before retention delivery proof publication")):
                 with self.assertRaises(activation.ActivationError):
                     tx.advance("integration-delivery-reconcile", "incumbent-stop-intent")
-            self.assertEqual(fixture["delivery_journal"].inspect(fixture["delivery_envelope"], fixture["identity"], fixture["allowlist"], fixture["trust"], operation="forward-release")["state"], "consumed")
+            self.assertEqual(fixture["delivery_journal"].inspect(fixture["delivery_envelope"], fixture["identity"], fixture["allowlist"], fixture["trust"], operation="forward-release", allow_consumed=True)["state"], "consumed")
             interrupted = tx.store.load()["activation_operations"]["integration-delivery-reconcile"]
             self.assertIsNone(interrupted["delivery_consumption"])
             reconciled = self._transaction(fixture).advance("integration-delivery-reconcile", "incumbent-stop-intent")
