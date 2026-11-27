@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -51,6 +52,8 @@ class ImmutableRuntimePreparationTests(unittest.TestCase):
     def source_evidence(self) -> tuple[dict[str, object], dict[str, Path]]:
         source_sha = "a" * 40
         runtime = self.sources / "runtime"
+        if runtime.exists():
+            shutil.rmtree(runtime)
         (runtime / "dist").mkdir(parents=True)
         (runtime / "node_modules").mkdir()
         (runtime / "prisma").mkdir()
@@ -106,7 +109,10 @@ class ImmutableRuntimePreparationTests(unittest.TestCase):
         target = self.destination / "legacy-runtime-baseline"
         integrity = prep._copy_legacy_runtime(source, target, self.repo, durable=False, verify_docker=False)
         self.assertEqual(prep._integrity(target, maximum_bytes=prep.MAX_LEGACY_BYTES, maximum_entries=prep.MAX_LEGACY_ENTRIES), integrity)
-        self.assertEqual((target / "dist" / ".clashcookies-artifact").read_text(encoding="ascii").strip(), f"revision={'a' * 40}")
+        marker = (target / "dist" / ".clashcookies-artifact").read_text(encoding="ascii")
+        self.assertIn(f"revision={'a' * 40}\n", marker)
+        self.assertIn("dist_digest=", marker)
+        self.assertIn("node_modules_digest=", marker)
         self.assertTrue((target / "startup" / "container-start.sh").exists())
 
     def test_legacy_capture_rejects_source_mutation_during_copy(self) -> None:
