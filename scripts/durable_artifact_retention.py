@@ -1269,6 +1269,8 @@ class RetentionStore:
             operation["rollback_retry_key"] = retry_key
             operation["rollback_kind"] = rollback_kind
             operation["rollback_expected_pointer_generation"] = state["pointer_generation"]
+            if operation["phase"] == "recovery-required":
+                operation["intent"].pop("recovery_phase", None)
             operation["phase"] = "compensation-authorization-consumption-pending"
             operation["updated_at"] = _now()
             self._save(state)
