@@ -1470,6 +1470,7 @@ class AuthorizationReplayJournal:
             expected = self._state(authorization, identity, operation, current.get("state"))
             for field, value in expected.items():
                 require(current.get(field) == value, "authorization replay record does not exactly match the signed authorization")
+            self._reestablish_existing_durability(path)
             allowed = {"reserved", "consumed"} if allow_consumed else {"reserved"}
             require(current.get("state") in allowed, "authorization replay entry has an invalid state")
             if current.get("state") == "reserved":
@@ -1496,6 +1497,13 @@ def validate_independent_authorization(authorization: IndependentReleaseAuthoriz
     if authorization.context == OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT:
         require(isinstance(authorization.delivery_destination, str) and authorization.delivery_destination.startswith("/") and posixpath.normpath(authorization.delivery_destination) == authorization.delivery_destination, "owner-approved candidate authorization destination is invalid")
     require(authorization.scope in {"forward-release", "recovery-release", "activation-forward", "activation-recovery"}, "authorization scope is unsupported")
+    if authorization.context == OWNER_APPROVED_ACTIVATION_AUTHORIZATION_CONTEXT:
+        require(authorization.scope in {"activation-forward", "activation-recovery"}, "activation authorization context has an incompatible scope")
+        require(authorization.delivery_destination is None, "activation authorization must not carry a delivery destination")
+    if authorization.scope in {"activation-forward", "activation-recovery"}:
+        require(authorization.context == OWNER_APPROVED_ACTIVATION_AUTHORIZATION_CONTEXT, "activation scope requires the activation authorization context")
+    if authorization.context == OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT:
+        require(authorization.scope == "forward-release", "candidate delivery context cannot authorize recovery or activation")
     if authorization.scope in {"forward-release", "activation-forward"}:
         require(authorization.recovery_context is None, "forward authorization must not carry recovery context")
     else:
