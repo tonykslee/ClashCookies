@@ -540,7 +540,10 @@ jobs:
             tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_delivery_proof_is_required_before_disruption \
             tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_forward_authority_failure_leaves_delivery_reserved \
             tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_terminal_rollback_reconciliation_requires_durable_retry \
+            tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_pending_rollback_authorization_retries_durably_after_rename \
+            tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_failed_rollback_recovers_with_same_authority \
             tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_rejects_substituted_historical_terminal_observations \
+            tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_rejects_mutated_terminal_rollback_and_recovery_records \
             tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_rejects_semantically_incomplete_persisted_activation -v
 
       - name: Verify genuine attestation offline without token or network

@@ -293,7 +293,7 @@ def _activation_observation_expected_target(operation: dict[str, Any], phase: st
     return subject, release
 
 
-def _activation_observation_limit(phase: str, recovery_phase: str | None) -> int:
+def _activation_observation_limit(phase: str, recovery_phase: str | None, observations: dict[str, Any] | None = None) -> int:
     effective_phase = recovery_phase if phase == "recovery-required" else phase
     if effective_phase in {"validated-intent", "authorization-consumption-pending", "authorization-consumed", "incumbent-stop-intent"}:
         return 0
@@ -302,6 +302,11 @@ def _activation_observation_limit(phase: str, recovery_phase: str | None) -> int
     if effective_phase == "candidate-start-observed":
         return 2
     if effective_phase in {"candidate-health-verified", "successful-activation", "compensation-authorization-consumption-pending", "rollback-intent"}:
+        # A failed rollback can be observed before the transaction records
+        # recovery-required.  Same-authority recovery resumes through the
+        # pending/intent phases and must retain that bounded prior evidence.
+        if effective_phase in {"compensation-authorization-consumption-pending", "rollback-intent"} and observations and "rollback-observed" in observations:
+            return 4
         return 3
     if effective_phase in {"rollback-observed", "successful-rollback"}:
         return 4
@@ -313,7 +318,7 @@ def _validate_activation_observations(operation: dict[str, Any]) -> None:
     _require(isinstance(observations, dict), "activation observations are malformed")
     _require(set(observations).issubset(ACTIVATION_OBSERVED_PHASES), "activation observations contain an unexpected phase")
     recovery_phase = operation["intent"].get("recovery_phase") if operation["phase"] == "recovery-required" else None
-    limit = _activation_observation_limit(operation["phase"], recovery_phase)
+    limit = _activation_observation_limit(operation["phase"], recovery_phase, observations)
     for observed_phase, observation in observations.items():
         _require(_ACTIVATION_OBSERVATION_ORDER[observed_phase] <= limit, "activation observation is ahead of the persisted transaction phase")
         _require(isinstance(observation, dict) and set(observation) == _ACTIVATION_OBSERVATION_FIELDS, "activation observed outcome evidence is incomplete")
@@ -487,22 +492,27 @@ def _validate_state(state: Any) -> dict[str, Any]:
                 _require(operation["rollback_expected_pointer_generation"] == operation["expected_pointer_generation"], "compensation rollback generation is not bound to forward generation")
             elif operation["rollback_kind"] == "post-activation":
                 _require(operation["rollback_expected_pointer_generation"] == operation["expected_pointer_generation"] + 1, "post-activation rollback generation is not bound to the activation commit")
-        if phase in {"compensation-authorization-consumption-pending", "rollback-intent", "rollback-observed", "successful-rollback"}:
+        if effective_phase in {"compensation-authorization-consumption-pending", "rollback-intent", "rollback-observed", "successful-rollback"}:
             _require(operation["rollback_kind"] is not None and operation["rollback_authorization_record_sha256"] is not None and operation["rollback_authorization_id"] is not None and operation["rollback_retry_key"] is not None and operation["rollback_expected_pointer_generation"] is not None, "rollback phase is missing its exact authorization binding")
-        if phase in {"incumbent-stop-intent", "incumbent-stop-observed", "candidate-start-intent", "candidate-start-observed", "candidate-health-verified", "successful-activation"}:
+        if effective_phase in {"incumbent-stop-intent", "incumbent-stop-observed", "candidate-start-intent", "candidate-start-observed", "candidate-health-verified", "successful-activation"}:
             _require(operation["forward_consumption"] is not None and operation["delivery_consumption"] is not None, "forward disruption requires exact activation and delivery consumption")
-        if phase in {"candidate-start-intent", "candidate-start-observed", "candidate-health-verified", "successful-activation"}:
+        if effective_phase in {"candidate-start-intent", "candidate-start-observed", "candidate-health-verified", "successful-activation"}:
             _require(operation["observations"].get("incumbent-stop-observed", {}).get("outcome") == "stopped", "candidate progression requires a stopped incumbent")
-        if phase in {"candidate-health-verified", "successful-activation"}:
+        if effective_phase in {"candidate-health-verified", "successful-activation"}:
             _require(operation["observations"].get("candidate-start-observed", {}).get("outcome") == "started", "candidate health requires a started candidate")
-        if phase == "successful-activation":
+        if effective_phase == "successful-activation":
             _require(operation["observations"].get("candidate-health-verified", {}).get("outcome") == "healthy", "activation commit requires healthy candidate evidence")
-        if phase in {"rollback-intent", "rollback-observed", "successful-rollback"}:
+        if effective_phase in {"rollback-intent", "rollback-observed", "successful-rollback"}:
             _require(operation["rollback_consumption"] is not None, "rollback phase requires exact recovery consumption")
-        if phase == "rollback-observed":
+        if effective_phase == "rollback-observed":
             _require(isinstance(operation["observations"].get("rollback-observed"), dict), "rollback observation is missing")
-        if phase == "successful-rollback":
+        if effective_phase == "successful-rollback":
             _require(operation["observations"].get("rollback-observed", {}).get("outcome") == "healthy", "rollback commit requires healthy target evidence")
+        if operation["rollback_kind"] == "post-activation" and effective_phase in {"compensation-authorization-consumption-pending", "rollback-intent", "rollback-observed", "successful-rollback"}:
+            _require(operation["forward_consumption"] is not None and operation["delivery_consumption"] is not None, "post-activation rollback lacks complete forward success evidence")
+            _require(operation["observations"].get("incumbent-stop-observed", {}).get("outcome") == "stopped", "post-activation rollback lacks incumbent stop evidence")
+            _require(operation["observations"].get("candidate-start-observed", {}).get("outcome") == "started", "post-activation rollback lacks candidate start evidence")
+            _require(operation["observations"].get("candidate-health-verified", {}).get("outcome") == "healthy", "post-activation rollback lacks candidate health evidence")
         for release_id in (operation["candidate_release"], operation["incumbent_release"], operation["previous_known_good_release"], operation["rollback_target"]):
             if release_id not in (None, LEGACY_BASELINE_ID):
                 _require(release_id in state["releases"], "activation operation references an unknown release")
@@ -668,6 +678,16 @@ class RetentionStore:
     def _reestablish_state_durability(self) -> None:
         """Re-fsync the validated state and its directory under the caller lock."""
         self.load()
+        self._fsync_state_file()
+        _fsync_directory(self.root, required=self.require_durable)
+
+    def _fsync_state_file(self) -> None:
+        """Fsync only the retention state file.
+
+        This narrow seam is intentional: replay-journal durability is a
+        separate boundary and must not be affected by retention fault
+        injection or retries.
+        """
         descriptor = None
         try:
             descriptor = os.open(self.state_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -677,7 +697,6 @@ class RetentionStore:
         finally:
             if descriptor is not None:
                 os.close(descriptor)
-        _fsync_directory(self.root, required=self.require_durable)
 
     def _validate_delivery_evidence(self, state: dict[str, Any]) -> None:
         """Bind recorded delivery consumption to the retained signed record."""
@@ -1340,6 +1359,10 @@ class RetentionStore:
             self._validate_activation_authority(authority, operation_id=operation_id, candidate_release=operation["candidate_release"], preparation_metadata_sha256=operation["preparation_metadata_sha256"], record_sha256=authorization_record_sha256, authorization_id=authorization_id, retry_key=retry_key, scope="activation-recovery", state="reserved", pointer_generation=state["pointer_generation"])
             if operation["phase"] == "compensation-authorization-consumption-pending":
                 _require(operation["rollback_authorization_record_sha256"] == authorization_record_sha256 and operation["rollback_authorization_id"] == authorization_id and operation["rollback_retry_key"] == retry_key and operation["rollback_kind"] == rollback_kind and operation["rollback_expected_pointer_generation"] == state["pointer_generation"], "rollback retry conflicts with the pending recovery authorization")
+                # The first publication may have been renamed into place
+                # before directory fsync failed.  Revalidate and reestablish
+                # durability on an exact retry of that same authorization.
+                self._reestablish_state_durability()
                 return operation
             if operation["phase"] == "recovery-required" and operation["rollback_authorization_record_sha256"] is not None:
                 _require(operation["rollback_authorization_record_sha256"] == authorization_record_sha256 and operation["rollback_authorization_id"] == authorization_id and operation["rollback_retry_key"] == retry_key and operation["rollback_kind"] == rollback_kind and operation["rollback_expected_pointer_generation"] == state["pointer_generation"], "recovery resumption conflicts with the already-bound rollback authorization")

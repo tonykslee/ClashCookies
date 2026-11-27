@@ -71,6 +71,26 @@ class DurableActivationBoundaryTests(unittest.TestCase):
         self.assertIs(result, operation)
         tx.store._reestablish_state_durability.assert_called_once_with()
 
+    def test_successful_activation_terminal_retry_does_not_reconsume_or_republish(self) -> None:
+        tx = object.__new__(activation.ActivationTransaction)
+        operation = {
+            "operation_id": "activation-terminal-retry",
+            "phase": "successful-activation",
+            "intent": {},
+            "rollback_consumption": None,
+        }
+        tx.store = Mock()
+        tx.store.load.return_value = {"activation_operations": {operation["operation_id"]: operation}}
+        tx._locked = lambda: nullcontext()  # type: ignore[method-assign]
+        tx._consumed_authority = Mock(return_value=object())
+        tx._ensure_delivery_consumed = Mock()
+
+        result = tx.advance(operation["operation_id"], "successful-activation")
+
+        self.assertIs(result, operation)
+        tx._ensure_delivery_consumed.assert_not_called()
+        tx.store._reestablish_state_durability.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

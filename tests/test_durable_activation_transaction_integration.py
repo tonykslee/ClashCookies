@@ -473,7 +473,7 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             self.assertEqual(len(activation_entries), 1)
             activation_entries[0].unlink()
 
-            with self.assertRaises(activation.ActivationError):
+            with self.assertRaisesRegex(provenance.ProvenanceError, "authorization replay entry is missing"):
                 tx.advance("integration-ordering", "incumbent-stop-intent")
 
             self.assertEqual(fixture["delivery_journal"].inspect(fixture["delivery_envelope"], fixture["identity"], fixture["allowlist"], fixture["trust"], operation="forward-release")["state"], "reserved")
@@ -487,6 +487,12 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             self._forward_to_health(tx, fixture, "integration-terminal-retry", "integration-terminal-forward")
             tx.advance("integration-terminal-retry", "successful-activation")
             state = tx.store.load()
+            pointer_generation = state["pointer_generation"]
+            delivery_evidence = state["activation_operations"]["integration-terminal-retry"]["delivery_consumption"]
+            retried_activation = tx.advance("integration-terminal-retry", "successful-activation")
+            self.assertEqual(retried_activation["phase"], "successful-activation")
+            self.assertEqual(tx.store.load()["pointer_generation"], pointer_generation)
+            self.assertEqual(tx.store.load()["activation_operations"]["integration-terminal-retry"]["delivery_consumption"], delivery_evidence)
             fixture.update({"incumbent_release": None, "previous_known_good_release": retention.LEGACY_BASELINE_ID})
             recovery, _ = self._activation_authorization(fixture, "integration-terminal-retry", "integration-terminal-recovery", state["pointer_generation"], retention.LEGACY_BASELINE_ID, "post-activation", "activation-recovery")
             fixture["activation_journal"].reserve(recovery, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-recovery")
@@ -495,22 +501,80 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             tx.observe("integration-terminal-retry", phase="rollback-observed", outcome="healthy", details={"subject": "rollback-target", "subject_release": retention.LEGACY_BASELINE_ID})
             tx.advance("integration-terminal-retry", "successful-rollback")
 
-            with patch.object(retention.os, "fsync", side_effect=OSError("persistent state-file fsync failure")):
+            with patch.object(tx.store, "_fsync_state_file", side_effect=retention.RetentionError("persistent state-file fsync failure")) as state_fsync:
                 with self.assertRaises(retention.RetentionError):
                     tx.reconcile_rollback("integration-terminal-retry", recovery)
-            with patch.object(retention, "_fsync_directory", side_effect=OSError("persistent state-directory fsync failure")):
+                state_fsync.assert_called_once_with()
+            with patch.object(retention, "_fsync_directory", side_effect=retention.RetentionError("persistent state-directory fsync failure")) as directory_fsync:
                 with self.assertRaises(retention.RetentionError):
                     tx.reconcile_rollback("integration-terminal-retry", recovery)
+                directory_fsync.assert_called_once_with(tx.store.root, required=True)
 
             fresh = self._transaction(fixture)
             fresh.reconcile_rollback("integration-terminal-retry", recovery)
-            with patch.object(retention.os, "fsync", side_effect=OSError("persistent terminal retry fsync failure")):
+            with patch.object(fresh.store, "_fsync_state_file", side_effect=retention.RetentionError("persistent terminal retry fsync failure")) as state_fsync:
                 with self.assertRaises(retention.RetentionError):
                     fresh.advance("integration-terminal-retry", "successful-rollback")
-            with patch.object(retention, "_fsync_directory", side_effect=OSError("persistent terminal retry directory failure")):
+                state_fsync.assert_called_once_with()
+            with patch.object(retention, "_fsync_directory", side_effect=retention.RetentionError("persistent terminal retry directory failure")) as directory_fsync:
                 with self.assertRaises(retention.RetentionError):
                     fresh.advance("integration-terminal-retry", "successful-rollback")
+                directory_fsync.assert_called_once_with(fresh.store.root, required=True)
             self._transaction(fixture).advance("integration-terminal-retry", "successful-rollback")
+
+    @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_RECEIVER") == "1", "mandatory Linux coordinator integration")
+    def test_real_coordinator_pending_rollback_authorization_retries_durably_after_rename(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            fixture = self._fixture(Path(directory_name))
+            tx = self._transaction(fixture)
+            self._forward_to_health(tx, fixture, "integration-pending-rollback", "integration-pending-forward")
+            tx.advance("integration-pending-rollback", "successful-activation")
+            state = tx.store.load()
+            fixture.update({"incumbent_release": None, "previous_known_good_release": retention.LEGACY_BASELINE_ID})
+            recovery, _ = self._activation_authorization(fixture, "integration-pending-rollback", "integration-pending-recovery", state["pointer_generation"], retention.LEGACY_BASELINE_ID, "post-activation", "activation-recovery")
+            fixture["activation_journal"].reserve(recovery, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-recovery")
+
+            # os.replace has already published the pending authorization when
+            # the directory durability boundary fails.  The exact retry must
+            # re-fsync that existing record without rebinding authority.
+            with patch.object(retention, "_fsync_directory", side_effect=retention.RetentionError("rename-before-directory-fsync interruption")):
+                with self.assertRaises(retention.RetentionError):
+                    tx.begin_rollback("integration-pending-rollback", recovery)
+            pending = tx.store.load()["activation_operations"]["integration-pending-rollback"]
+            self.assertEqual(pending["phase"], "compensation-authorization-consumption-pending")
+            bound_retry = pending["rollback_retry_key"]
+            with patch.object(retention, "_fsync_directory", side_effect=retention.RetentionError("persistent pending rollback directory failure")):
+                with self.assertRaises(retention.RetentionError):
+                    tx.begin_rollback("integration-pending-rollback", recovery)
+            retried = self._transaction(fixture).begin_rollback("integration-pending-rollback", recovery)
+            self.assertEqual(retried["phase"], "compensation-authorization-consumption-pending")
+            self.assertEqual(retried["rollback_retry_key"], bound_retry)
+
+    @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_RECEIVER") == "1", "mandatory Linux coordinator integration")
+    def test_real_coordinator_failed_rollback_recovers_with_same_authority(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            fixture = self._fixture(Path(directory_name))
+            tx = self._transaction(fixture)
+            self._forward_to_health(tx, fixture, "integration-failed-rollback", "integration-failed-forward")
+            tx.advance("integration-failed-rollback", "successful-activation")
+            state = tx.store.load()
+            fixture.update({"incumbent_release": None, "previous_known_good_release": retention.LEGACY_BASELINE_ID})
+            recovery, _ = self._activation_authorization(fixture, "integration-failed-rollback", "integration-failed-recovery", state["pointer_generation"], retention.LEGACY_BASELINE_ID, "post-activation", "activation-recovery")
+            fixture["activation_journal"].reserve(recovery, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-recovery")
+            tx.begin_rollback("integration-failed-rollback", recovery)
+            tx.consume_rollback("integration-failed-rollback", recovery)
+            tx.observe("integration-failed-rollback", phase="rollback-observed", outcome="failed", details={"subject": "rollback-target", "subject_release": retention.LEGACY_BASELINE_ID})
+            tx.advance("integration-failed-rollback", "recovery-required")
+            failed = tx.store.load()["activation_operations"]["integration-failed-rollback"]
+            self.assertEqual(failed["phase"], "recovery-required")
+            self.assertEqual(failed["intent"]["recovery_phase"], "rollback-observed")
+
+            resumed = tx.begin_rollback("integration-failed-rollback", recovery)
+            self.assertEqual(resumed["phase"], "rollback-intent")
+            self.assertEqual(resumed["rollback_authorization_id"], failed["rollback_authorization_id"])
+            tx.observe("integration-failed-rollback", phase="rollback-observed", outcome="healthy", details={"subject": "rollback-target", "subject_release": retention.LEGACY_BASELINE_ID})
+            tx.advance("integration-failed-rollback", "successful-rollback")
+            self.assertIsNone(tx.store.load()["active_release"])
 
     @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_RECEIVER") == "1", "mandatory Linux coordinator integration")
     def test_real_coordinator_rejects_substituted_historical_terminal_observations(self) -> None:
@@ -537,6 +601,65 @@ class DurableActivationIntegrationTests(unittest.TestCase):
                     with self.assertRaises(retention.RetentionError):
                         retention.RetentionStore(fixture["publication"], repository_root=fixture["checkout"], require_durable=True).load()
             state_path.write_bytes(original)
+
+    @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_RECEIVER") == "1", "mandatory Linux coordinator integration")
+    def test_real_coordinator_rejects_mutated_terminal_rollback_and_recovery_records(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            fixture = self._fixture(Path(directory_name) / "terminal")
+            tx = self._transaction(fixture)
+            self._forward_to_health(tx, fixture, "integration-rollback-validation", "integration-rollback-validation-forward")
+            tx.advance("integration-rollback-validation", "successful-activation")
+            state = tx.store.load()
+            fixture.update({"incumbent_release": None, "previous_known_good_release": retention.LEGACY_BASELINE_ID})
+            recovery, _ = self._activation_authorization(fixture, "integration-rollback-validation", "integration-rollback-validation-recovery", state["pointer_generation"], retention.LEGACY_BASELINE_ID, "post-activation", "activation-recovery")
+            fixture["activation_journal"].reserve(recovery, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-recovery")
+            tx.begin_rollback("integration-rollback-validation", recovery)
+            tx.consume_rollback("integration-rollback-validation", recovery)
+            tx.observe("integration-rollback-validation", phase="rollback-observed", outcome="healthy", details={"subject": "rollback-target", "subject_release": retention.LEGACY_BASELINE_ID})
+            tx.advance("integration-rollback-validation", "successful-rollback")
+            state_path = fixture["publication"] / retention.STATE_FILENAME
+            terminal_original = state_path.read_bytes()
+            terminal_mutations = (
+                ("missing forward evidence", lambda operation: operation.update({"forward_consumption": None})),
+                ("mutated rollback binding", lambda operation: operation.update({"rollback_retry_key": "wrong-retry"})),
+                ("mutated rollback observation", lambda operation: operation["observations"]["rollback-observed"].update({"subject_release": fixture["identity_digest"], "details": {"subject": "rollback-target", "subject_release": fixture["identity_digest"]}})),
+            )
+            for label, mutate in terminal_mutations:
+                with self.subTest(record="terminal rollback", label=label):
+                    state = json.loads(terminal_original.decode("utf-8"))
+                    mutate(state["activation_operations"]["integration-rollback-validation"])
+                    state_path.write_bytes(retention._canonical(state) + b"\n")
+                    with self.assertRaises(retention.RetentionError):
+                        retention.RetentionStore(fixture["publication"], repository_root=fixture["checkout"], require_durable=True).load()
+            state_path.write_bytes(terminal_original)
+
+        with TemporaryDirectory() as directory_name:
+            fixture = self._fixture(Path(directory_name) / "recovery")
+            tx = self._transaction(fixture)
+            self._forward_to_health(tx, fixture, "integration-recovery-validation", "integration-recovery-validation-forward")
+            tx.advance("integration-recovery-validation", "successful-activation")
+            state = tx.store.load()
+            fixture.update({"incumbent_release": None, "previous_known_good_release": retention.LEGACY_BASELINE_ID})
+            recovery, _ = self._activation_authorization(fixture, "integration-recovery-validation", "integration-recovery-validation-recovery", state["pointer_generation"], retention.LEGACY_BASELINE_ID, "post-activation", "activation-recovery")
+            fixture["activation_journal"].reserve(recovery, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-recovery")
+            tx.begin_rollback("integration-recovery-validation", recovery)
+            tx.consume_rollback("integration-recovery-validation", recovery)
+            tx.observe("integration-recovery-validation", phase="rollback-observed", outcome="failed", details={"subject": "rollback-target", "subject_release": retention.LEGACY_BASELINE_ID})
+            tx.advance("integration-recovery-validation", "recovery-required")
+            state_path = fixture["publication"] / retention.STATE_FILENAME
+            recovery_original = state_path.read_bytes()
+            recovery_mutations = (
+                ("changed resume phase", lambda operation: operation["intent"].update({"recovery_phase": "candidate-health-verified"})),
+                ("removed failed rollback evidence", lambda operation: operation["observations"].pop("rollback-observed")),
+            )
+            for label, mutate in recovery_mutations:
+                with self.subTest(record="recovery-required", label=label):
+                    state = json.loads(recovery_original.decode("utf-8"))
+                    mutate(state["activation_operations"]["integration-recovery-validation"])
+                    state_path.write_bytes(retention._canonical(state) + b"\n")
+                    with self.assertRaises(retention.RetentionError):
+                        retention.RetentionStore(fixture["publication"], repository_root=fixture["checkout"], require_durable=True).load()
+            state_path.write_bytes(recovery_original)
 
     @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_RECEIVER") == "1", "mandatory Linux coordinator integration")
     def test_real_coordinator_subprocess_termination_at_journal_boundaries(self) -> None:

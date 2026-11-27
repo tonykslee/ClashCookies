@@ -371,6 +371,12 @@ class ActivationTransaction:
             # any delivery replay side effect.  A structurally valid retention
             # proof is not enough to authorize consumption.
             authority = self._consumed_authority(operation, recovery=recovery, assume_locked=True)
+            if phase == operation["phase"] and phase in retention.ACTIVATION_TERMINAL_PHASES:
+                # A completed activation/rollback retry is a durability
+                # check, not a new transaction.  Do not consume delivery
+                # authority again or republish the pointer generation.
+                self.store._reestablish_state_durability()
+                return self.store.load()["activation_operations"][operation_id]
             if phase in {"incumbent-stop-intent", "successful-activation"}:
                 if phase == "successful-activation":
                     _require(operation["phase"] == "candidate-health-verified" and operation["observations"].get("candidate-health-verified", {}).get("outcome") == "healthy", "activation commit prerequisites are incomplete")
