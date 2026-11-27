@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 import shutil
 import subprocess
@@ -44,6 +45,39 @@ _DELIVERY_SPEC.loader.exec_module(DELIVERY_TESTS)
 
 def _stamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _phase_selective_retention_fsync_fault(
+    real_fsync_directory: Callable[..., None],
+    retention_root: Path,
+    state_path: Path,
+    operation_id: str,
+) -> tuple[Callable[..., None], dict[str, object]]:
+    """Inject one directory-fsync failure only after the target phase is published."""
+    observed_phases: list[str] = []
+    delegated_calls: list[tuple[Path, bool]] = []
+    state: dict[str, object] = {
+        "fault_triggered": 0,
+        "observed_phases": observed_phases,
+        "delegated_calls": delegated_calls,
+    }
+    expected_root = retention_root.resolve()
+
+    def phase_selective_fsync(path: Path, *, required: bool = True) -> None:
+        if Path(path).resolve() == expected_root and state_path.exists():
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            operations = persisted.get("activation_operations")
+            operation = operations.get(operation_id) if isinstance(operations, dict) else None
+            phase = operation.get("phase") if isinstance(operation, dict) else None
+            if isinstance(phase, str):
+                observed_phases.append(phase)
+                if phase == "authorization-consumed" and not state["fault_triggered"]:
+                    state["fault_triggered"] = int(state["fault_triggered"]) + 1
+                    raise retention.RetentionError("authorization-consumed rename-before-directory-fsync")
+        real_fsync_directory(path, required=required)
+        delegated_calls.append((Path(path), required))
+
+    return phase_selective_fsync, state
 
 
 def _sign_record(root: Path, record: dict[str, object], key_id: str, *, repository_root: Path) -> tuple[dict[str, object], provenance.AuthorizationTrustConfig]:
@@ -110,6 +144,45 @@ def _attestation_result(identity: provenance.TrustedReleaseIdentity, expectation
         }},
         "verifiedTimestamps": [_stamp(verified_at)],
     }, "_verifierVersion": provenance.SUPPORTED_GH_VERSION}
+
+
+class PhaseSelectiveRetentionFsyncTests(unittest.TestCase):
+    def test_phase_selective_retention_fsync_fault_only_interrupts_target_phase(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            retention_root = Path(directory_name) / "publication"
+            retention_root.mkdir()
+            other_root = Path(directory_name) / "other"
+            other_root.mkdir()
+            state_path = retention_root / retention.STATE_FILENAME
+            operation_id = "phase-selective-test"
+            state_path.write_text(json.dumps({"activation_operations": {operation_id: {"phase": "authorization-consumption-pending"}}}), encoding="utf-8")
+
+            def real_fsync_directory(path: Path, *, required: bool = True) -> None:
+                return None
+
+            fault, state = _phase_selective_retention_fsync_fault(real_fsync_directory, retention_root, state_path, operation_id)
+            fault(retention_root, required=True)
+            fault(other_root, required=True)
+            self.assertEqual(state["fault_triggered"], 0)
+            self.assertEqual(state["observed_phases"], ["authorization-consumption-pending"])
+            self.assertEqual(len(state["delegated_calls"]), 2)
+
+            state_path.write_text(json.dumps({"activation_operations": {"other-operation": {"phase": "authorization-consumed"}}}), encoding="utf-8")
+            fault(retention_root, required=True)
+            self.assertEqual(state["fault_triggered"], 0)
+            self.assertEqual(len(state["delegated_calls"]), 3)
+
+            state_path.write_text(json.dumps({"activation_operations": {operation_id: {"phase": "authorization-consumed"}}}), encoding="utf-8")
+            with self.assertRaisesRegex(retention.RetentionError, "^authorization-consumed rename-before-directory-fsync$"):
+                fault(retention_root, required=True)
+            self.assertEqual(state["fault_triggered"], 1)
+            self.assertEqual(len(state["delegated_calls"]), 3)
+
+            # The callback is one-shot; subsequent calls still delegate and do
+            # not create a second simulated interruption.
+            fault(retention_root, required=True)
+            self.assertEqual(state["fault_triggered"], 1)
+            self.assertEqual(len(state["delegated_calls"]), 4)
 
 
 class DurableActivationIntegrationTests(unittest.TestCase):
@@ -636,10 +709,16 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             # after os.replace, but its parent-directory fsync fails.  A
             # fresh coordinator must not use that visible record to consume
             # delivery authority while the fault persists.
-            with patch.object(retention, "_fsync_directory", side_effect=retention.RetentionError("authorization-consumed rename-before-directory-fsync")):
+            real_fsync_directory = retention._fsync_directory
+            state_path = fixture["publication"] / retention.STATE_FILENAME
+            phase_fault, phase_fault_state = _phase_selective_retention_fsync_fault(real_fsync_directory, fixture["publication"], state_path, "integration-direct-delivery")
+            with patch.object(retention, "_fsync_directory", side_effect=phase_fault):
                 with self.assertRaises(retention.RetentionError):
                     tx.consume("integration-direct-delivery", envelope)
             interrupted_activation = tx.store.load()["activation_operations"]["integration-direct-delivery"]
+            self.assertEqual(phase_fault_state["fault_triggered"], 1)
+            self.assertIn("authorization-consumption-pending", phase_fault_state["observed_phases"])
+            self.assertIn("authorization-consumed", phase_fault_state["observed_phases"])
             self.assertEqual(interrupted_activation["phase"], "authorization-consumed")
             self.assertEqual(fixture["activation_journal"].inspect(envelope, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-forward", allow_consumed=True)["state"], "consumed")
             self.assertEqual(fixture["delivery_journal"].inspect(fixture["delivery_envelope"], fixture["identity"], fixture["allowlist"], fixture["trust"], operation="forward-release")["state"], "reserved")
