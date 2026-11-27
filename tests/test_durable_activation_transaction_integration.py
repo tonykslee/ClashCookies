@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -112,7 +113,14 @@ def _attestation_result(identity: provenance.TrustedReleaseIdentity, expectation
 
 
 class DurableActivationIntegrationTests(unittest.TestCase):
-    """Real coordinator integration; Linux CI is the authoritative run."""
+    """Real coordinator integration; Linux CI is authoritative.
+
+    Ed25519 authorization, replay journals, retained archives, preparation
+    material, retention publication, locks, and process boundaries are real.
+    The GitHub attestation verifier is intentionally a synthetic seam here;
+    the separate runtime-artifact workflow remains the evidence for genuine
+    GitHub-native attestation verification.
+    """
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -317,7 +325,7 @@ class DurableActivationIntegrationTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_RECEIVER") == "1", "mandatory Linux coordinator integration")
     def test_real_coordinator_three_successive_activations_and_subsequent_rollback(self) -> None:
-        """Drive the coordinator through three retained candidate generations."""
+        """Drive three generations, then rollback the authenticated incumbent."""
         with TemporaryDirectory() as directory_name:
             base = self._fixture(Path(directory_name) / "successive-0", candidate_nonce="successive-0")
             fixture = base
@@ -335,15 +343,32 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             self.assertEqual(state["active_release"], candidates[-1]["identity_digest"])
             self.assertEqual(state["previous_known_good_release"], candidates[-2]["identity_digest"])
             self.assertEqual(state["releases"][candidates[0]["identity_digest"]]["roles"], ["retired"])
-            self.assertEqual(tx.store.garbage_collect()["candidates"], [])
+            operation = state["activation_operations"]["integration-successive-2"]
+            fixture.update({"incumbent_release": operation["incumbent_release"], "previous_known_good_release": operation["previous_known_good_release"]})
+            recovery, _ = self._activation_authorization(fixture, "integration-successive-2", "integration-successive-recovery", state["pointer_generation"], operation["rollback_target"], "post-activation", "activation-recovery")
+            fixture["activation_journal"].reserve(recovery, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-recovery")
+            tx.begin_rollback("integration-successive-2", recovery)
+            tx.consume_rollback("integration-successive-2", recovery)
+            tx.observe("integration-successive-2", phase="rollback-observed", outcome="healthy", details={"subject": "rollback-target", "subject_release": operation["rollback_target"]})
+            tx.advance("integration-successive-2", "successful-rollback")
+            final = tx.store.load()
+            self.assertEqual(final["active_release"], operation["rollback_target"])
+            self.assertEqual(final["releases"][candidates[-1]["identity_digest"]]["roles"], ["retired"])
+            inventory = tx.store.inventory()
+            retired = next(item for item in inventory["known"] if item["identity_sha256"] == candidates[-1]["identity_digest"])
+            self.assertFalse(retired["eligible"])
+            gc = tx.store.garbage_collect(execute=True)
+            self.assertNotIn(candidates[-1]["identity_digest"], gc["deleted"])
+            self.assertIn(candidates[-1]["identity_digest"], gc["protected"])
 
     @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_RECEIVER") == "1", "mandatory Linux coordinator integration")
     def test_real_coordinator_failed_runtime_observations_compensate(self) -> None:
+        """Compensate both failed incumbent stop and failed candidate health."""
         with TemporaryDirectory() as directory_name:
             fixture = self._fixture(Path(directory_name))
             tx = self._transaction(fixture)
             operation_id = "integration-failed-start"
-            result = self._forward_to_health(tx, fixture, operation_id, "integration-failed-forward", start_outcome="failed")
+            result = self._forward_to_health(tx, fixture, operation_id, "integration-failed-forward", stop_outcome="failed")
             operation = result["operation"]
             state = tx.store.load()
             fixture.update({"incumbent_release": operation["incumbent_release"], "previous_known_good_release": operation["previous_known_good_release"]})
@@ -357,6 +382,26 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             self.assertIsNone(final["active_release"])
             self.assertEqual(final["releases"][fixture["identity_digest"]]["roles"], ["retired"])
 
+            health_base = self._fixture(Path(directory_name) / "failed-health-incumbent", candidate_nonce="failed-health-incumbent")
+            health_tx = self._transaction(health_base)
+            self._forward_to_health(health_tx, health_base, "integration-authenticated-incumbent", "integration-authenticated-incumbent-forward")
+            health_tx.advance("integration-authenticated-incumbent", "successful-activation")
+            health_fixture = self._import_candidate_into_store(health_base, self._fixture(Path(directory_name) / "failed-health-candidate", candidate_nonce="failed-health-candidate"))
+            health_tx = self._transaction(health_fixture)
+            health_operation_id = "integration-failed-health"
+            health_result = self._forward_to_health(health_tx, health_fixture, health_operation_id, "integration-failed-health-forward", health_outcome="failed")
+            health_operation = health_result["operation"]
+            health_state = health_tx.store.load()
+            health_fixture.update({"incumbent_release": health_operation["incumbent_release"], "previous_known_good_release": health_operation["previous_known_good_release"]})
+            health_tx.advance(health_operation_id, "recovery-required")
+            health_recovery, _ = self._activation_authorization(health_fixture, health_operation_id, "integration-failed-health-recovery", health_state["pointer_generation"], health_operation["rollback_target"], "compensation", "activation-recovery")
+            health_fixture["activation_journal"].reserve(health_recovery, health_fixture["identity"], health_fixture["allowlist"], health_fixture["trust"], operation="activation-recovery")
+            health_tx.begin_rollback(health_operation_id, health_recovery)
+            health_tx.consume_rollback(health_operation_id, health_recovery)
+            health_tx.observe(health_operation_id, phase="rollback-observed", outcome="healthy", details={"subject": "rollback-target", "subject_release": health_operation["rollback_target"]})
+            health_tx.advance(health_operation_id, "successful-rollback")
+            self.assertEqual(health_tx.store.load()["active_release"], health_operation["rollback_target"])
+
     @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_RECEIVER") == "1", "mandatory Linux coordinator integration")
     def test_real_coordinator_reconciliation_and_interrupted_rollback(self) -> None:
         with TemporaryDirectory() as directory_name:
@@ -365,9 +410,21 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             operation_id = "integration-reconcile-forward"
             result = self._forward_to_health(tx, fixture, operation_id, "integration-reconcile-forward", consume_forward=False)
             envelope = result["envelope"]
-            # Simulate termination after the real replay journal commit but
-            # before the retention transition publication.
-            tx.journal.consume(envelope, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-forward")
+            # Kill the actual coordinator after its replay-journal commit but
+            # before retention transition publication.
+            read_fd, write_fd = os.pipe()
+            child = os.fork()
+            if child == 0:
+                os.close(read_fd)
+                tx.store.transition_activation = lambda *args, **kwargs: os.kill(os.getpid(), 9)  # type: ignore[method-assign]
+                try:
+                    tx.consume(operation_id, envelope)
+                except BaseException:
+                    os._exit(6)
+            os.close(write_fd)
+            _, status = os.waitpid(child, 0)
+            os.close(read_fd)
+            self.assertEqual(os.waitstatus_to_exitcode(status), -9)
             tx.reconcile(operation_id, envelope, now=datetime.now(timezone.utc) + timedelta(days=2))
             self.assertEqual(tx.store.load()["activation_operations"][operation_id]["phase"], "authorization-consumed")
             tx.advance(operation_id, "incumbent-stop-intent")
@@ -381,7 +438,19 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             recovery, _ = self._activation_authorization(fixture, operation_id, "integration-reconcile-recovery", state["pointer_generation"], retention.LEGACY_BASELINE_ID, "post-activation", "activation-recovery")
             fixture["activation_journal"].reserve(recovery, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-recovery")
             tx.begin_rollback(operation_id, recovery)
-            tx.journal.consume(recovery, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-recovery")
+            read_fd, write_fd = os.pipe()
+            child = os.fork()
+            if child == 0:
+                os.close(read_fd)
+                tx.store.transition_activation = lambda *args, **kwargs: os.kill(os.getpid(), 9)  # type: ignore[method-assign]
+                try:
+                    tx.consume_rollback(operation_id, recovery)
+                except BaseException:
+                    os._exit(7)
+            os.close(write_fd)
+            _, status = os.waitpid(child, 0)
+            os.close(read_fd)
+            self.assertEqual(os.waitstatus_to_exitcode(status), -9)
             tx.reconcile_rollback(operation_id, recovery, now=datetime.now(timezone.utc) + timedelta(days=2))
             tx.observe(operation_id, phase="rollback-observed", outcome="healthy", details={"subject": "rollback-target", "subject_release": retention.LEGACY_BASELINE_ID})
             tx.advance(operation_id, "successful-rollback")
@@ -453,6 +522,12 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             fixture.update({"forward_retry_key": "integration-fsync-forward", "incumbent_release": state["active_release"], "previous_known_good_release": state["previous_known_good_release"]})
             envelope, _ = self._activation_authorization(fixture, "integration-fsync", "integration-fsync-forward", state["pointer_generation"], retention.LEGACY_BASELINE_ID, None, "activation-forward")
             fixture["activation_journal"].reserve(envelope, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-forward")
+            retry_workspaces_before = {path.name for path in fixture["prepared"].glob(".retry-*")}
+            with patch.object(retention, "assess_storage", return_value=SimpleNamespace(status="FAIL")):
+                with self.assertRaises(activation.ActivationError):
+                    tx.begin(operation_id="integration-resource-denial", retry_key="integration-resource-denial", identity_sha256=fixture["identity_digest"], preparation_metadata_sha256=fixture["metadata_digest"], envelope=envelope, rollback_target=retention.LEGACY_BASELINE_ID)
+            self.assertEqual(retry_workspaces_before, {path.name for path in fixture["prepared"].glob(".retry-*")})
+            self.assertEqual(fixture["activation_journal"].inspect(envelope, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-forward")["state"], "reserved")
             read_fd, write_fd = os.pipe()
             child = os.fork()
             if child == 0:
@@ -478,6 +553,29 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             self.assertEqual(state["active_release"], None)
             self.assertEqual(state["activation_operations"]["integration-fsync"]["phase"], "validated-intent")
             self.assertIn("recovery-protected", state["releases"][fixture["identity_digest"]]["roles"])
+            with self.assertRaises(activation.ActivationError):
+                tx.advance("integration-fsync", "successful-activation")
+            self.assertEqual(fixture["activation_journal"].inspect(envelope, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-forward")["state"], "reserved")
+            retried = tx.begin(operation_id="integration-fsync", retry_key="integration-fsync-forward", identity_sha256=fixture["identity_digest"], preparation_metadata_sha256=fixture["metadata_digest"], envelope=envelope, rollback_target=retention.LEGACY_BASELINE_ID)
+            self.assertEqual(retried["phase"], "validated-intent")
+
+            state_bytes = tx.store.state_path.read_bytes()
+            malformed = json.loads(state_bytes.decode("utf-8"))
+            malformed["activation_operations"]["integration-fsync"]["delivery_consumption"] = {"operation_id": "wrong"}
+            tx.store.state_path.write_bytes(retention._canonical(malformed) + b"\n")
+            with self.assertRaises(retention.RetentionError):
+                tx.store.load()
+            tx.store.state_path.write_bytes(state_bytes)
+            malformed = json.loads(state_bytes.decode("utf-8"))
+            malformed["activation_operations"]["integration-fsync"]["phase"] = "incumbent-stop-observed"
+            malformed["activation_operations"]["integration-fsync"]["observations"]["incumbent-stop-observed"] = {"contract": "clashcookies.activation-observation", "version": 1, "subject": "candidate", "subject_release": fixture["identity_digest"]}
+            tx.store.state_path.write_bytes(retention._canonical(malformed) + b"\n")
+            with self.assertRaises(retention.RetentionError):
+                tx.store.load()
+            tx.store.state_path.write_bytes(state_bytes)
+            gc = tx.store.garbage_collect(execute=True)
+            self.assertEqual(gc["deleted"], [])
+            self.assertIn(fixture["identity_digest"], gc["protected"])
 
 
 if __name__ == "__main__":

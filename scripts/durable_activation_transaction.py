@@ -144,7 +144,10 @@ class ActivationTransaction:
         temporary_bytes = runtime_bytes + archive_bytes
         persistent_inodes = runtime_inodes + 4
         temporary_inodes = runtime_inodes + 2
-        resource_paths = [self.store.root, self.prepared_root, self.store.repository_root, self.trusted_root, self.trust.public_key_path, self._allowlist_path(), self.journal.root, self.delivery_journal.root]
+        # The preparation parent is the actual filesystem used for the
+        # bounded retry workspace.  Keep it explicit even when callers pass a
+        # prepared root mounted separately from retention.
+        resource_paths = [release_path, evidence.preparation_path.parent.parent, self.prepared_root, self.store.root, self.store.repository_root, self.trusted_root, self.trust.public_key_path, self._allowlist_path(), self.journal.root, self.delivery_journal.root]
         assessment = retention.assess_storage(resource_paths, temporary_bytes=temporary_bytes, persistent_bytes=persistent_bytes, preserved_runtime_bytes=retention.retained_bytes(self.store.root), incremental_preservation_bytes=artifact_bytes + metadata_bytes, temporary_inodes=temporary_inodes, persistent_inodes=persistent_inodes, headroom_inodes=self.headroom_inodes)
         _require(assessment.status == "PASS", "activation resource admission is insufficient")
 
@@ -162,6 +165,12 @@ class ActivationTransaction:
 
     def verify_prepared_candidate(self, identity_sha256: str, preparation_metadata_sha256: str) -> PreparedCandidateEvidence:
         """Historical inspection of one exact committed preparation."""
+        identity, release_path, evidence, _ = self._read_prepared_candidate_evidence(identity_sha256, preparation_metadata_sha256)
+        preparation._verify_existing_preparation(candidate_dir := evidence.preparation_path.parent, identity, identity_sha256, release_path / "artifact-service.zip", self.run_metadata, expected_metadata_sha256=preparation_metadata_sha256, durable=self.store.require_durable)
+        return evidence
+
+    def _read_prepared_candidate_evidence(self, identity_sha256: str, preparation_metadata_sha256: str) -> tuple[dict[str, Any], Path, PreparedCandidateEvidence, dict[str, Any]]:
+        """Read bounded local preparation evidence without re-extracting the archive."""
         identity, release_path, _ = self._candidate(identity_sha256)
         _require(provenance.SHA256_RE.fullmatch(preparation_metadata_sha256 or "") is not None, "preparation metadata digest is malformed")
         state = self.store.load()
@@ -188,13 +197,17 @@ class ActivationTransaction:
         legacy_runtime = Path(baseline["runtime_path"])
         _require(preparation._integrity(legacy_runtime, maximum_bytes=preparation.MAX_LEGACY_BYTES, maximum_entries=preparation.MAX_LEGACY_ENTRIES) == baseline["integrity"], "preserved legacy runtime integrity changed")
         _require(candidate.get("archive_validation") is not None, "preparation archive validation evidence is missing")
-        preparation._verify_existing_preparation(candidate_dir, identity, identity_sha256, release_path / "artifact-service.zip", self.run_metadata, expected_metadata_sha256=preparation_metadata_sha256, durable=self.store.require_durable)
-        return PreparedCandidateEvidence(identity_sha256, preparation_metadata_sha256, metadata_path, actual_runtime, baseline["integrity"])
+        return identity, release_path, PreparedCandidateEvidence(identity_sha256, preparation_metadata_sha256, metadata_path, actual_runtime, baseline["integrity"]), parsed
 
     def _activation_admission(self, identity_sha256: str, preparation_metadata_sha256: str, *, now: datetime | None = None, assume_locked: bool = False) -> PreparedCandidateEvidence:
         """Fresh, current admission; historical inspection is not authority."""
+        identity, _, evidence, _ = self._read_prepared_candidate_evidence(identity_sha256, preparation_metadata_sha256)
+        # This is deliberately before _verify_existing_preparation: the latter
+        # allocates a retry workspace and re-extracts the retained archive.
+        self._admit_resources(identity, evidence)
         evidence = self.verify_prepared_candidate(identity_sha256, preparation_metadata_sha256)
-        identity, _, _ = self._candidate(identity_sha256)
+        # Recheck after archive-bound validation and again under the caller's
+        # canonical lock so the admission cannot become stale during the path.
         self._admit_resources(identity, evidence)
         self.store.verify_retained_offline(identity_sha256, trusted_root=self.trusted_root, trusted_root_version=self.trusted_root_version, authorization_public_key=self.trust.public_key_path, authorization_key_id=self.trust.expected_key_id, authorization_key_fingerprint=self.trust.expected_public_key_sha256, authorization_allowlist=self._allowlist_path(), assume_locked=assume_locked)
         self._verify_delivery_reservation(identity, self.store.root / f"release-{identity_sha256}", self.delivery_envelope, self.delivery_journal, now=now)
@@ -336,8 +349,29 @@ class ActivationTransaction:
         with self._locked():
             operation = self.store.load()["activation_operations"].get(operation_id)
             _require(operation is not None, "activation operation is unknown")
-            if phase == "successful-activation":
+            legal = {
+                "validated-intent": {"authorization-consumption-pending", "recovery-required"},
+                "authorization-consumption-pending": {"authorization-consumed", "recovery-required"},
+                "authorization-consumed": {"incumbent-stop-intent", "recovery-required"},
+                "incumbent-stop-intent": {"incumbent-stop-observed", "recovery-required"},
+                "incumbent-stop-observed": {"candidate-start-intent", "recovery-required"},
+                "candidate-start-intent": {"candidate-start-observed", "recovery-required"},
+                "candidate-start-observed": {"candidate-health-verified", "recovery-required"},
+                "candidate-health-verified": {"successful-activation", "recovery-required"},
+                "compensation-authorization-consumption-pending": {"rollback-intent", "recovery-required"},
+                "successful-activation": set(), "rollback-intent": {"rollback-observed", "recovery-required"},
+                "rollback-observed": {"successful-rollback", "recovery-required"},
+                "successful-rollback": set(), "recovery-required": {operation["intent"].get("recovery_phase")},
+            }
+            _require(phase == operation["phase"] or phase in legal.get(operation["phase"], set()), f"illegal activation phase transition: {operation['phase']} -> {phase}")
+            if phase in {"incumbent-stop-intent", "successful-activation"}:
+                # Delivery and activation replay consumption are both durable
+                # prerequisites for any incumbent disruption.  This runs only
+                # after the legal-transition check, so an illegal transition
+                # cannot consume delivery authority as a side effect.
                 self._ensure_delivery_consumed(operation, assume_locked=True)
+                operation = self.store.load()["activation_operations"].get(operation_id)
+                _require(operation is not None, "activation operation is unknown")
             recovery = phase in {"rollback-intent", "rollback-observed", "successful-rollback"} or operation["rollback_consumption"] is not None
             authority = self._consumed_authority(operation, recovery=recovery, assume_locked=True)
             return self.store.transition_activation(operation_id, phase=phase, authority=authority, assume_locked=True)
@@ -348,20 +382,28 @@ class ActivationTransaction:
         operation = state["activation_operations"].get(operation_id)
         _require(operation is not None and operation["phase"] in {"successful-activation", "incumbent-stop-observed", "candidate-start-observed", "candidate-health-verified", "compensation-authorization-consumption-pending", "recovery-required"}, "rollback requires a failed candidate or successful activation")
         identity, _, _ = self._candidate(operation["candidate_release"])
-        recovery_kind = "post-activation" if state["active_release"] == operation["candidate_release"] else "compensation"
+        already_bound = operation["rollback_authorization_record_sha256"] is not None
+        recovery_kind = operation["rollback_kind"] if already_bound else ("post-activation" if state["active_release"] == operation["candidate_release"] else "compensation")
         state = self.store.load()
-        recovery_retry_key = self._authorization_retry_key(envelope)
-        binding = self._operation_binding(operation, generation=state["pointer_generation"], recovery_kind=recovery_kind, authorization_retry_key=recovery_retry_key)
-        authorization = self._verify_activation_authorization(envelope, identity, operation=ACTIVATION_AUTHORIZATION_RECOVERY, binding=binding, now=now)
+        recovery_retry_key = operation["rollback_retry_key"] if already_bound else self._authorization_retry_key(envelope)
+        recovery_generation = operation["rollback_expected_pointer_generation"] if already_bound else state["pointer_generation"]
+        _require(recovery_generation is not None, "rollback pointer generation is missing")
+        binding = self._operation_binding(operation, generation=recovery_generation, recovery_kind=recovery_kind, authorization_retry_key=recovery_retry_key)
+        authorization = self._verify_activation_authorization(envelope, identity, operation=ACTIVATION_AUTHORIZATION_RECOVERY, binding=binding, now=now, historical=already_bound)
+        if already_bound:
+            observed = self.journal.inspect(envelope, provenance.TrustedReleaseIdentity(**identity), self.revision_allowlist, self.trust, operation=ACTIVATION_AUTHORIZATION_RECOVERY, allow_consumed=True, now=now)
+            if observed["state"] == "consumed":
+                return self.reconcile_rollback(operation_id, envelope, now=now)
         with self._locked():
             state = self.store.load()
             operation = state["activation_operations"].get(operation_id)
             _require(operation is not None, "activation operation is unknown")
             identity, _, _ = self._candidate(operation["candidate_release"])
-            recovery_retry_key = self._authorization_retry_key(envelope)
-            binding = self._operation_binding(operation, generation=state["pointer_generation"], recovery_kind=recovery_kind, authorization_retry_key=recovery_retry_key)
-            authorization = self._verify_activation_authorization(envelope, identity, operation=ACTIVATION_AUTHORIZATION_RECOVERY, binding=binding, now=now)
-            authority = self.store._authority_from_journal(operation_id=operation_id, candidate_release=operation["candidate_release"], preparation_metadata_sha256=operation["preparation_metadata_sha256"], pointer_generation=state["pointer_generation"], journal=self.journal, operation=ACTIVATION_AUTHORIZATION_RECOVERY, envelope=envelope, identity=provenance.TrustedReleaseIdentity(**identity), revision_allowlist=self.revision_allowlist, trust=self.trust, record_sha256=authorization.verification.record_sha256, authorization_id=authorization.authorization_id, retry_key=authorization.retry_key, scope=ACTIVATION_AUTHORIZATION_RECOVERY, state="reserved", now=now, assume_locked=True)
+            recovery_retry_key = operation["rollback_retry_key"] if already_bound else self._authorization_retry_key(envelope)
+            recovery_generation = operation["rollback_expected_pointer_generation"] if already_bound else state["pointer_generation"]
+            binding = self._operation_binding(operation, generation=recovery_generation, recovery_kind=recovery_kind, authorization_retry_key=recovery_retry_key)
+            authorization = self._verify_activation_authorization(envelope, identity, operation=ACTIVATION_AUTHORIZATION_RECOVERY, binding=binding, now=now, historical=already_bound)
+            authority = self.store._authority_from_journal(operation_id=operation_id, candidate_release=operation["candidate_release"], preparation_metadata_sha256=operation["preparation_metadata_sha256"], pointer_generation=recovery_generation, journal=self.journal, operation=ACTIVATION_AUTHORIZATION_RECOVERY, envelope=envelope, identity=provenance.TrustedReleaseIdentity(**identity), revision_allowlist=self.revision_allowlist, trust=self.trust, record_sha256=authorization.verification.record_sha256, authorization_id=authorization.authorization_id, retry_key=authorization.retry_key, scope=ACTIVATION_AUTHORIZATION_RECOVERY, state="reserved", now=now, assume_locked=True)
             return self.store.start_activation_rollback(operation_id, authorization_record_sha256=authorization.verification.record_sha256, authorization_id=authorization.authorization_id, retry_key=authorization.retry_key, rollback_kind=recovery_kind, authority=authority, assume_locked=True)
 
     def consume_rollback(self, operation_id: str, envelope: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
@@ -383,7 +425,7 @@ class ActivationTransaction:
         state = self.store.load()
         operation = state["activation_operations"].get(operation_id)
         _require(operation is not None, "activation operation is unknown")
-        if operation["phase"] != "compensation-authorization-consumption-pending":
+        if operation["phase"] not in {"compensation-authorization-consumption-pending", "recovery-required"}:
             return operation
         identity, _, _ = self._candidate(operation["candidate_release"])
         binding = self._operation_binding(operation, generation=operation["rollback_expected_pointer_generation"], recovery_kind=operation["rollback_kind"], authorization_retry_key=operation["rollback_retry_key"])
@@ -394,6 +436,8 @@ class ActivationTransaction:
             _require(observed["state"] in {"reserved", "consumed"}, "rollback replay state is malformed or conflicting")
             if observed["state"] == "consumed":
                 authority = self.store._authority_from_journal(operation_id=operation_id, candidate_release=operation["candidate_release"], preparation_metadata_sha256=operation["preparation_metadata_sha256"], pointer_generation=operation["rollback_expected_pointer_generation"], journal=self.journal, operation=ACTIVATION_AUTHORIZATION_RECOVERY, envelope=envelope, identity=provenance.TrustedReleaseIdentity(**identity), revision_allowlist=self.revision_allowlist, trust=self.trust, record_sha256=operation["rollback_authorization_record_sha256"], authorization_id=operation["rollback_authorization_id"], retry_key=operation["rollback_retry_key"], scope=ACTIVATION_AUTHORIZATION_RECOVERY, state="consumed", now=now, assume_locked=True)
+                if operation["phase"] == "recovery-required":
+                    self.store.transition_activation(operation_id, phase="compensation-authorization-consumption-pending", expected_phase="recovery-required", authority=authority, assume_locked=True)
                 return self.store.transition_activation(operation_id, phase="rollback-intent", expected_phase="compensation-authorization-consumption-pending", authority=authority, assume_locked=True)
         return operation
 

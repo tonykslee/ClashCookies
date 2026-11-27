@@ -996,7 +996,8 @@ class RetentionStore:
             _require(operation is not None, "activation operation is unknown")
             _require(authority is not None, "activation transitions require replay-derived authority")
             recovery_phases = {"compensation-authorization-consumption-pending", "rollback-intent", "rollback-observed", "successful-rollback"}
-            recovery_phase = phase in recovery_phases or operation["phase"] in recovery_phases
+            recovery_resume = operation["intent"].get("recovery_phase") if operation["phase"] == "recovery-required" else None
+            recovery_phase = phase in recovery_phases or operation["phase"] in recovery_phases or recovery_resume in recovery_phases
             proof_scope = "activation-recovery" if recovery_phase else "activation-forward"
             proof_state = "reserved" if phase in {"authorization-consumption-pending", "compensation-authorization-consumption-pending"} else "consumed"
             proof_record = operation["rollback_authorization_record_sha256"] if recovery_phase else operation["authorization_record_sha256"]
@@ -1007,6 +1008,14 @@ class RetentionStore:
             accepted_state = proof_state
             if phase in {"authorization-consumption-pending", "recovery-required"} and operation["phase"] in {"validated-intent", "authorization-consumption-pending"} and not recovery_phase:
                 accepted_state = authority.state
+            if phase == "recovery-required" and authority.state in {"reserved", "consumed"}:
+                accepted_state = authority.state
+            if phase == "compensation-authorization-consumption-pending" and operation["phase"] == "recovery-required" and authority.state == "consumed":
+                # A crash may leave the replay journal consumed while the
+                # recovery-required retention transition was not published.
+                # Resuming the exact bound authority is reconciliation, not a
+                # new authorization.
+                accepted_state = "consumed"
             self._validate_activation_authority(authority, operation_id=operation_id, candidate_release=operation["candidate_release"], preparation_metadata_sha256=operation["preparation_metadata_sha256"], record_sha256=proof_record, authorization_id=proof_auth_id, retry_key=proof_retry, scope=proof_scope, state=accepted_state, pointer_generation=proof_generation)
             current = operation["phase"]
             if expected_phase is not None:
@@ -1030,6 +1039,11 @@ class RetentionStore:
                 "rollback-observed": {"successful-rollback", "recovery-required"},
                 "successful-rollback": set(), "recovery-required": set(),
             }
+            if current == "recovery-required":
+                _require(isinstance(recovery_resume, str) and (phase == recovery_resume or (phase == "compensation-authorization-consumption-pending" and operation["rollback_authorization_record_sha256"] is not None)), "recovery resumption must use the exact persisted phase")
+                legal[current] = {phase}
+                if operation["rollback_authorization_record_sha256"] is not None:
+                    legal[current].add("compensation-authorization-consumption-pending")
             _require(phase in legal[current], f"illegal activation phase transition: {current} -> {phase}")
             if current == "incumbent-stop-observed" and phase == "candidate-start-intent":
                 _require(operation["observations"].get("incumbent-stop-observed", {}).get("outcome") == "stopped", "candidate start cannot follow a failed or uncertain incumbent stop")
@@ -1050,6 +1064,11 @@ class RetentionStore:
                 self._commit_activation_state(state, operation, rollback=True)
             else:
                 operation["phase"] = phase
+                if phase == "recovery-required":
+                    # Keep the exact retry point in the intent record.  This
+                    # does not grant new authority; the next transition must
+                    # validate the same replay-derived authority and binding.
+                    operation["intent"]["recovery_phase"] = current
                 if observation is not None:
                     _require(observation.get("operation_id") == operation_id and observation.get("candidate_release") == operation["candidate_release"] and observation.get("runtime_identity_sha256") == operation["runtime_identity_sha256"], "activation observation is not bound to the exact operation and runtime")
                     operation["observations"][phase] = observation
@@ -1059,8 +1078,9 @@ class RetentionStore:
                     operation["rollback_consumption"] = {"operation_id": authority.operation_id, "candidate_release": authority.candidate_release, "preparation_metadata_sha256": authority.preparation_metadata_sha256, "record_sha256": authority.record_sha256, "authorization_id": authority.authorization_id, "retry_key": authority.retry_key, "scope": authority.scope, "state": authority.state, "pointer_generation": authority.pointer_generation, "observed_at": authority.observed_at}
                 operation["updated_at"] = _now()
                 if phase == "recovery-required":
+                    pointer_ids = {state["active_release"], state["previous_known_good_release"]}
                     for release_id in (operation["candidate_release"], operation["rollback_target"]):
-                        if release_id not in (None, LEGACY_BASELINE_ID):
+                        if release_id not in (None, LEGACY_BASELINE_ID) and release_id not in pointer_ids:
                             record = state["releases"][release_id]
                             if "recovery-protected" not in record["roles"]:
                                 record["roles"].append("recovery-protected")
@@ -1158,6 +1178,12 @@ class RetentionStore:
             if operation["phase"] == "compensation-authorization-consumption-pending":
                 _require(operation["rollback_authorization_record_sha256"] == authorization_record_sha256 and operation["rollback_authorization_id"] == authorization_id and operation["rollback_retry_key"] == retry_key and operation["rollback_kind"] == rollback_kind and operation["rollback_expected_pointer_generation"] == state["pointer_generation"], "rollback retry conflicts with the pending recovery authorization")
                 return operation
+            if operation["phase"] == "recovery-required" and operation["rollback_authorization_record_sha256"] is not None:
+                _require(operation["rollback_authorization_record_sha256"] == authorization_record_sha256 and operation["rollback_authorization_id"] == authorization_id and operation["rollback_retry_key"] == retry_key and operation["rollback_kind"] == rollback_kind and operation["rollback_expected_pointer_generation"] == state["pointer_generation"], "recovery resumption conflicts with the already-bound rollback authorization")
+                operation["phase"] = "compensation-authorization-consumption-pending"
+                operation["updated_at"] = _now()
+                self._save(state)
+                return operation
             _require(operation["rollback_authorization_record_sha256"] is None and operation["rollback_authorization_id"] is None and operation["rollback_retry_key"] is None and operation["rollback_expected_pointer_generation"] is None, "rollback authorization is already bound to a different retry")
             operation["rollback_authorization_record_sha256"] = authorization_record_sha256
             operation["rollback_authorization_id"] = authorization_id
@@ -1176,6 +1202,8 @@ class RetentionStore:
     def inventory(self, *, assume_locked: bool = False) -> dict[str, Any]:
         def collect() -> dict[str, Any]:
             state = self.load()
+            historical_refs = self._activation_reference_set(state)
+            gc_transaction_ids = set(state["gc_transactions"])
             known: list[dict[str, Any]] = []
             unknown: list[dict[str, Any]] = []
             children: list[Path] = []
@@ -1195,7 +1223,8 @@ class RetentionStore:
                     _require(child.name == f"release-{digest}", "publication directory is not identity-named")
                     record = state["releases"].get(digest)
                     _require(record is not None and record["publication_name"] == child.name and record["identity"] == identity, "publication has missing or conflicting retention metadata")
-                    known.append({"identity_sha256": digest, "publication": child.name, "roles": record["roles"], "eligible": record["roles"] == ["retired"] and state["active_release"] != digest and state["previous_known_good_release"] != digest})
+                    eligible = record["roles"] == ["retired"] and state["active_release"] != digest and state["previous_known_good_release"] != digest and digest not in historical_refs and digest not in gc_transaction_ids
+                    known.append({"identity_sha256": digest, "publication": child.name, "roles": record["roles"], "eligible": eligible})
                 except (RetentionError, OSError):
                     unknown.append({"publication": child.name, "reason": "unknown-or-ambiguous-ownership"})
             if truncated:
