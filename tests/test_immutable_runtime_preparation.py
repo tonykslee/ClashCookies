@@ -56,8 +56,6 @@ class ImmutableRuntimePreparationTests(unittest.TestCase):
         (runtime / "prisma").mkdir()
         (runtime / "startup").mkdir()
         (runtime / "dist" / "ClashCookies.js").write_text("compiled\n", encoding="utf-8")
-        (runtime / "dist" / ".clashcookies-artifact").write_text(f"revision={source_sha}\n", encoding="ascii")
-        (runtime / "node_modules" / ".clashcookies-artifact").write_text(f"revision={source_sha}\n", encoding="ascii")
         (runtime / "node_modules" / "@prisma" / "client").mkdir(parents=True)
         (runtime / "node_modules" / ".prisma" / "client").mkdir(parents=True)
         (runtime / "node_modules" / "prisma" / "build").mkdir(parents=True)
@@ -83,6 +81,9 @@ class ImmutableRuntimePreparationTests(unittest.TestCase):
         (runtime / "yarn.lock").write_text("# lock\n", encoding="utf-8")
         (runtime / "startup" / "container-start.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
         (runtime / "startup" / "container-start.sh").chmod(0o755)
+        marker = f"revision={source_sha}\ndist_digest={prep._wrapper_tree_digest(runtime / 'dist')}\nnode_modules_digest={prep._wrapper_tree_digest(runtime / 'node_modules')}\n"
+        (runtime / "dist" / ".clashcookies-artifact").write_text(marker, encoding="ascii")
+        (runtime / "node_modules" / ".clashcookies-artifact").write_text(marker, encoding="ascii")
         components = {name: runtime / name for name in ("dist", "node_modules", "prisma", "package.json", "yarn.lock")}
         components["startup/container-start.sh"] = runtime / "startup" / "container-start.sh"
         source: dict[str, object] = {
@@ -90,7 +91,6 @@ class ImmutableRuntimePreparationTests(unittest.TestCase):
             "version": prep.LEGACY_SOURCE_VERSION,
             "container_id": "fixture-container",
             "checkout_revision": source_sha,
-            "runtime_revision": source_sha,
             "image": "node:20-bookworm@sha256:" + "b" * 64,
             "image_digest": "sha256:" + "b" * 64,
             "platform": "linux/amd64",
@@ -139,9 +139,39 @@ class ImmutableRuntimePreparationTests(unittest.TestCase):
         if not self.symlink_fixture_available:
             self.skipTest("runtime symlink fixture requires Linux or Windows symlink privilege")
         (self.sources / "runtime" / "node_modules" / ".clashcookies-artifact").unlink()
-        source["runtime_revision"] = source["checkout_revision"]
         with self.assertRaisesRegex(prep.PreparationError, "identity marker"):
             prep._copy_legacy_runtime(source, self.destination / "legacy-runtime-baseline", self.repo, durable=False, verify_docker=False)
+
+    def test_legacy_wrapper_markers_require_exact_agreement_and_digest_contract(self) -> None:
+        source, _ = self.source_evidence()
+        if not self.symlink_fixture_available:
+            self.skipTest("runtime symlink fixture requires Linux or Windows symlink privilege")
+        marker = self.sources / "runtime" / "node_modules" / ".clashcookies-artifact"
+        marker.write_text(marker.read_text(encoding="ascii") + "revision=" + str(source["checkout_revision"]) + "\n", encoding="ascii")
+        with self.assertRaisesRegex(prep.PreparationError, "malformed|contradict"):
+            prep._copy_legacy_runtime(source, self.destination / "legacy-runtime-baseline", self.repo, durable=False, verify_docker=False)
+        source, _ = self.source_evidence()
+        marker = self.sources / "runtime" / "node_modules" / ".clashcookies-artifact"
+        lines = marker.read_text(encoding="ascii").splitlines()
+        lines[1] = "dist_digest=" + "f" * 64
+        marker.write_text("\n".join(lines) + "\n", encoding="ascii")
+        with self.assertRaisesRegex(prep.PreparationError, "contradict|digest"):
+            prep._copy_legacy_runtime(source, self.destination / "legacy-runtime-baseline", self.repo, durable=False, verify_docker=False)
+
+    def test_legacy_custody_conflicts_are_rejected_without_replacement(self) -> None:
+        observation = {"image_id": "sha256:" + "a" * 64, "image_digest": "sha256:" + "b" * 64, "image_bytes": 1234}
+        protected_ref = prep._legacy_custody_ref(observation["image_digest"])
+        commands: list[list[str]] = []
+
+        def inspect_conflict(command, **_kwargs):
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, json.dumps({"Id": "sha256:" + "c" * 64}), "")
+
+        with patch.object(prep.subprocess, "run", side_effect=inspect_conflict):
+            with self.assertRaisesRegex(prep.PreparationError, "conflicts"):
+                prep._protect_legacy_image_custody(observation)
+        self.assertFalse(any(command[0:3] == ["docker", "image", "tag"] for command in commands))
+        self.assertEqual(commands[0][-1], protected_ref)
 
     @unittest.skipUnless(os.name == "posix", "FB-027 descriptor locking requires POSIX")
     def test_operation_lock_requires_canonical_identity_and_real_contention(self) -> None:

@@ -532,27 +532,119 @@ def _mapped_bounds(components: dict[str, Path]) -> dict[str, int]:
     return {"bytes": total_bytes, "allocated_bytes": allocated_bytes, "entries": total_entries, "inodes": total_entries}
 
 
+def _wrapper_tree_digest(root: Path) -> str:
+    """Reproduce deploy-prod.sh's bounded digest_tree contract."""
+    files: list[tuple[str, Path]] = []
+    for current, _directories, names in os.walk(root, topdown=True, followlinks=False):
+        for name in sorted(names):
+            path = Path(current) / name
+            metadata = os.lstat(path)
+            if stat.S_ISREG(metadata.st_mode) and name != ".clashcookies-artifact":
+                files.append((path.relative_to(root).as_posix(), path))
+    digest = hashlib.sha256()
+    total = 0
+    for relative, path in sorted(files):
+        file_digest, size, _ = _stream_file(path, MAX_LEGACY_BYTES - total, f"legacy wrapper digest input {relative}")
+        total += size
+        digest.update(f"{file_digest}  {relative}\n".encode("utf-8"))
+        _require(total <= MAX_LEGACY_BYTES, "legacy wrapper digest inputs exceed the preservation bound")
+    return digest.hexdigest()
+
+
+def _read_legacy_runtime_marker(path: Path, expected_revision: str) -> dict[str, str]:
+    try:
+        metadata = os.lstat(path)
+    except OSError as error:
+        _fail(f"legacy runtime identity marker is unavailable: {path}: {error}")
+    _require(stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), f"legacy runtime identity marker is not a private regular file: {path}")
+    raw, _ = _stable_file(path, 64 * 1024, "legacy runtime identity marker")
+    match = re.fullmatch(rb"revision=([0-9a-f]{40})\ndist_digest=([0-9a-f]{64})\nnode_modules_digest=([0-9a-f]{64})\n", raw)
+    _require(match is not None, f"legacy runtime identity marker is malformed: {path}")
+    values = {"revision": match.group(1).decode("ascii"), "dist_digest": match.group(2).decode("ascii"), "node_modules_digest": match.group(3).decode("ascii")}
+    _require(values["revision"] == expected_revision, f"legacy runtime marker revision does not match the observed checkout revision: {path}")
+    return values
+
+
 def _validate_legacy_runtime_revision_markers(runtime: Path, expected_revision: str) -> None:
-    """Require independent build markers in both runtime overlays."""
+    """Require both exact deploy-prod.sh markers and corroborate their digests."""
     _require(GIT_SHA_RE.fullmatch(expected_revision) is not None, "legacy checkout revision is malformed")
-    values: list[str] = []
-    for marker in (runtime / "dist/.clashcookies-artifact", runtime / "node_modules/.clashcookies-artifact"):
+    marker_paths = (runtime / "dist/.clashcookies-artifact", runtime / "node_modules/.clashcookies-artifact")
+    values = [_read_legacy_runtime_marker(marker, expected_revision) for marker in marker_paths]
+    _require(values[0] == values[1], "legacy runtime overlay markers contradict one another")
+    _require(values[0]["dist_digest"] == _wrapper_tree_digest(runtime / "dist"), "legacy dist wrapper digest does not match the observed overlay")
+    _require(values[0]["node_modules_digest"] == _wrapper_tree_digest(runtime / "node_modules"), "legacy node_modules wrapper digest does not match the observed overlay")
+
+
+def _legacy_custody_ref(digest: str) -> str:
+    return f"clashcookies/legacy-custody:{digest.removeprefix('sha256-').replace(':', '-')[:128]}"
+
+
+def _inspect_legacy_custody_anchor(name: str) -> dict[str, Any] | None:
+    try:
+        result = subprocess.run(["docker", "container", "inspect", "--format", "{{json .}}", name], capture_output=True, text=True, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        _fail(f"legacy exact image custody anchor inspection failed: {error}")
+    if result.returncode != 0:
+        return None
+    try:
+        value = json.loads(result.stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        _fail(f"legacy exact image custody anchor inspection is malformed: {error}")
+    _require(isinstance(value, dict), "legacy exact image custody anchor inspection is malformed")
+    return value
+
+
+def _protect_legacy_image_custody(observation: dict[str, Any]) -> dict[str, Any]:
+    """Create exact no-replacement image custody after operation ownership."""
+    image_id = observation.get("image_id")
+    digest = observation.get("image_digest")
+    image_bytes = observation.get("image_bytes")
+    _require(isinstance(image_id, str) and image_id and isinstance(digest, str) and isinstance(image_bytes, int) and image_bytes > 0, "legacy image observation is incomplete for custody")
+    protected_ref = _legacy_custody_ref(digest)
+    try:
+        tag_result = subprocess.run(["docker", "image", "inspect", "--format", "{{json .}}", protected_ref], capture_output=True, text=True, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        _fail(f"legacy protected image inspection failed: {error}")
+    tagged: dict[str, Any] | None = None
+    if tag_result.returncode == 0:
         try:
-            metadata = os.lstat(marker)
-        except OSError as error:
-            _fail(f"legacy runtime identity marker is unavailable: {marker}: {error}")
-        _require(stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), f"legacy runtime identity marker is not a private regular file: {marker}")
-        raw, _ = _stable_file(marker, 64 * 1024, "legacy runtime identity marker")
-        match = re.fullmatch(rb"revision=([0-9a-f]{40})\n", raw)
-        _require(match is not None, f"legacy runtime identity marker is malformed: {marker}")
-        values.append(match.group(1).decode("ascii"))
-    _require(values == [expected_revision, expected_revision], "legacy runtime markers do not match the observed checkout revision")
+            tagged = json.loads(tag_result.stdout)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            _fail(f"legacy protected image inspection is malformed: {error}")
+        _require(isinstance(tagged, dict) and tagged.get("Id") == image_id, "existing legacy protected image tag conflicts with the observed image")
+    protected_name = f"clashcookies-legacy-custody-{digest.split(':', 1)[1][:32]}"
+    anchor = _inspect_legacy_custody_anchor(protected_name)
+    if anchor is not None:
+        _require(anchor.get("Name") == "/" + protected_name and anchor.get("Image") == image_id, "existing legacy custody anchor conflicts with the observed image")
+    if tagged is None:
+        try:
+            tagged_result = subprocess.run(["docker", "image", "tag", image_id, protected_ref], capture_output=True, text=True, timeout=20, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            _fail(f"legacy protected image custody failed: {error}")
+        _require(tagged_result.returncode == 0, "legacy exact image could not be durably protected")
+        tagged_result = subprocess.run(["docker", "image", "inspect", "--format", "{{json .}}", protected_ref], capture_output=True, text=True, timeout=20, check=False)
+        _require(tagged_result.returncode == 0, "legacy protected image is unavailable after custody creation")
+        try:
+            tagged = json.loads(tagged_result.stdout)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            _fail(f"legacy protected image inspection is malformed after custody creation: {error}")
+        _require(isinstance(tagged, dict) and tagged.get("Id") == image_id, "legacy protected image identity changed during custody creation")
+    if anchor is None:
+        try:
+            anchor_result = subprocess.run(["docker", "container", "create", "--name", protected_name, protected_ref, "true"], capture_output=True, text=True, timeout=20, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            _fail(f"legacy exact image custody anchor creation failed: {error}")
+        _require(anchor_result.returncode == 0, "legacy exact image custody anchor could not be created")
+        anchor = _inspect_legacy_custody_anchor(protected_name)
+    _require(isinstance(tagged, dict) and tagged.get("Id") == image_id and tagged.get("Architecture") == "amd64" and tagged.get("Os") == "linux" and type(tagged.get("Size")) is int and tagged["Size"] == image_bytes, "legacy protected image identity is not exact")
+    _require(isinstance(anchor, dict) and anchor.get("Name") == "/" + protected_name and anchor.get("Image") == image_id, "legacy exact image custody anchor is not bound to the recorded image")
+    return {"protected_image_ref": protected_ref, "protected_container_id": anchor.get("Id"), "protected_container_name": protected_name}
 
 
 def _copy_legacy_runtime(source: dict[str, Any], destination: Path, repository_root: Path, *, durable: bool, verify_docker: bool = True) -> dict[str, Any]:
     components = _legacy_components(source, repository_root)
     if verify_docker:
-        _verify_legacy_container(source, components, repository_root)
+        _observe_legacy_container(source, components, repository_root)
     before = _mapped_integrity(components)
     stage = Path(tempfile.mkdtemp(prefix=".legacy-runtime-", dir=destination.parent))
     try:
@@ -572,7 +664,7 @@ def _copy_legacy_runtime(source: dict[str, Any], destination: Path, repository_r
                 parent = parent.parent
             _copy_entry(component, target, max_bytes=MAX_LEGACY_BYTES, counters=counters, source_root=component if component.is_dir() else component.parent)
         if verify_docker:
-            _verify_legacy_container(source, components, repository_root)
+            _observe_legacy_container(source, components, repository_root)
         after = _mapped_integrity(components)
         _require(before == after, "legacy source changed during bounded preservation")
         _validate_legacy_runtime_contents(stage, source["startup"])
@@ -640,8 +732,8 @@ def _load_policy(path: Path, repository_root: Path, publication_root: Path, prep
     return trust, allowlist, paths["allowlist_path"], paths["journal_path"]
 
 
-def _verify_legacy_container(source: dict[str, Any], components: dict[str, Path], repository_root: Path) -> dict[str, Any]:
-    """Correlate caller metadata with Docker, mounts, and the observed checkout."""
+def _observe_legacy_container(source: dict[str, Any], components: dict[str, Path], repository_root: Path) -> dict[str, Any]:
+    """Read-only correlation of caller metadata with Docker and the checkout."""
     checkout_path = Path(source.get("checkout_path", ""))
     _safe_component(checkout_path, "legacy checkout path")
     mount_destinations = source.get("mount_destinations")
@@ -726,31 +818,7 @@ def _verify_legacy_container(source: dict[str, Any], components: dict[str, Path]
     startup = source["startup"]["entrypoint"]
     command_values = [*(config.get("Entrypoint") or []), *(config.get("Cmd") or [])]
     _require(any(isinstance(value, str) and (value == startup or value.endswith("/" + startup) or value.endswith(startup)) for value in command_values), "legacy container startup command is not the declared runtime wrapper")
-    protected_ref = f"clashcookies/legacy-custody:{digest.removeprefix('sha256-').replace(':', '-')[:128]}"
-    try:
-        tag_result = subprocess.run(["docker", "image", "tag", container_image_id, protected_ref], capture_output=True, text=True, timeout=20, check=False)
-        protected_result = subprocess.run(["docker", "image", "inspect", "--format", "{{json .}}", protected_ref], capture_output=True, text=True, timeout=20, check=False)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        _fail(f"legacy protected image custody failed: {error}")
-    _require(tag_result.returncode == 0 and protected_result.returncode == 0, "legacy exact image could not be durably protected")
-    try:
-        protected_image = json.loads(protected_result.stdout)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        _fail(f"legacy protected image inspection is malformed: {error}")
-    _require(isinstance(protected_image, dict) and protected_image.get("Id") == container_image_id and protected_image.get("Architecture") == "amd64" and protected_image.get("Os") == "linux" and type(protected_image.get("Size")) is int and protected_image["Size"] == image["Size"], "legacy protected image identity is not exact")
-    protected_container_name = f"clashcookies-legacy-custody-{digest.split(':', 1)[1][:32]}"
-    anchor_result = subprocess.run(["docker", "container", "inspect", "--format", "{{json .}}", protected_container_name], capture_output=True, text=True, timeout=20, check=False)
-    if anchor_result.returncode != 0:
-        anchor_create = subprocess.run(["docker", "container", "create", "--name", protected_container_name, protected_ref, "true"], capture_output=True, text=True, timeout=20, check=False)
-        _require(anchor_create.returncode == 0, "legacy exact image custody anchor could not be created")
-        anchor_result = subprocess.run(["docker", "container", "inspect", "--format", "{{json .}}", protected_container_name], capture_output=True, text=True, timeout=20, check=False)
-    _require(anchor_result.returncode == 0, "legacy exact image custody anchor is unavailable")
-    try:
-        anchor = json.loads(anchor_result.stdout)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        _fail(f"legacy exact image custody anchor inspection is malformed: {error}")
-    _require(isinstance(anchor, dict) and anchor.get("Name") == "/" + protected_container_name and anchor.get("Image") == container_image_id, "legacy exact image custody anchor is not bound to the recorded image")
-    return {"container_id": source["container_id"], "image": source["image"], "image_digest": digest, "image_id": container_image_id, "image_bytes": image["Size"], "checkout_revision": source["checkout_revision"], "mounts": sorted(observed), "protected_image_ref": protected_ref, "protected_container_id": anchor.get("Id"), "protected_container_name": protected_container_name}
+    return {"container_id": source["container_id"], "image": source["image"], "image_digest": digest, "image_id": container_image_id, "image_bytes": image["Size"], "checkout_revision": source["checkout_revision"], "mounts": sorted(observed)}
 
 
 def _verify_pinned_image(image: str, platform: str, *, protected_fallback: str | None = None) -> dict[str, Any]:
@@ -1052,7 +1120,7 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
         _require(deployment_lock_file is not None, "first legacy runtime capture requires the canonical FB-027 deployment lock file")
         source_value = _read_json(legacy_source, MAX_SOURCE_METADATA_BYTES, "legacy source evidence", newline=True)
         components = _legacy_components(source_value, repository_root)
-        legacy_observation = _verify_legacy_container(source_value, components, repository_root)
+        legacy_observation = _observe_legacy_container(source_value, components, repository_root)
         legacy_image_observation = {"image": source_value["image"], "platform": source_value["platform"], "digest": source_value["image_digest"], "bytes": legacy_observation["image_bytes"], "image_id": legacy_observation.get("image_id"), "protected_image_ref": legacy_observation.get("protected_image_ref"), "protected_container_id": legacy_observation.get("protected_container_id"), "protected_container_name": legacy_observation.get("protected_container_name"), "architecture": "amd64", "os": "linux"}
         legacy_integrity = None
         legacy_identity = None
@@ -1092,7 +1160,7 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
         _verify_current_candidate_authorization(release_path, identity, trust, allowlist, journal_path, publication_root, now=provenance._now_utc())
         source_estimate = _mapped_bounds(components) if components else {"bytes": 0, "allocated_bytes": 0, "entries": 0, "inodes": 0}
         if source_value is not None:
-            legacy_observation = _verify_legacy_container(source_value, components, repository_root)
+            legacy_observation = _observe_legacy_container(source_value, components, repository_root)
             legacy_image_observation = {"image": source_value["image"], "platform": source_value["platform"], "digest": source_value["image_digest"], "bytes": legacy_observation["image_bytes"], "image_id": legacy_observation.get("image_id"), "protected_image_ref": legacy_observation.get("protected_image_ref"), "protected_container_id": legacy_observation.get("protected_container_id"), "protected_container_name": legacy_observation.get("protected_container_name"), "architecture": "amd64", "os": "linux"}
         source_allocated = source_estimate["allocated_bytes"]
         legacy_image_bytes = legacy_image_observation.get("bytes", 0)
@@ -1113,6 +1181,16 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
         expected_metadata_sha256 = previous_operation.get("metadata_sha256") if isinstance(previous_operation, dict) else None
         _require(not (isinstance(previous_operation, dict) and isinstance(previous_operation.get("metadata_sha256"), str) and not candidate_dir.exists()), "committed preparation metadata is present but candidate material is missing; explicit recovery reconciliation is required")
         store.mark_operation(operation_id, identity_sha256, kind="immutable-runtime-preparation", phase="admission-approved", recovery_required=False, assume_locked=True)
+        if source_value is not None:
+            # Docker custody is the first mutating step.  It is deliberately
+            # after the canonical lock, current authorization, both storage
+            # admissions, and durable operation ownership.
+            try:
+                custody = _protect_legacy_image_custody(legacy_observation or {})
+                legacy_image_observation.update(custody)
+            except BaseException:
+                store.update_operation(operation_id, phase="recovery-required", assume_locked=True)
+                raise
         _require(not (isinstance(previous_operation, dict) and previous_operation.get("phase") == "completed" and not candidate_dir.exists()), "completed preparation operation is missing its published candidate material")
         if candidate_dir.exists() or candidate_dir.is_symlink():
             try:
@@ -1135,7 +1213,7 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
                 if legacy_dir.exists() or legacy_dir.is_symlink():
                     _require(legacy_dir.is_dir() and not legacy_dir.is_symlink(), "interrupted legacy publication is not a real directory")
                     try:
-                        _verify_legacy_container(source_value, components, repository_root)
+                        _observe_legacy_container(source_value, components, repository_root)
                         source_integrity = _mapped_integrity(components)
                         _validate_legacy_runtime_contents(legacy_dir, source_value["startup"])
                         _validate_legacy_runtime_revision_markers(legacy_dir, source_value["checkout_revision"])
@@ -1148,7 +1226,7 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
                 elif interrupted_legacy:
                     legacy_stage = interrupted_legacy[0]
                     try:
-                        _verify_legacy_container(source_value, components, repository_root)
+                        _observe_legacy_container(source_value, components, repository_root)
                         source_integrity = _mapped_integrity(components)
                         _validate_legacy_runtime_contents(legacy_stage, source_value["startup"])
                         _validate_legacy_runtime_revision_markers(legacy_stage, source_value["checkout_revision"])

@@ -1647,7 +1647,7 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                 for volume_name, device in ((dist_volume, dist_overlay), (node_volume, node_overlay)):
                     subprocess.run(["docker", "volume", "create", "--driver", "local", "--opt", "type=none", "--opt", f"device={device}", "--opt", "o=bind", volume_name], check=True, capture_output=True, text=True)
                 container_name = f"clashcookies-preparation-legacy-{os.getpid()}"
-                marker = f"revision={legacy_revision}\n"
+                marker = f"revision={legacy_revision}\ndist_digest={preparation._wrapper_tree_digest(dist_overlay)}\nnode_modules_digest={preparation._wrapper_tree_digest(node_overlay)}\n"
                 (dist_overlay / ".clashcookies-artifact").write_text(marker, encoding="ascii")
                 (node_overlay / ".clashcookies-artifact").write_text(marker, encoding="ascii")
                 container_id = subprocess.run(["docker", "run", "--detach", "--name", container_name, "--platform", "linux/amd64", "--network", "none", "--env", f"BUILD_SHA={legacy_revision}", "--env", "CLASHCOOKIES_PREBUILT=1", "--workdir", "/app", "--volume", f"{legacy_app}:/app", "--volume", f"{dist_volume}:/app/dist", "--volume", f"{node_volume}:/app/node_modules", image, "bash", "./ops/deploy/container-start.sh"], check=True, capture_output=True, text=True).stdout.strip()
@@ -1673,6 +1673,32 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                     "host_headroom_bytes": 1024 * 1024,
                     "require_durable": True,
                 }
+                protected_ref = preparation._legacy_custody_ref(candidate_identity.image_digest)
+                protected_name = f"clashcookies-legacy-custody-{candidate_identity.image_digest.split(':', 1)[1][:32]}"
+
+                def assert_no_legacy_custody_mutation() -> None:
+                    tag_state = subprocess.run(["docker", "image", "inspect", protected_ref], check=False, capture_output=True, text=True)
+                    anchor_state = subprocess.run(["docker", "container", "inspect", protected_name], check=False, capture_output=True, text=True)
+                    self.assertNotEqual(tag_state.returncode, 0, "pre-admission path created a protected legacy image tag")
+                    self.assertNotEqual(anchor_state.returncode, 0, "pre-admission path created a legacy custody anchor")
+
+                invalid_policy = root / "invalid-receiver-policy.json"
+                with patch.dict(os.environ, {"CC_RECEIVER_AUTHORIZATION_POLICY": str(invalid_policy)}, clear=False):
+                    with self.assertRaises(preparation.PreparationError):
+                        preparation.prepare_immutable_runtime(**{**prepare_kwargs, "authorization_policy": invalid_policy})
+                assert_no_legacy_custody_mutation()
+
+                wrong_lock = root / "not-the-wrapper-lock.flock"
+                with patch.dict(os.environ, {"DEPLOY_LOCK_FILE": str(wrong_lock)}, clear=False):
+                    with self.assertRaisesRegex(preparation.PreparationError, "canonical FB-027"):
+                        preparation.prepare_immutable_runtime(**{**prepare_kwargs, "deployment_lock_file": wrong_lock})
+                assert_no_legacy_custody_mutation()
+
+                with patch.object(preparation.retention, "assess_storage", return_value=SimpleNamespace(status="FAIL")):
+                    with self.assertRaisesRegex(preparation.PreparationError, "storage/inode admission"):
+                        preparation.prepare_immutable_runtime(**prepare_kwargs)
+                assert_no_legacy_custody_mutation()
+
                 with patch.dict(os.environ, {"CC_RECEIVER_AUTHORIZATION_POLICY": str(policy_path), "CC_SYNTHETIC_VERIFIER_OUTPUT": str(verifier_output), "GH_ATTESTATION_CLI": str(gh_wrapper), "DEPLOY_LOCK_FILE": str(deployment_lock)}, clear=False):
                     prep_args = root / "prepare-subprocess-args.json"
                     prep_args.write_bytes(delivery.provenance._canonical_json({key: str(value) if isinstance(value, Path) else value for key, value in prepare_kwargs.items()}) + b"\n")
