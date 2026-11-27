@@ -838,9 +838,24 @@ def _verify_existing_preparation(candidate_dir: Path, identity: dict[str, Any], 
     return metadata
 
 
+def _cleanup_candidate_validation_inputs(stage: Path, identity: dict[str, Any]) -> None:
+    """Remove only the exact validator sidecars from a candidate stage."""
+    archive_name = identity.get("archive_name")
+    _require(isinstance(archive_name, str) and archive_name and Path(archive_name).name == archive_name, "candidate archive identity is malformed")
+    names = {archive_name, f"{archive_name}.sha256", f"{archive_name}.manifest.json"}
+    for name in names:
+        path = stage / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        metadata = os.lstat(path)
+        _require(stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), f"candidate validation sidecar is not a private regular file: {name}")
+        path.unlink()
+
+
 def _recover_candidate_stage(stage: Path, service_zip: Path, identity: dict[str, Any], identity_sha256: str, run_metadata: dict[str, Any], *, durable: bool) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
     """Adopt only an exact, archive-bound interrupted stage; leave ambiguity intact."""
     _require(stage.is_dir() and not stage.is_symlink(), "interrupted candidate workspace is not a real directory")
+    _cleanup_candidate_validation_inputs(stage, identity)
     entries = {child.name for child in stage.iterdir()}
     _require(entries <= {"extracted-runtime", "runtime", "preparation.json"}, "interrupted candidate workspace contains ambiguous material")
     _require("runtime" in entries or "extracted-runtime" in entries, "interrupted candidate workspace has no runtime material")
@@ -1074,6 +1089,7 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
                 else:
                     validation = provenance.validate_candidate_archive_contents(release_path / "artifact-service.zip", provenance.TrustedReleaseIdentity(**identity), run_metadata, workspace=stage)
                     runtime_integrity = _integrity(stage / "extracted-runtime")
+                    _cleanup_candidate_validation_inputs(stage, identity)
                 store.update_operation(operation_id, phase="candidate-extracted", assume_locked=True)
                 if recovered_metadata is None:
                     _fsync_tree(stage / "extracted-runtime", required=durable)
