@@ -1032,6 +1032,8 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
     if existing_baseline.get("status") == "preserved-verified":
         protected_candidate_fallback = (existing_baseline.get("identity", {}).get("image_observation", {}) or {}).get("protected_image_ref")
     image_observation = _verify_pinned_image(identity["image"], identity["platform"], protected_fallback=protected_candidate_fallback)
+    preflight_operation = store.load()["operations"].get(f"prepare-{identity_sha256}")
+    _require(not (isinstance(preflight_operation, dict) and isinstance(preflight_operation.get("metadata_sha256"), str) and not candidate_dir.exists()), "committed preparation metadata is present but candidate material is missing; explicit recovery reconciliation is required")
     source_value: dict[str, Any] | None = None
     components: dict[str, Path] = {}
     legacy_image_observation: dict[str, Any] = {"bytes": 0}
