@@ -121,6 +121,7 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             raise unittest.SkipTest("OpenSSL Ed25519 is required")
 
     def _fixture(self, root: Path, *, candidate_nonce: str = "default") -> dict[str, object]:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
         checkout = root / "checkout"
         publication = root / "publication"
         prepared = root / "prepared"
@@ -138,6 +139,7 @@ class DurableActivationIntegrationTests(unittest.TestCase):
         candidate = DELIVERY_TESTS.build_candidate_validator_fixture(candidate_source, source_zip, source_identity, candidate_nonce=candidate_nonce)
         identity = candidate["identity"]
         assert isinstance(identity, provenance.TrustedReleaseIdentity)
+        candidate["service_zip"].chmod(0o600)
         validation_workspace = root / "archive-validation"
         validation_workspace.mkdir(mode=0o700)
         archive_validation = provenance.validate_candidate_archive_contents(candidate["service_zip"], identity, candidate["context"], workspace=validation_workspace)
