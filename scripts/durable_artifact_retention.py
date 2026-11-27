@@ -29,7 +29,8 @@ import runtime_artifact_provenance as provenance
 
 
 RETENTION_CONTRACT = "clashcookies.durable-artifact-retention"
-RETENTION_VERSION = 1
+RETENTION_VERSION = 2
+LEGACY_RETENTION_VERSION = 1
 STATE_FILENAME = "retention-state.json"
 LOCK_FILENAME = ".artifact-retention.lock"
 LEGACY_BASELINE_ID = "legacy-runtime-baseline"
@@ -44,6 +45,25 @@ DEFAULT_PERSISTENT_INODES = 32
 MAX_INVENTORY_ENTRIES = 256
 MAX_GC_TRANSACTIONS = MAX_GC_DELETIONS
 MAX_RELEASE_ENTRIES = 16
+MAX_ACTIVATION_OPERATIONS = 8
+ACTIVATION_PHASES = (
+    "validated-intent",
+    "authorization-consumption-pending",
+    "authorization-consumed",
+    "incumbent-stop-intent",
+    "incumbent-stop-observed",
+    "candidate-start-intent",
+    "candidate-start-observed",
+    "candidate-health-verified",
+    "compensation-authorization-consumption-pending",
+    "successful-activation",
+    "rollback-intent",
+    "rollback-observed",
+    "successful-rollback",
+    "recovery-required",
+)
+ACTIVATION_TERMINAL_PHASES = {"successful-activation", "successful-rollback"}
+ACTIVATION_OBSERVED_PHASES = {"incumbent-stop-observed", "candidate-start-observed", "candidate-health-verified", "rollback-observed"}
 
 
 class RetentionError(RuntimeError):
@@ -231,6 +251,7 @@ def _initial_state() -> dict[str, Any]:
         "contract": RETENTION_CONTRACT,
         "version": RETENTION_VERSION,
         "generation": 0,
+        "pointer_generation": 0,
         "updated_at": _now(),
         "active_release": None,
         "previous_known_good_release": LEGACY_BASELINE_ID,
@@ -242,19 +263,29 @@ def _initial_state() -> dict[str, Any]:
         },
         "releases": {},
         "operations": {},
+        "activation_operations": {},
         "gc_transactions": {},
     }
 
 
 def _validate_state(state: Any) -> dict[str, Any]:
     _require(isinstance(state, dict), "retention metadata must be an object")
-    expected = {"contract", "version", "generation", "updated_at", "active_release", "previous_known_good_release", "legacy_baseline", "releases", "operations", "gc_transactions"}
+    legacy_expected = {"contract", "version", "generation", "updated_at", "active_release", "previous_known_good_release", "legacy_baseline", "releases", "operations", "gc_transactions"}
+    expected = legacy_expected | {"pointer_generation", "activation_operations"}
+    if state.get("version") == LEGACY_RETENTION_VERSION and set(state) == legacy_expected:
+        # This is a validated schema upgrade, not initialization: every v1
+        # field is still checked below and the first mutating save publishes v2.
+        state["version"] = RETENTION_VERSION
+        state["pointer_generation"] = state["generation"]
+        state["activation_operations"] = {}
     _require(set(state) == expected, "retention metadata has missing or unexpected fields")
     _require(state["contract"] == RETENTION_CONTRACT and state["version"] == RETENTION_VERSION, "retention metadata contract version is unsupported")
     _require(isinstance(state["generation"], int) and state["generation"] >= 0, "retention metadata generation is invalid")
+    _require(isinstance(state["pointer_generation"], int) and state["pointer_generation"] >= 0, "retention pointer generation is invalid")
     _timestamp(state["updated_at"], "retention metadata updated_at")
     _require(isinstance(state["releases"], dict) and len(state["releases"]) <= MAX_RELEASES, "retention release table is invalid")
     _require(isinstance(state["operations"], dict) and len(state["operations"]) <= MAX_RELEASES, "retention operation table is invalid")
+    _require(isinstance(state["activation_operations"], dict) and len(state["activation_operations"]) <= MAX_ACTIVATION_OPERATIONS, "retention activation-operation table is invalid")
     _require(isinstance(state["gc_transactions"], dict) and len(state["gc_transactions"]) <= MAX_GC_TRANSACTIONS, "retention GC transaction table is invalid")
     legacy = state["legacy_baseline"]
     _require(isinstance(legacy, dict) and set(legacy) == {"id", "authenticated", "protected", "description"}, "legacy rollback baseline metadata is malformed")
@@ -301,11 +332,100 @@ def _validate_state(state: Any) -> dict[str, Any]:
             _require(operation["metadata_sha256"] is None or provenance.SHA256_RE.fullmatch(str(operation["metadata_sha256"])) is not None, "retention operation metadata digest is malformed")
         roles = state["releases"][operation["release_sha256"]]["roles"]
         if phase == "completed":
-            _require("prepared" in roles and "in-flight" not in roles, "completed preparation is not represented by a prepared release role")
+            _require(("prepared" in roles or "retired" in roles or operation["release_sha256"] in {state["active_release"], state["previous_known_good_release"]}) and "in-flight" not in roles, "completed preparation is not represented by a prepared release role")
         else:
             _require("in-flight" in roles, "retention operation is not represented by an in-flight release role")
         if phase == "recovery-required":
             _require("recovery-protected" in roles, "recovery-required operation is not recovery protected")
+    unresolved_activation_count = 0
+    for operation_id, operation in state["activation_operations"].items():
+        _require(isinstance(operation_id, str) and 0 < len(operation_id) <= 128, "activation operation identity is malformed")
+        required = {"contract", "version", "operation_id", "retry_key", "candidate_release", "preparation_metadata_sha256", "authorization_record_sha256", "authorization_id", "authorization_scope", "incumbent_release", "previous_known_good_release", "rollback_target", "rollback_kind", "rollback_authorization_record_sha256", "rollback_authorization_id", "rollback_retry_key", "expected_pointer_generation", "rollback_expected_pointer_generation", "forward_consumption", "rollback_consumption", "delivery_consumption", "runtime_identity_sha256", "phase", "intent", "observations", "started_at", "updated_at"}
+        _require(isinstance(operation, dict) and set(operation) == required, "activation operation has missing or unexpected fields")
+        _require(operation["contract"] == "clashcookies.durable-activation-transaction" and operation["version"] == 1, "activation operation contract version is unsupported")
+        _require(operation["operation_id"] == operation_id and isinstance(operation["retry_key"], str) and 0 < len(operation["retry_key"]) <= 128, "activation operation identity is inconsistent")
+        for field in ("candidate_release", "preparation_metadata_sha256", "authorization_record_sha256"):
+            _require(isinstance(operation[field], str) and provenance.SHA256_RE.fullmatch(operation[field]) is not None, f"activation operation {field} is malformed")
+        _require(isinstance(operation["authorization_id"], str) and operation["authorization_id"] != "", "activation authorization identity is malformed")
+        _require(operation["authorization_scope"] == "activation-forward", "activation authorization scope is malformed")
+        _require(operation["rollback_kind"] in {None, "compensation", "post-activation"}, "activation rollback kind is malformed")
+        for field in ("rollback_authorization_record_sha256",):
+            _require(operation[field] is None or (isinstance(operation[field], str) and provenance.SHA256_RE.fullmatch(operation[field]) is not None), f"activation operation {field} is malformed")
+        for field in ("rollback_authorization_id", "rollback_retry_key"):
+            _require(operation[field] is None or (isinstance(operation[field], str) and operation[field] != ""), f"activation operation {field} is malformed")
+        rollback_fields = (operation["rollback_kind"], operation["rollback_authorization_record_sha256"], operation["rollback_authorization_id"], operation["rollback_retry_key"], operation["rollback_expected_pointer_generation"])
+        _require((all(value is None for value in rollback_fields) or all(value is not None for value in rollback_fields)), "rollback authorization binding is incomplete")
+        for field in ("incumbent_release", "previous_known_good_release", "rollback_target"):
+            value = operation[field]
+            _require(value is None or value == LEGACY_BASELINE_ID or (isinstance(value, str) and provenance.SHA256_RE.fullmatch(value) is not None), f"activation operation {field} is malformed")
+        _require(type(operation["expected_pointer_generation"]) is int and operation["expected_pointer_generation"] >= 0, "activation expected pointer generation is malformed")
+        _require(operation["rollback_expected_pointer_generation"] is None or (type(operation["rollback_expected_pointer_generation"]) is int and operation["rollback_expected_pointer_generation"] >= 0), "rollback pointer generation is malformed")
+        for field in ("forward_consumption", "rollback_consumption", "delivery_consumption"):
+            consumption = operation[field]
+            required_consumption = {"operation_id", "candidate_release", "preparation_metadata_sha256", "record_sha256", "authorization_id", "retry_key", "scope", "state", "pointer_generation", "observed_at"}
+            _require(consumption is None or (isinstance(consumption, dict) and set(consumption) == required_consumption), f"activation {field} evidence is malformed")
+            if consumption is not None:
+                _require(consumption["operation_id"] == operation_id and consumption["candidate_release"] == operation["candidate_release"] and consumption["preparation_metadata_sha256"] == operation["preparation_metadata_sha256"], f"activation {field} identity is inconsistent")
+                expected_scope = "forward-release" if field == "delivery_consumption" else ("activation-forward" if field == "forward_consumption" else "activation-recovery")
+                _require(consumption["state"] == "consumed" and consumption["scope"] == expected_scope, f"activation {field} state is invalid")
+                if field == "forward_consumption":
+                    _require(consumption["record_sha256"] == operation["authorization_record_sha256"] and consumption["authorization_id"] == operation["authorization_id"] and consumption["retry_key"] == operation["retry_key"], "forward activation consumption is not bound to its signed intent")
+                if field == "rollback_consumption":
+                    _require(operation["rollback_authorization_record_sha256"] is not None and consumption["record_sha256"] == operation["rollback_authorization_record_sha256"] and consumption["authorization_id"] == operation["rollback_authorization_id"] and consumption["retry_key"] == operation["rollback_retry_key"], "rollback consumption is not bound to its signed intent")
+                _require(provenance.SHA256_RE.fullmatch(str(consumption["record_sha256"])) is not None and type(consumption["pointer_generation"]) is int and consumption["pointer_generation"] >= 0, f"activation {field} digest or generation is invalid")
+                expected_consumption_generation = operation["expected_pointer_generation"] if field in {"forward_consumption", "delivery_consumption"} else operation["rollback_expected_pointer_generation"]
+                _require(consumption["pointer_generation"] == expected_consumption_generation, f"activation {field} generation is not bound to the exact transaction phase")
+                _timestamp(consumption["observed_at"], f"activation {field} observed_at")
+        _require(isinstance(operation["runtime_identity_sha256"], str) and provenance.SHA256_RE.fullmatch(operation["runtime_identity_sha256"]) is not None and operation["runtime_identity_sha256"] == operation["candidate_release"], "activation runtime identity is malformed")
+        _require(operation["phase"] in ACTIVATION_PHASES, "activation operation phase is malformed")
+        _timestamp(operation["started_at"], "activation operation started_at")
+        _timestamp(operation["updated_at"], "activation operation updated_at")
+        _require(isinstance(operation["intent"], dict) and operation["intent"].get("candidate_release") == operation["candidate_release"] and operation["intent"].get("operation_id") == operation_id, "activation intent evidence is malformed")
+        intent = operation["intent"]
+        intent_fields = {"contract", "version", "operation_id", "retry_key", "candidate_release", "preparation_metadata_sha256", "authorization_record_sha256", "incumbent_release", "previous_known_good_release", "rollback_target", "expected_pointer_generation"}
+        _require(set(intent).issubset(intent_fields | {"recovery_phase"}) and intent_fields.issubset(intent), "activation intent evidence is incomplete")
+        for field in intent_fields - {"contract", "version"}:
+            _require(intent[field] == operation[field], f"activation intent binding conflicts on {field}")
+        _require(intent["contract"] == "clashcookies.durable-activation-intent" and intent["version"] == 1, "activation intent contract is malformed")
+        if operation["phase"] == "recovery-required":
+            _require(intent.get("recovery_phase") in ACTIVATION_PHASES and intent.get("recovery_phase") != "recovery-required", "recovery-required activation lacks an exact resume phase")
+        else:
+            _require("recovery_phase" not in intent, "recovery resume evidence is present outside recovery-required")
+        _require(isinstance(operation["observations"], dict), "activation observations are malformed")
+        if operation["phase"] not in ACTIVATION_TERMINAL_PHASES:
+            unresolved_activation_count += 1
+        if operation["phase"] in ACTIVATION_OBSERVED_PHASES:
+            observation = operation["observations"].get(operation["phase"])
+            observation_fields = {"contract", "version", "source", "phase", "outcome", "operation_id", "candidate_release", "runtime_identity_sha256", "subject", "subject_release", "details"}
+            _require(isinstance(observation, dict) and observation_fields.issubset(observation) and observation.get("contract") == "clashcookies.activation-observation" and observation.get("version") == 1 and observation.get("source") == "isolated-test-harness" and isinstance(observation.get("subject"), str) and isinstance(observation.get("subject_release"), (str, type(None))), "activation observed outcome evidence is missing")
+            expected_subject = {"incumbent-stop-observed": "incumbent", "candidate-start-observed": "candidate", "candidate-health-verified": "candidate", "rollback-observed": "rollback-target"}[operation["phase"]]
+            expected_release = operation["candidate_release"] if expected_subject == "candidate" else (operation["incumbent_release"] or LEGACY_BASELINE_ID if expected_subject == "incumbent" else operation["rollback_target"])
+            _require(observation["phase"] == operation["phase"] and observation["operation_id"] == operation_id and observation["candidate_release"] == operation["candidate_release"] and observation["runtime_identity_sha256"] == operation["runtime_identity_sha256"], "activation observed outcome is not bound to the exact transaction")
+            _require(observation["subject"] == expected_subject and observation["subject_release"] == expected_release, "activation observed outcome subject is not the exact transaction target")
+            _require(isinstance(observation.get("outcome"), str) and observation["outcome"] in {"stopped", "started", "healthy", "failed", "unhealthy", "uncertain"}, "activation observed outcome is unsupported")
+        phase = operation["phase"]
+        if phase in {"incumbent-stop-intent", "incumbent-stop-observed", "candidate-start-intent", "candidate-start-observed", "candidate-health-verified", "successful-activation"}:
+            _require(operation["forward_consumption"] is not None and operation["delivery_consumption"] is not None, "forward disruption requires exact activation and delivery consumption")
+        if phase in {"candidate-start-intent", "candidate-start-observed", "candidate-health-verified", "successful-activation"}:
+            _require(operation["observations"].get("incumbent-stop-observed", {}).get("outcome") == "stopped", "candidate progression requires a stopped incumbent")
+        if phase in {"candidate-health-verified", "successful-activation"}:
+            _require(operation["observations"].get("candidate-start-observed", {}).get("outcome") == "started", "candidate health requires a started candidate")
+        if phase == "successful-activation":
+            _require(operation["observations"].get("candidate-health-verified", {}).get("outcome") == "healthy", "activation commit requires healthy candidate evidence")
+        if phase in {"rollback-intent", "rollback-observed", "successful-rollback"}:
+            _require(operation["rollback_consumption"] is not None, "rollback phase requires exact recovery consumption")
+        if phase == "rollback-observed":
+            _require(isinstance(operation["observations"].get("rollback-observed"), dict), "rollback observation is missing")
+        if phase == "successful-rollback":
+            _require(operation["observations"].get("rollback-observed", {}).get("outcome") == "healthy", "rollback commit requires healthy target evidence")
+        for release_id in (operation["candidate_release"], operation["incumbent_release"], operation["previous_known_good_release"], operation["rollback_target"]):
+            if release_id not in (None, LEGACY_BASELINE_ID):
+                _require(release_id in state["releases"], "activation operation references an unknown release")
+        candidate = state["releases"].get(operation["candidate_release"])
+        _require(candidate is not None, "activation candidate is unknown")
+        if operation["phase"] not in ACTIVATION_TERMINAL_PHASES:
+            _require("recovery-protected" in candidate["roles"] or operation["candidate_release"] in {state["active_release"], state["previous_known_good_release"]}, "unresolved activation candidate is not protected")
+    _require(unresolved_activation_count <= 1, "multiple unresolved activation transactions are ambiguous")
     for transaction_id, transaction in state["gc_transactions"].items():
         _require(isinstance(transaction_id, str) and transaction_id in state["releases"], "retention GC transaction identity is malformed")
         _require(isinstance(transaction, dict) and set(transaction) == {"release_sha256", "publication_name", "owner", "phase", "started_at"}, "retention GC transaction is malformed")
@@ -335,6 +455,26 @@ class StorageAssessment:
     filesystems: tuple[dict[str, Any], ...]
     required_bytes: int
     required_inodes: int
+
+
+_AUTHORITY_TOKEN = object()
+
+
+@dataclass(frozen=True)
+class _ActivationAuthority:
+    """Opaque journal-derived authority; dictionaries are never transition authority."""
+
+    operation_id: str
+    candidate_release: str
+    preparation_metadata_sha256: str
+    record_sha256: str
+    authorization_id: str
+    retry_key: str
+    scope: str
+    state: str
+    pointer_generation: int
+    observed_at: str
+    _token: object
 
 
 def assess_storage(
@@ -436,7 +576,37 @@ class RetentionStore:
         if not self.state_path.exists():
             _fail("retention metadata is missing; explicit initialization is required")
         state = _read_json(self.state_path, MAX_STATE_BYTES, "retention metadata")
-        return _validate_state(state)
+        state = _validate_state(state)
+        self._validate_delivery_evidence(state)
+        return state
+
+    def _reestablish_state_durability(self) -> None:
+        """Re-fsync the validated state and its directory under the caller lock."""
+        self.load()
+        descriptor = None
+        try:
+            descriptor = os.open(self.state_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            os.fsync(descriptor)
+        except OSError as error:
+            _fail(f"retention state fsync failed: {error}")
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        _fsync_directory(self.root, required=self.require_durable)
+
+    def _validate_delivery_evidence(self, state: dict[str, Any]) -> None:
+        """Bind recorded delivery consumption to the retained signed record."""
+        for operation in state["activation_operations"].values():
+            evidence = operation["delivery_consumption"]
+            if evidence is None:
+                continue
+            envelope_path = self.root / f"release-{operation['candidate_release']}" / "authorization-envelope.json"
+            envelope = _read_json(envelope_path, provenance.MAX_AUTHORIZATION_RECORD_BYTES, "retained delivery authorization")
+            record = envelope.get("record") if isinstance(envelope, dict) else None
+            authorization = record.get("authorization") if isinstance(record, dict) else None
+            _require(isinstance(record, dict) and isinstance(authorization, dict), "retained delivery authorization evidence is malformed")
+            record_sha256 = hashlib.sha256(provenance._canonical_json(record)).hexdigest()
+            _require(evidence["record_sha256"] == record_sha256 and evidence["authorization_id"] == authorization.get("authorization_id") and evidence["retry_key"] == authorization.get("retry_key") and evidence["scope"] == authorization.get("scope") == "forward-release", "delivery consumption is not bound to the retained signed record")
 
     def legacy_baseline_status(self) -> dict[str, Any]:
         """Return durable legacy custody, preserving the v1 placeholder contract.
@@ -763,38 +933,358 @@ class RetentionStore:
             with activity_lock(self.root):
                 apply()
 
-    def transition_active_for_test(self, identity_sha256: str, *, health_gate: Any, consume_authorization: Any, assume_locked: bool = False) -> None:
-        """Exercise the future atomic health-gated pointer contract; never called operationally."""
-        def apply() -> None:
-            state = self.load()
-            _require(identity_sha256 in state["releases"], "activation candidate is unknown")
-            record = state["releases"][identity_sha256]
-            _require("pending" in record["roles"] or "reserved" in record["roles"], "activation candidate is not pending or reserved")
-            _require(bool(health_gate()), "activation health gate did not pass")
-            consume_authorization()
-            old_active = state["active_release"]
-            old_previous = state["previous_known_good_release"]
-            if old_previous not in (None, LEGACY_BASELINE_ID, old_active):
-                previous_record = state["releases"][old_previous]
-                previous_record["roles"] = ["retired"]
-                previous_record["reconciliation"] = {"authorization": "not-applicable", "recovery": "not-applicable"}
-                previous_record["retired_at"] = _now()
-            if old_active and old_active != identity_sha256:
-                old_record = state["releases"][old_active]
-                old_record["roles"] = [role for role in old_record["roles"] if role not in {"pending", "reserved", "in-flight", "recovery-protected", "retired"}]
-            state["previous_known_good_release"] = old_active or LEGACY_BASELINE_ID
-            state["active_release"] = identity_sha256
-            record["roles"] = []
-            self._save(state)
+    @staticmethod
+    def _authority_from_replay_entry(entry: dict[str, Any], *, operation_id: str, candidate_release: str, preparation_metadata_sha256: str, pointer_generation: int, expected_scope: str, expected_state: str, expected_record_sha256: str, expected_authorization_id: str, expected_retry_key: str, journal_identity_sha256: str | None = None) -> _ActivationAuthority:
+        _require(isinstance(entry, dict) and entry.get("state") == expected_state, "activation replay state does not establish the requested authority")
+        expected = {"record_sha256": expected_record_sha256, "authorization_id": expected_authorization_id, "retry_key": expected_retry_key, "scope": expected_scope}
+        if journal_identity_sha256 is not None:
+            expected["identity_sha256"] = journal_identity_sha256
+        for field, value in expected.items():
+            _require(entry.get(field) == value, f"activation replay evidence conflicts on {field}")
+        # Replay entries predating an explicit observed-at field still carry
+        # stable signed timestamps.  Never synthesize a new wall-clock value
+        # on each retry: doing so would make exact delivery reconciliation
+        # conflict with its own durable evidence.
+        observed_at = entry.get("observed_at") or entry.get("issued_at")
+        return _ActivationAuthority(operation_id, candidate_release, preparation_metadata_sha256, expected_record_sha256, expected_authorization_id, expected_retry_key, expected_scope, expected_state, pointer_generation, str(observed_at or _now()), _AUTHORITY_TOKEN)
+
+    @staticmethod
+    def _validate_activation_authority(authority: _ActivationAuthority, *, operation_id: str, candidate_release: str, preparation_metadata_sha256: str, record_sha256: str, authorization_id: str, retry_key: str, scope: str, state: str, pointer_generation: int) -> None:
+        _require(isinstance(authority, _ActivationAuthority) and authority._token is _AUTHORITY_TOKEN, "activation authority must come from the replay journal")
+        expected = {"operation_id": operation_id, "candidate_release": candidate_release, "preparation_metadata_sha256": preparation_metadata_sha256, "record_sha256": record_sha256, "authorization_id": authorization_id, "retry_key": retry_key, "scope": scope, "state": state, "pointer_generation": pointer_generation}
+        for field, value in expected.items():
+            _require(getattr(authority, field) == value, f"activation authority conflicts on {field}")
+        _require(provenance.SHA256_RE.fullmatch(record_sha256 or "") is not None and scope in {"activation-forward", "activation-recovery", "forward-release"} and state in {"reserved", "consumed"}, "activation authority is invalid")
+        _timestamp(authority.observed_at, "activation authority observed_at")
+
+    def _authority_from_journal(self, *, operation_id: str, candidate_release: str, preparation_metadata_sha256: str, pointer_generation: int, journal: Any, operation: str, envelope: Any | None = None, identity: Any | None = None, revision_allowlist: Any | None = None, trust: Any | None = None, record_sha256: str, authorization_id: str, retry_key: str, scope: str, state: str, now: Any = None, historical: bool = False, assume_locked: bool = False) -> _ActivationAuthority:
+        def read() -> _ActivationAuthority:
+            if envelope is not None:
+                _require(identity is not None and revision_allowlist is not None and trust is not None, "signed replay inputs are incomplete")
+                entry = journal.inspect(envelope, identity, revision_allowlist, trust, operation=operation, allow_consumed=(state == "consumed"), now=now)
+            else:
+                _require(state == "consumed", "historical replay reconciliation requires a consumed record")
+                # The replay journal stores the provenance identity fingerprint,
+                # not the retention release digest.  The exact release/runtime
+                # binding is checked by the durable activation operation fields;
+                # the journal record itself is still matched byte-for-byte by
+                # authorization ID, record digest, retry key, scope, and op.
+                entry = journal.inspect_consumed_record(authorization_id, record_sha256=record_sha256, retry_key=retry_key, scope=scope, operation=operation)
+            journal_identity = provenance._identity_fingerprint(identity) if envelope is not None and identity is not None else None
+            return self._authority_from_replay_entry(entry, operation_id=operation_id, candidate_release=candidate_release, preparation_metadata_sha256=preparation_metadata_sha256, pointer_generation=pointer_generation, expected_scope=scope, expected_state=state, expected_record_sha256=record_sha256, expected_authorization_id=authorization_id, expected_retry_key=retry_key, journal_identity_sha256=journal_identity)
         if assume_locked:
-            apply()
+            return read()
+        with activity_lock(self.root):
+            return read()
+
+    def begin_activation(self, *, operation_id: str, retry_key: str, candidate_release: str, preparation_metadata_sha256: str, authorization_record_sha256: str, authorization_id: str, authorization_scope: str, rollback_target: str | None, expected_pointer_generation: int, authority: _ActivationAuthority, assume_locked: bool = False) -> dict[str, Any]:
+        """Persist one exact activation intent and protect all referenced material.
+
+        This is the retention-owned activation transaction boundary.  It does
+        not inspect or control Docker and it never consumes authorization.
+        """
+        _require(isinstance(operation_id, str) and 0 < len(operation_id) <= 128, "activation operation identity is invalid")
+        _require(isinstance(retry_key, str) and 0 < len(retry_key) <= 128, "activation retry key is invalid")
+        for value, label in ((candidate_release, "activation candidate release"), (preparation_metadata_sha256, "preparation metadata digest"), (authorization_record_sha256, "authorization record digest")):
+            _require(isinstance(value, str) and provenance.SHA256_RE.fullmatch(value) is not None, f"{label} is invalid")
+        _require(isinstance(authorization_id, str) and authorization_id != "", "activation authorization ID is invalid")
+        _require(authorization_scope == "activation-forward", "activation intent requires forward activation authority")
+        _require(rollback_target is None or rollback_target == LEGACY_BASELINE_ID or provenance.SHA256_RE.fullmatch(str(rollback_target)) is not None, "activation rollback target is invalid")
+        _require(type(expected_pointer_generation) is int and expected_pointer_generation >= 0, "activation pointer generation is invalid")
+
+        def apply() -> dict[str, Any]:
+            state = self.load()
+            self._validate_activation_authority(authority, operation_id=operation_id, candidate_release=candidate_release, preparation_metadata_sha256=preparation_metadata_sha256, record_sha256=authorization_record_sha256, authorization_id=authorization_id, retry_key=retry_key, scope=authorization_scope, state="reserved", pointer_generation=expected_pointer_generation)
+            existing = state["activation_operations"].get(operation_id)
+            if existing is not None:
+                expected = {
+                    "retry_key": retry_key, "candidate_release": candidate_release,
+                    "preparation_metadata_sha256": preparation_metadata_sha256,
+                    "authorization_record_sha256": authorization_record_sha256,
+                    "authorization_id": authorization_id, "authorization_scope": authorization_scope,
+                    "incumbent_release": state["active_release"],
+                    "previous_known_good_release": state["previous_known_good_release"],
+                    "rollback_target": rollback_target,
+                    "expected_pointer_generation": expected_pointer_generation,
+                }
+                for field, value in expected.items():
+                    _require(existing.get(field) == value, "activation retry has conflicting ownership")
+                _require(existing.get("phase") not in ACTIVATION_TERMINAL_PHASES, "terminal activation cannot be restarted as a fresh deployment")
+                self._reestablish_state_durability()
+                return existing
+            unresolved = [item for item in state["activation_operations"].values() if item["phase"] not in ACTIVATION_TERMINAL_PHASES]
+            _require(not unresolved, "another activation transaction is unresolved")
+            if len(state["activation_operations"]) >= MAX_ACTIVATION_OPERATIONS:
+                _fail("activation operation history capacity is exhausted; explicit history retirement is required")
+            _require(expected_pointer_generation == state["pointer_generation"], "activation pointer generation is stale")
+            candidate = state["releases"].get(candidate_release)
+            _require(candidate is not None, "activation candidate is unknown")
+            _require(candidate["identity"]["artifact_class"] == provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS, "development artifact cannot be activated")
+            _require("prepared" in candidate["roles"], "activation candidate is not a completed preparation")
+            preparation_operations = [item for item in state["operations"].values() if item["release_sha256"] == candidate_release and item["kind"] == "immutable-runtime-preparation" and item.get("phase") == "completed" and item.get("metadata_sha256") == preparation_metadata_sha256]
+            _require(len(preparation_operations) == 1, "exact completed preparation record is missing or ambiguous")
+            _require(state["active_release"] != candidate_release and state["previous_known_good_release"] != candidate_release, "activation candidate is already a pointer")
+            expected_rollback_target = state["active_release"] if state["active_release"] is not None else LEGACY_BASELINE_ID
+            _require(rollback_target == expected_rollback_target, "rollback target must be the actual incumbent")
+            now = _now()
+            operation = {
+                "contract": "clashcookies.durable-activation-transaction", "version": 1,
+                "operation_id": operation_id, "retry_key": retry_key,
+                "candidate_release": candidate_release, "preparation_metadata_sha256": preparation_metadata_sha256,
+                "authorization_record_sha256": authorization_record_sha256, "authorization_id": authorization_id,
+                "authorization_scope": authorization_scope, "incumbent_release": state["active_release"],
+                "previous_known_good_release": state["previous_known_good_release"], "rollback_target": rollback_target,
+                "rollback_kind": None, "rollback_authorization_record_sha256": None, "rollback_authorization_id": None, "rollback_retry_key": None,
+                "expected_pointer_generation": expected_pointer_generation, "rollback_expected_pointer_generation": None,
+                "forward_consumption": None, "rollback_consumption": None, "delivery_consumption": None, "runtime_identity_sha256": candidate_release,
+                "phase": "validated-intent",
+                "intent": {"contract": "clashcookies.durable-activation-intent", "version": 1, "operation_id": operation_id, "retry_key": retry_key, "candidate_release": candidate_release, "preparation_metadata_sha256": preparation_metadata_sha256, "authorization_record_sha256": authorization_record_sha256, "incumbent_release": state["active_release"], "previous_known_good_release": state["previous_known_good_release"], "rollback_target": rollback_target, "expected_pointer_generation": expected_pointer_generation},
+                "observations": {}, "started_at": now, "updated_at": now,
+            }
+            state["activation_operations"][operation_id] = operation
+            for release_id in (candidate_release, rollback_target):
+                if release_id not in (None, LEGACY_BASELINE_ID) and release_id not in {state["active_release"], state["previous_known_good_release"]}:
+                    record = state["releases"][release_id]
+                    if "recovery-protected" not in record["roles"]:
+                        record["roles"].append("recovery-protected")
+            self._save(state)
+            return operation
+        if assume_locked:
+            return apply()
+        with activity_lock(self.root):
+            return apply()
+
+    def transition_activation(self, operation_id: str, *, phase: str, observation: dict[str, Any] | None = None, expected_phase: str | None = None, authority: _ActivationAuthority | None = None, assume_locked: bool = False) -> dict[str, Any]:
+        """Advance one activation transaction with strict compare-and-transition semantics."""
+        _require(phase in ACTIVATION_PHASES, "activation phase is invalid")
+        if phase in ACTIVATION_OBSERVED_PHASES:
+            _require(isinstance(observation, dict) and observation.get("contract") == "clashcookies.activation-observation" and observation.get("version") == 1 and observation.get("source") == "isolated-test-harness", "observed runtime outcomes require the isolated non-operational test boundary")
+
+        def apply() -> dict[str, Any]:
+            state = self.load()
+            operation = state["activation_operations"].get(operation_id)
+            _require(operation is not None, "activation operation is unknown")
+            _require(authority is not None, "activation transitions require replay-derived authority")
+            recovery_phases = {"compensation-authorization-consumption-pending", "rollback-intent", "rollback-observed", "successful-rollback"}
+            recovery_resume = operation["intent"].get("recovery_phase") if operation["phase"] == "recovery-required" else None
+            recovery_phase = phase in recovery_phases or operation["phase"] in recovery_phases or recovery_resume in recovery_phases
+            proof_scope = "activation-recovery" if recovery_phase else "activation-forward"
+            proof_state = "reserved" if phase in {"authorization-consumption-pending", "compensation-authorization-consumption-pending"} else "consumed"
+            proof_record = operation["rollback_authorization_record_sha256"] if recovery_phase else operation["authorization_record_sha256"]
+            proof_auth_id = operation["rollback_authorization_id"] if recovery_phase else operation["authorization_id"]
+            proof_retry = operation["rollback_retry_key"] if recovery_phase else operation["retry_key"]
+            proof_generation = operation["rollback_expected_pointer_generation"] if recovery_phase and operation["rollback_expected_pointer_generation"] is not None else operation["expected_pointer_generation"]
+            _require(proof_record is not None and proof_auth_id is not None and proof_retry is not None, "activation transition lacks its exact authorization binding")
+            accepted_state = proof_state
+            if phase in {"authorization-consumption-pending", "recovery-required"} and operation["phase"] in {"validated-intent", "authorization-consumption-pending"} and not recovery_phase:
+                accepted_state = authority.state
+            if phase == "recovery-required" and authority.state in {"reserved", "consumed"}:
+                accepted_state = authority.state
+            if phase == "compensation-authorization-consumption-pending" and operation["phase"] == "recovery-required" and authority.state == "consumed":
+                # A crash may leave the replay journal consumed while the
+                # recovery-required retention transition was not published.
+                # Resuming the exact bound authority is reconciliation, not a
+                # new authorization.
+                accepted_state = "consumed"
+            self._validate_activation_authority(authority, operation_id=operation_id, candidate_release=operation["candidate_release"], preparation_metadata_sha256=operation["preparation_metadata_sha256"], record_sha256=proof_record, authorization_id=proof_auth_id, retry_key=proof_retry, scope=proof_scope, state=accepted_state, pointer_generation=proof_generation)
+            current = operation["phase"]
+            if expected_phase is not None:
+                _require(current == expected_phase, "activation compare phase is stale")
+            if current == phase:
+                if observation is not None:
+                    _require(operation["observations"].get(phase) == observation, "activation retry has conflicting observed evidence")
+                self._reestablish_state_durability()
+                return operation
+            legal = {
+                "validated-intent": {"authorization-consumption-pending", "recovery-required"},
+                "authorization-consumption-pending": {"authorization-consumed", "recovery-required"},
+                "authorization-consumed": {"incumbent-stop-intent", "recovery-required"},
+                "incumbent-stop-intent": {"incumbent-stop-observed", "recovery-required"},
+                "incumbent-stop-observed": {"candidate-start-intent", "recovery-required"},
+                "candidate-start-intent": {"candidate-start-observed", "recovery-required"},
+                "candidate-start-observed": {"candidate-health-verified", "recovery-required"},
+                "candidate-health-verified": {"successful-activation", "recovery-required"},
+                "compensation-authorization-consumption-pending": {"rollback-intent", "recovery-required"},
+                "successful-activation": set(),
+                "rollback-intent": {"rollback-observed", "recovery-required"},
+                "rollback-observed": {"successful-rollback", "recovery-required"},
+                "successful-rollback": set(), "recovery-required": set(),
+            }
+            if current == "recovery-required":
+                _require(isinstance(recovery_resume, str) and (phase == recovery_resume or (phase == "compensation-authorization-consumption-pending" and operation["rollback_authorization_record_sha256"] is not None)), "recovery resumption must use the exact persisted phase")
+                legal[current] = {phase}
+                if operation["rollback_authorization_record_sha256"] is not None:
+                    legal[current].add("compensation-authorization-consumption-pending")
+            _require(phase in legal[current], f"illegal activation phase transition: {current} -> {phase}")
+            if phase in {"incumbent-stop-intent", "successful-activation"}:
+                _require(operation["forward_consumption"] is not None and operation["delivery_consumption"] is not None, "authoritative activation transition requires exact delivery and activation consumption")
+                self._validate_delivery_evidence(state)
+            if current == "incumbent-stop-observed" and phase == "candidate-start-intent":
+                _require(operation["observations"].get("incumbent-stop-observed", {}).get("outcome") == "stopped", "candidate start cannot follow a failed or uncertain incumbent stop")
+            if current == "candidate-start-observed" and phase == "candidate-health-verified":
+                _require(operation["observations"].get("candidate-start-observed", {}).get("outcome") == "started", "candidate health cannot follow a failed or uncertain candidate start")
+            if phase == "successful-activation":
+                _require(current == "candidate-health-verified", "candidate health evidence is required before activation commit")
+                health = operation["observations"].get("candidate-health-verified")
+                _require(isinstance(health, dict) and health.get("outcome") == "healthy", "ambiguous candidate health evidence cannot change pointers")
+                _require(operation["forward_consumption"] is not None, "forward replay consumption is not durably recorded")
+                _require(operation["delivery_consumption"] is not None, "delivery replay consumption is not durably recorded")
+                self._commit_activation_state(state, operation, rollback=False)
+            elif phase == "successful-rollback":
+                _require(current == "rollback-observed", "rollback observation is required before rollback commit")
+                rollback = operation["observations"].get("rollback-observed")
+                _require(isinstance(rollback, dict) and rollback.get("outcome") == "healthy", "ambiguous rollback evidence cannot change pointers")
+                _require(operation["rollback_consumption"] is not None, "rollback replay consumption is not durably recorded")
+                self._commit_activation_state(state, operation, rollback=True)
+            else:
+                operation["phase"] = phase
+                if phase == "recovery-required":
+                    # Keep the exact retry point in the intent record.  This
+                    # does not grant new authority; the next transition must
+                    # validate the same replay-derived authority and binding.
+                    operation["intent"]["recovery_phase"] = current
+                if observation is not None:
+                    _require(observation.get("operation_id") == operation_id and observation.get("candidate_release") == operation["candidate_release"] and observation.get("runtime_identity_sha256") == operation["runtime_identity_sha256"], "activation observation is not bound to the exact operation and runtime")
+                    operation["observations"][phase] = observation
+                if phase == "authorization-consumed":
+                    operation["forward_consumption"] = {"operation_id": authority.operation_id, "candidate_release": authority.candidate_release, "preparation_metadata_sha256": authority.preparation_metadata_sha256, "record_sha256": authority.record_sha256, "authorization_id": authority.authorization_id, "retry_key": authority.retry_key, "scope": authority.scope, "state": authority.state, "pointer_generation": authority.pointer_generation, "observed_at": authority.observed_at}
+                if phase == "rollback-intent":
+                    operation["rollback_consumption"] = {"operation_id": authority.operation_id, "candidate_release": authority.candidate_release, "preparation_metadata_sha256": authority.preparation_metadata_sha256, "record_sha256": authority.record_sha256, "authorization_id": authority.authorization_id, "retry_key": authority.retry_key, "scope": authority.scope, "state": authority.state, "pointer_generation": authority.pointer_generation, "observed_at": authority.observed_at}
+                operation["updated_at"] = _now()
+                if phase == "recovery-required":
+                    pointer_ids = {state["active_release"], state["previous_known_good_release"]}
+                    for release_id in (operation["candidate_release"], operation["rollback_target"]):
+                        if release_id not in (None, LEGACY_BASELINE_ID) and release_id not in pointer_ids:
+                            record = state["releases"][release_id]
+                            if "recovery-protected" not in record["roles"]:
+                                record["roles"].append("recovery-protected")
+                elif current == "recovery-required":
+                    operation["intent"].pop("recovery_phase", None)
+            self._save(state)
+            return state["activation_operations"][operation_id]
+        if assume_locked:
+            return apply()
+        with activity_lock(self.root):
+            return apply()
+
+    def record_delivery_consumption(self, operation_id: str, authority: _ActivationAuthority, *, assume_locked: bool = False) -> dict[str, Any]:
+        """Persist exact delivery-journal consumption before pointer publication."""
+        def apply() -> dict[str, Any]:
+            state = self.load()
+            operation = state["activation_operations"].get(operation_id)
+            _require(operation is not None, "activation operation is unknown")
+            _require(authority.scope == "forward-release" and authority.state == "consumed", "delivery authority is not consumed")
+            self._validate_activation_authority(authority, operation_id=operation_id, candidate_release=operation["candidate_release"], preparation_metadata_sha256=operation["preparation_metadata_sha256"], record_sha256=authority.record_sha256, authorization_id=authority.authorization_id, retry_key=authority.retry_key, scope="forward-release", state="consumed", pointer_generation=operation["expected_pointer_generation"])
+            evidence = {"operation_id": authority.operation_id, "candidate_release": authority.candidate_release, "preparation_metadata_sha256": authority.preparation_metadata_sha256, "record_sha256": authority.record_sha256, "authorization_id": authority.authorization_id, "retry_key": authority.retry_key, "scope": authority.scope, "state": authority.state, "pointer_generation": authority.pointer_generation, "observed_at": authority.observed_at}
+            if operation["delivery_consumption"] is not None:
+                _require(operation["delivery_consumption"] == evidence, "delivery consumption retry conflicts with durable evidence")
+                self._reestablish_state_durability()
+                return operation
+            operation["delivery_consumption"] = evidence
+            self._validate_delivery_evidence(state)
+            candidate = state["releases"][operation["candidate_release"]]
+            candidate["roles"] = [role for role in candidate["roles"] if role not in {"pending", "reserved"}]
+            if "recovery-protected" not in candidate["roles"]:
+                candidate["roles"].append("recovery-protected")
+            operation["updated_at"] = _now()
+            self._save(state)
+            return operation
+        if assume_locked:
+            return apply()
+        with activity_lock(self.root):
+            return apply()
+
+    def _commit_activation_state(self, state: dict[str, Any], operation: dict[str, Any], *, rollback: bool) -> None:
+        candidate_id = operation["candidate_release"]
+        candidate = state["releases"][candidate_id]
+        expected_generation = operation["rollback_expected_pointer_generation"] if rollback else operation["expected_pointer_generation"]
+        _require(expected_generation is not None and state["pointer_generation"] == expected_generation, "activation pointer generation changed during transaction")
+        old_active = state["active_release"]
+        old_previous = state["previous_known_good_release"]
+        if rollback:
+            target = operation["rollback_target"]
+            if operation["rollback_kind"] == "compensation":
+                _require(old_active == operation["incumbent_release"], "compensation cannot change the incumbent pointer")
+                state["active_release"] = old_active
+                state["previous_known_good_release"] = old_previous
+                candidate["roles"] = ["retired"]
+                candidate["retired_at"] = _now()
+            else:
+                if target == LEGACY_BASELINE_ID:
+                    state["active_release"] = None
+                    state["previous_known_good_release"] = LEGACY_BASELINE_ID
+                else:
+                    _require(target in state["releases"], "rollback target release is unknown")
+                    state["active_release"] = target
+                    fallback = old_previous
+                    state["previous_known_good_release"] = fallback if fallback not in {None, target, candidate_id} else LEGACY_BASELINE_ID
+                candidate["roles"] = ["retired"]
+                candidate["retired_at"] = _now()
         else:
-            with activity_lock(self.root):
-                apply()
+            _require(old_active == operation["incumbent_release"] and old_previous == operation["previous_known_good_release"], "activation incumbent or previous-known-good identity changed")
+            state["active_release"] = candidate_id
+            state["previous_known_good_release"] = old_active or LEGACY_BASELINE_ID
+            candidate["roles"] = [role for role in candidate["roles"] if role not in {"prepared", "pending", "reserved", "recovery-protected", "in-flight", "retired"}]
+            candidate["retired_at"] = None
+        for pointer in (state["active_release"], state["previous_known_good_release"]):
+            if pointer not in (None, LEGACY_BASELINE_ID):
+                state["releases"][pointer]["roles"] = []
+                state["releases"][pointer]["retired_at"] = None
+        if old_previous not in (None, LEGACY_BASELINE_ID, state["active_release"], state["previous_known_good_release"]):
+            previous_record = state["releases"][old_previous]
+            previous_record["roles"] = ["retired"]
+            previous_record["retired_at"] = _now()
+        operation["phase"] = "successful-rollback" if rollback else "successful-activation"
+        operation["updated_at"] = _now()
+        if not (rollback and operation["rollback_kind"] == "compensation"):
+            state["pointer_generation"] += 1
+
+    def start_activation_rollback(self, operation_id: str, *, authorization_record_sha256: str, authorization_id: str, retry_key: str, rollback_kind: str, authority: _ActivationAuthority, assume_locked: bool = False) -> dict[str, Any]:
+        """Persist a distinct recovery authorization binding before its use."""
+        _require(provenance.SHA256_RE.fullmatch(authorization_record_sha256 or "") is not None, "rollback authorization record digest is invalid")
+        _require(isinstance(authorization_id, str) and authorization_id != "" and isinstance(retry_key, str) and retry_key != "", "rollback authorization identity is invalid")
+        _require(rollback_kind in {"compensation", "post-activation"}, "rollback kind is invalid")
+        def apply() -> dict[str, Any]:
+            state = self.load()
+            operation = state["activation_operations"].get(operation_id)
+            _require(operation is not None and operation["phase"] in {"successful-activation", "incumbent-stop-observed", "candidate-start-observed", "candidate-health-verified", "compensation-authorization-consumption-pending", "recovery-required"}, "activation rollback cannot start from the current phase")
+            expected_target = operation["rollback_target"] if state["active_release"] == operation["candidate_release"] else (state["active_release"] or LEGACY_BASELINE_ID)
+            _require(operation["rollback_target"] == expected_target, "rollback target is not the actual incumbent")
+            expected_kind = "post-activation" if state["active_release"] == operation["candidate_release"] else "compensation"
+            _require(rollback_kind == expected_kind, "rollback kind does not match the observed activation state")
+            self._validate_activation_authority(authority, operation_id=operation_id, candidate_release=operation["candidate_release"], preparation_metadata_sha256=operation["preparation_metadata_sha256"], record_sha256=authorization_record_sha256, authorization_id=authorization_id, retry_key=retry_key, scope="activation-recovery", state="reserved", pointer_generation=state["pointer_generation"])
+            if operation["phase"] == "compensation-authorization-consumption-pending":
+                _require(operation["rollback_authorization_record_sha256"] == authorization_record_sha256 and operation["rollback_authorization_id"] == authorization_id and operation["rollback_retry_key"] == retry_key and operation["rollback_kind"] == rollback_kind and operation["rollback_expected_pointer_generation"] == state["pointer_generation"], "rollback retry conflicts with the pending recovery authorization")
+                return operation
+            if operation["phase"] == "recovery-required" and operation["rollback_authorization_record_sha256"] is not None:
+                _require(operation["rollback_authorization_record_sha256"] == authorization_record_sha256 and operation["rollback_authorization_id"] == authorization_id and operation["rollback_retry_key"] == retry_key and operation["rollback_kind"] == rollback_kind and operation["rollback_expected_pointer_generation"] == state["pointer_generation"], "recovery resumption conflicts with the already-bound rollback authorization")
+                operation["phase"] = "compensation-authorization-consumption-pending"
+                operation["intent"].pop("recovery_phase", None)
+                operation["updated_at"] = _now()
+                self._save(state)
+                return operation
+            _require(operation["rollback_authorization_record_sha256"] is None and operation["rollback_authorization_id"] is None and operation["rollback_retry_key"] is None and operation["rollback_expected_pointer_generation"] is None, "rollback authorization is already bound to a different retry")
+            operation["rollback_authorization_record_sha256"] = authorization_record_sha256
+            operation["rollback_authorization_id"] = authorization_id
+            operation["rollback_retry_key"] = retry_key
+            operation["rollback_kind"] = rollback_kind
+            operation["rollback_expected_pointer_generation"] = state["pointer_generation"]
+            if operation["phase"] == "recovery-required":
+                operation["intent"].pop("recovery_phase", None)
+            operation["phase"] = "compensation-authorization-consumption-pending"
+            operation["updated_at"] = _now()
+            self._save(state)
+            return operation
+        if assume_locked:
+            return apply()
+        with activity_lock(self.root):
+            return apply()
 
     def inventory(self, *, assume_locked: bool = False) -> dict[str, Any]:
         def collect() -> dict[str, Any]:
             state = self.load()
+            historical_refs = self._activation_reference_set(state)
+            gc_transaction_ids = set(state["gc_transactions"])
             known: list[dict[str, Any]] = []
             unknown: list[dict[str, Any]] = []
             children: list[Path] = []
@@ -814,7 +1304,8 @@ class RetentionStore:
                     _require(child.name == f"release-{digest}", "publication directory is not identity-named")
                     record = state["releases"].get(digest)
                     _require(record is not None and record["publication_name"] == child.name and record["identity"] == identity, "publication has missing or conflicting retention metadata")
-                    known.append({"identity_sha256": digest, "publication": child.name, "roles": record["roles"], "eligible": record["roles"] == ["retired"] and state["active_release"] != digest and state["previous_known_good_release"] != digest})
+                    eligible = record["roles"] == ["retired"] and state["active_release"] != digest and state["previous_known_good_release"] != digest and digest not in historical_refs and digest not in gc_transaction_ids
+                    known.append({"identity_sha256": digest, "publication": child.name, "roles": record["roles"], "eligible": eligible})
                 except (RetentionError, OSError):
                     unknown.append({"publication": child.name, "reason": "unknown-or-ambiguous-ownership"})
             if truncated:
@@ -835,8 +1326,9 @@ class RetentionStore:
             state = self.load()
             inventory = self.inventory(assume_locked=True)
             transaction_ids = set(state["gc_transactions"])
+            historical_refs = self._activation_reference_set(state)
             transaction_unknown = [{"publication": transaction["publication_name"], "reason": "gc-transaction-recovery-required"} for transaction in state["gc_transactions"].values() if not (self.root / transaction["publication_name"]).exists()]
-            candidates = [] if inventory.get("truncated") else [item for item in inventory["known"] if item["eligible"] and item["identity_sha256"] not in transaction_ids]
+            candidates = [] if inventory.get("truncated") else [item for item in inventory["known"] if item["eligible"] and item["identity_sha256"] not in transaction_ids and item["identity_sha256"] not in historical_refs]
             candidates = candidates[:max_deletions]
             deleted: list[str] = []
             if execute:
@@ -844,6 +1336,7 @@ class RetentionStore:
                     digest = item["identity_sha256"]
                     current = self.load()
                     _require(current["active_release"] != digest and current["previous_known_good_release"] != digest, "release became protected during garbage collection")
+                    _require(digest not in self._activation_reference_set(current), "release became protected by historical activation evidence")
                     record = current["releases"].get(digest)
                     _require(record is not None and record["roles"] == ["retired"], "release became ineligible during garbage collection")
                     path = self.root / record["publication_name"]
@@ -859,7 +1352,7 @@ class RetentionStore:
                     current["releases"].pop(digest, None)
                     current["gc_transactions"].pop(digest, None)
                     self._save(current)
-            return {"dry_run": not execute, "candidates": [item["identity_sha256"] for item in candidates], "deleted": deleted, "unknown": inventory["unknown"] + transaction_unknown, "protected": [item["identity_sha256"] for item in inventory["known"] if not item["eligible"]] + sorted(transaction_ids)}
+            return {"dry_run": not execute, "candidates": [item["identity_sha256"] for item in candidates], "deleted": deleted, "unknown": inventory["unknown"] + transaction_unknown, "protected": sorted({item["identity_sha256"] for item in inventory["known"] if not item["eligible"]} | transaction_ids | historical_refs)}
         if assume_locked:
             return collect()
         with activity_lock(self.root):
@@ -899,14 +1392,27 @@ class RetentionStore:
             self._save(state)
 
     def _validate_gc_transactions(self, state: dict[str, Any]) -> None:
+        historical_refs = self._activation_reference_set(state)
         for digest, transaction in state["gc_transactions"].items():
             _require(state["active_release"] != digest and state["previous_known_good_release"] != digest, "GC transaction references a protected release")
             _require(not any(operation["release_sha256"] == digest for operation in state["operations"].values()), "GC transaction conflicts with an in-flight operation")
+            _require(digest not in historical_refs, "GC transaction conflicts with historical activation evidence")
             record = state["releases"].get(digest)
             _require(record is not None and set(record["roles"]) <= {"retired", "recovery-protected"}, "GC transaction references an invalid release role")
             path = self.root / transaction["publication_name"]
             if path.exists():
                 self._verify_owned_release(path, record)
+
+    @staticmethod
+    def _activation_reference_set(state: dict[str, Any]) -> set[str]:
+        """Return every release retained as historical activation evidence."""
+        references: set[str] = set()
+        for operation in state.get("activation_operations", {}).values():
+            for field in ("candidate_release", "incumbent_release", "previous_known_good_release", "rollback_target"):
+                value = operation.get(field)
+                if isinstance(value, str) and value != LEGACY_BASELINE_ID:
+                    references.add(value)
+        return references
 
     def acknowledge_gc_deletion(self, identity_sha256: str, owner: dict[str, int], *, assume_locked: bool = False) -> None:
         """Explicitly finalize a missing-path GC transaction after owner review."""
@@ -976,7 +1482,7 @@ class RetentionStore:
                 os.close(release_fd)
             os.close(parent_fd)
 
-    def verify_retained_offline(self, identity_sha256: str, *, trusted_root: Path, trusted_root_version: str, verifier_version: str | None = None, authorization_public_key: Path | None = None, authorization_key_id: str | None = None, authorization_key_fingerprint: str | None = None, authorization_allowlist: Path | None = None, excluded_roots: tuple[Path, ...] = ()) -> dict[str, Any]:
+    def verify_retained_offline(self, identity_sha256: str, *, trusted_root: Path, trusted_root_version: str, verifier_version: str | None = None, authorization_public_key: Path | None = None, authorization_key_id: str | None = None, authorization_key_fingerprint: str | None = None, authorization_allowlist: Path | None = None, excluded_roots: tuple[Path, ...] = (), assume_locked: bool = False) -> dict[str, Any]:
         """Re-verify retained evidence without reserving or consuming authority.
 
         Candidate authorization is checked against the owner-supplied key and
@@ -995,7 +1501,7 @@ class RetentionStore:
         trusted_metadata = _private_regular_file(trusted_root, "independent trusted root")
         if os.name == "posix":
             _require(trusted_metadata.st_uid == os.geteuid() and stat.S_IMODE(trusted_metadata.st_mode) & 0o077 == 0, "independent trusted root is not private")
-        with activity_lock(self.root):
+        def verify() -> dict[str, Any]:
             state = self.load()
             record = state["releases"].get(identity_sha256)
             _require(record is not None, "offline verification release is unknown")
@@ -1083,6 +1589,10 @@ class RetentionStore:
                 if candidate_delivery:
                     result["authorizationDiagnostic"] = {"historicalSignatureValid": True, "historicalLifecycleValidAtIssuedAt": True, "deliveryTimeValidity": "not-evaluated", "replayStatus": "not-evaluated", "replayMutation": "none"}
                 return result
+        if assume_locked:
+            return verify()
+        with activity_lock(self.root):
+            return verify()
 
 
 def gc_command(publication_root: Path, repository_root: Path, *, execute: bool, max_deletions: int, recover: bool = False) -> dict[str, Any]:
