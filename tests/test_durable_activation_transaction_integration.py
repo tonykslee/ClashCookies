@@ -239,7 +239,7 @@ class DurableActivationIntegrationTests(unittest.TestCase):
         release_name = f"release-{digest}"
         release_path = Path(base["publication"]) / release_name
         shutil.copytree(Path(candidate["publication"]) / release_name, release_path)
-        shutil.copytree(Path(candidate["prepared"]) / f"candidate-{digest}", Path(base["prepared"]) / f"candidate-{digest}")
+        shutil.copytree(Path(candidate["prepared"]) / f"candidate-{digest}", Path(base["prepared"]) / f"candidate-{digest}", symlinks=True)
         context_path = release_path / "independent-verification-context.json"
         context_digest = hashlib.sha256(context_path.read_bytes()).hexdigest()
         context = json.loads(context_path.read_text(encoding="utf-8"))
@@ -261,14 +261,15 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             merged[key] = base[key]
         return merged
 
-    def _forward_to_health(self, tx: activation.ActivationTransaction, fixture: dict[str, object], operation_id: str, retry_key: str, *, health_outcome: str = "healthy", stop_outcome: str = "stopped", start_outcome: str = "started") -> dict[str, object]:
+    def _forward_to_health(self, tx: activation.ActivationTransaction, fixture: dict[str, object], operation_id: str, retry_key: str, *, health_outcome: str = "healthy", stop_outcome: str = "stopped", start_outcome: str = "started", consume_forward: bool = True) -> dict[str, object]:
         state = tx.store.load()
         fixture.update({"forward_retry_key": retry_key, "incumbent_release": state["active_release"], "previous_known_good_release": state["previous_known_good_release"]})
         target = state["active_release"] or retention.LEGACY_BASELINE_ID
         envelope, _ = self._activation_authorization(fixture, operation_id, retry_key, state["pointer_generation"], target, None, "activation-forward")
         fixture["activation_journal"].reserve(envelope, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-forward")
         tx.begin(operation_id=operation_id, retry_key=retry_key, identity_sha256=fixture["identity_digest"], preparation_metadata_sha256=fixture["metadata_digest"], envelope=envelope, rollback_target=target)
-        tx.consume(operation_id, envelope)
+        if consume_forward:
+            tx.consume(operation_id, envelope)
         tx.advance(operation_id, "incumbent-stop-intent")
         tx.observe(operation_id, phase="incumbent-stop-observed", outcome=stop_outcome, details={"subject": "incumbent", "subject_release": target})
         if stop_outcome != "stopped":
@@ -361,7 +362,7 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             fixture = self._fixture(Path(directory_name))
             tx = self._transaction(fixture)
             operation_id = "integration-reconcile-forward"
-            result = self._forward_to_health(tx, fixture, operation_id, "integration-reconcile-forward")
+            result = self._forward_to_health(tx, fixture, operation_id, "integration-reconcile-forward", consume_forward=False)
             envelope = result["envelope"]
             # Simulate termination after the real replay journal commit but
             # before the retention transition publication.
@@ -472,7 +473,10 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             with patch.object(retention, "_fsync_directory", side_effect=OSError("injected filesystem durability failure")):
                 with self.assertRaises(retention.RetentionError):
                     tx.begin(operation_id="integration-fsync", retry_key="integration-fsync-forward", identity_sha256=fixture["identity_digest"], preparation_metadata_sha256=fixture["metadata_digest"], envelope=envelope, rollback_target=retention.LEGACY_BASELINE_ID)
-            self.assertNotIn("integration-fsync", tx.store.load()["activation_operations"])
+            state = tx.store.load()
+            self.assertEqual(state["active_release"], None)
+            self.assertEqual(state["activation_operations"]["integration-fsync"]["phase"], "validated-intent")
+            self.assertIn("recovery-protected", state["releases"][fixture["identity_digest"]]["roles"])
 
 
 if __name__ == "__main__":
