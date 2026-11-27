@@ -1692,7 +1692,7 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                 lock_holder = subprocess.Popen([
                     sys.executable,
                     "-c",
-                    "import fcntl,os,sys,time; handle=open(sys.argv[1],'a+'); os.chmod(sys.argv[1],0o600); fcntl.flock(handle,fcntl.LOCK_EX); print('ready',flush=True); time.sleep(8)",
+                    "import fcntl,os,sys,time; handle=open(sys.argv[1],'a+'); os.chmod(sys.argv[1],0o600); fcntl.flock(handle,fcntl.LOCK_EX); print('ready',flush=True); time.sleep(300)",
                     str(deployment_lock),
                 ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 try:
