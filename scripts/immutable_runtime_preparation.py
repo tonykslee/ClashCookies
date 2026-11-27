@@ -747,7 +747,25 @@ def _verify_legacy_image_available(identity: dict[str, Any]) -> dict[str, Any]:
         inspected = json.loads(completed.stdout)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         _fail(f"preserved legacy image inspection is malformed: {error}")
-    _require(isinstance(inspected, dict) and isinstance(inspected.get("RepoDigests"), list) and any(isinstance(item, str) and item.endswith("@" + digest) for item in inspected["RepoDigests"]), "preserved legacy image digest is not available")
+    _require(isinstance(inspected, dict), "preserved legacy image inspection is malformed")
+    expected_image_id = (identity.get("image_observation") or {}).get("image_id")
+    if isinstance(expected_image_id, str) and expected_image_id and inspected.get("Id") != expected_image_id:
+        # Docker may select a platform-specific image record for the digest
+        # reference while the running container records the content-addressed
+        # image ID it actually used.  Reinspect that exact recorded ID during
+        # retry; accepting the reference's different ID would break preserved
+        # legacy identity continuity.
+        try:
+            exact = subprocess.run(["docker", "image", "inspect", "--format", "{{json .}}", expected_image_id], capture_output=True, text=True, timeout=20, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            _fail(f"preserved legacy image ID inspection failed: {error}")
+        _require(exact.returncode == 0, "preserved legacy image ID is no longer available in the Docker image store")
+        try:
+            inspected = json.loads(exact.stdout)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            _fail(f"preserved legacy image ID inspection is malformed: {error}")
+        _require(isinstance(inspected, dict) and inspected.get("Id") == expected_image_id, "preserved legacy image ID is not self-consistent")
+    _require(isinstance(inspected.get("RepoDigests"), list) and any(isinstance(item, str) and item.endswith("@" + digest) for item in inspected["RepoDigests"]), "preserved legacy image digest is not available")
     _require(inspected.get("Architecture") == "amd64" and inspected.get("Os") == "linux" and type(inspected.get("Size")) is int and inspected["Size"] > 0, "preserved legacy image platform or size is unavailable")
     return {"image": image, "platform": platform, "digest": digest, "bytes": inspected["Size"], "image_id": inspected.get("Id"), "architecture": inspected["Architecture"], "os": inspected["Os"]}
 
