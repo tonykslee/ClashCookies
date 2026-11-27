@@ -791,7 +791,10 @@ def _verify_legacy_image_available(identity: dict[str, Any]) -> dict[str, Any]:
     digest = identity.get("image_digest")
     _require(isinstance(image, str) and isinstance(platform, str) and isinstance(digest, str), "preserved legacy image custody identity is incomplete")
     try:
-        completed = subprocess.run(["docker", "image", "inspect", "--platform", platform, "--format", "{{json .}}", image], capture_output=True, text=True, timeout=20, check=False)
+        # The custody tag names the exact platform image ID captured from the
+        # running container.  Asking Docker to resolve a platform again can
+        # select a manifest-list child instead of that recorded local ID.
+        completed = subprocess.run(["docker", "image", "inspect", "--format", "{{json .}}", image], capture_output=True, text=True, timeout=20, check=False)
     except (OSError, subprocess.TimeoutExpired) as error:
         _fail(f"preserved legacy image inspection failed: {error}")
     _require(completed.returncode == 0, "preserved legacy protected image is no longer available in the Docker image store")
