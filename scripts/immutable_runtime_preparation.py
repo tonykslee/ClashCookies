@@ -741,7 +741,7 @@ def _verify_legacy_container(source: dict[str, Any], components: dict[str, Path]
     return {"container_id": source["container_id"], "image": source["image"], "image_digest": digest, "image_id": container_image_id, "image_bytes": image["Size"], "checkout_revision": source["checkout_revision"], "mounts": sorted(observed), "protected_image_ref": protected_ref}
 
 
-def _verify_pinned_image(image: str, platform: str) -> dict[str, Any]:
+def _verify_pinned_image(image: str, platform: str, *, protected_fallback: str | None = None) -> dict[str, Any]:
     """Verify the actual local image store, never mutable tag equivalence."""
     _require(image == provenance.RELEASE_IMAGE and platform == provenance.RELEASE_PLATFORM, "candidate image or platform is not the approved pinned contract")
     try:
@@ -754,6 +754,14 @@ def _verify_pinned_image(image: str, platform: str) -> dict[str, Any]:
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         _fail(f"pinned runtime image inspection failed: {error}")
+    inspected_ref = image
+    if completed.returncode != 0 and protected_fallback is not None:
+        # A full Docker prune may remove the original digest reference while
+        # the independently recorded exact legacy custody tag retains the same
+        # content-addressed image.  The fallback is accepted only after the
+        # protected tag is checked against this exact candidate contract.
+        completed = subprocess.run(["docker", "image", "inspect", "--format", "{{json .}}", protected_fallback], capture_output=True, text=True, timeout=20, check=False)
+        inspected_ref = protected_fallback
     _require(completed.returncode == 0, "pinned runtime image is not durably available in the Docker image store")
     try:
         inspected = json.loads(completed.stdout)
@@ -766,7 +774,7 @@ def _verify_pinned_image(image: str, platform: str) -> dict[str, Any]:
     _require(inspected.get("Architecture") == "amd64" and inspected.get("Os") == "linux", "pinned runtime image platform is incompatible")
     size = inspected.get("Size", 0)
     _require(type(size) is int and size > 0, "pinned runtime image size is unavailable")
-    return {"image": image, "platform": platform, "digest": digest, "bytes": size, "architecture": inspected["Architecture"], "os": inspected["Os"]}
+    return {"image": image, "store_ref": inspected_ref, "platform": platform, "digest": digest, "bytes": size, "architecture": inspected["Architecture"], "os": inspected["Os"]}
 
 
 def _docker_storage_root() -> Path:
@@ -989,13 +997,16 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
     store.initialize()
     identity, release_path, retained_record = _candidate_record(store, identity_sha256, identity_file, verify_publication=False)
     trust, allowlist, allowlist_path, journal_path = _load_policy(authorization_policy, repository_root, publication_root, prepared_root, trusted_root)
-    image_observation = _verify_pinned_image(identity["image"], identity["platform"])
     candidate_dir = prepared_root / f"candidate-{identity_sha256}"
     legacy_dir = prepared_root / "legacy-runtime-baseline"
     expectation = _read_json(release_path / "verification-expectation.json", retention.MAX_EVIDENCE_BYTES, "retained verification expectation")
     run_metadata = {"name": expectation.get("workflow_name", "")}
     _require(run_metadata["name"], "retained verification expectation omits the exact workflow name")
     existing_baseline = store.legacy_baseline_status()
+    protected_candidate_fallback = None
+    if existing_baseline.get("status") == "preserved-verified":
+        protected_candidate_fallback = (existing_baseline.get("identity", {}).get("image_observation", {}) or {}).get("protected_image_ref")
+    image_observation = _verify_pinned_image(identity["image"], identity["platform"], protected_fallback=protected_candidate_fallback)
     source_value: dict[str, Any] | None = None
     components: dict[str, Path] = {}
     legacy_image_observation: dict[str, Any] = {"bytes": 0}
