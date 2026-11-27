@@ -312,6 +312,8 @@ class ActivationTransaction:
         operation = state["activation_operations"].get(operation_id)
         _require(operation is not None, "activation operation is unknown")
         if operation["phase"] not in {"validated-intent", "authorization-consumption-pending"}:
+            with self._locked():
+                self.store._reestablish_state_durability()
             return operation
         identity, _, _ = self._candidate(operation["candidate_release"])
         binding = self._operation_binding(operation)

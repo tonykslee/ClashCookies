@@ -582,6 +582,60 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             self.assertEqual(gc["deleted"], [])
             self.assertIn(fixture["identity_digest"], gc["protected"])
 
+    @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_RECEIVER") == "1", "mandatory Linux coordinator integration")
+    def test_real_coordinator_fsync_failure_requires_durable_retry(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            fixture = self._fixture(Path(directory_name))
+            tx = self._transaction(fixture)
+            result = self._forward_to_health(tx, fixture, "integration-fsync-retry", "integration-fsync-retry", consume_forward=False)
+            envelope = result["envelope"]
+            original_fsync = retention._fsync_directory
+            with patch.object(retention, "_fsync_directory", side_effect=retention.RetentionError("persistent directory fsync failure")):
+                with self.assertRaises(retention.RetentionError):
+                    tx.begin(operation_id="integration-fsync-retry", retry_key="integration-fsync-retry", identity_sha256=fixture["identity_digest"], preparation_metadata_sha256=fixture["metadata_digest"], envelope=envelope, rollback_target=retention.LEGACY_BASELINE_ID)
+                with self.assertRaises(retention.RetentionError):
+                    tx.begin(operation_id="integration-fsync-retry", retry_key="integration-fsync-retry", identity_sha256=fixture["identity_digest"], preparation_metadata_sha256=fixture["metadata_digest"], envelope=envelope, rollback_target=retention.LEGACY_BASELINE_ID)
+            with patch.object(retention, "_fsync_directory", wraps=original_fsync) as fsync:
+                tx.begin(operation_id="integration-fsync-retry", retry_key="integration-fsync-retry", identity_sha256=fixture["identity_digest"], preparation_metadata_sha256=fixture["metadata_digest"], envelope=envelope, rollback_target=retention.LEGACY_BASELINE_ID)
+                self.assertGreaterEqual(fsync.call_count, 1)
+
+    @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_RECEIVER") == "1", "mandatory Linux coordinator integration")
+    def test_real_coordinator_delivery_proof_is_required_before_disruption(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            fixture = self._fixture(Path(directory_name))
+            tx = self._transaction(fixture)
+            result = self._forward_to_health(tx, fixture, "integration-delivery-gate", "integration-delivery-gate", consume_forward=False)
+            envelope = result["envelope"]
+            tx.consume("integration-delivery-gate", envelope)
+            operation = tx.store.load()["activation_operations"]["integration-delivery-gate"]
+            authority = tx._consumed_authority(operation, recovery=False)
+            with self.assertRaises(activation.ActivationError):
+                tx.store.transition_activation("integration-delivery-gate", phase="incumbent-stop-intent", expected_phase="authorization-consumed", authority=authority)
+            identity = fixture["identity"]
+            self.assertEqual(fixture["delivery_journal"].inspect(fixture["delivery_envelope"], identity, fixture["allowlist"], fixture["trust"], operation="forward-release")["state"], "reserved")
+
+    @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_RECEIVER") == "1", "mandatory Linux coordinator integration")
+    def test_real_coordinator_rejects_semantically_incomplete_persisted_activation(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            fixture = self._fixture(Path(directory_name))
+            tx = self._transaction(fixture)
+            result = self._forward_to_health(tx, fixture, "integration-state-validation", "integration-state-validation", consume_forward=False)
+            tx.consume("integration-state-validation", result["envelope"])
+            state_path = fixture["publication"] / retention.STATE_FILENAME
+            original = json.loads(state_path.read_text(encoding="utf-8"))
+            mutations = (
+                ("wrong retry identity", lambda operation: operation["forward_consumption"].update({"retry_key": "wrong-retry"})),
+                ("wrong scope", lambda operation: operation["forward_consumption"].update({"scope": "activation-recovery"})),
+                ("missing health prerequisite", lambda operation: operation.update({"phase": "successful-activation", "observations": {}})),
+            )
+            for label, mutate in mutations:
+                with self.subTest(label=label):
+                    state = json.loads(json.dumps(original))
+                    mutate(state["activation_operations"]["integration-state-validation"])
+                    state_path.write_bytes(retention._canonical(state) + b"\n")
+                    with self.assertRaises(retention.RetentionError):
+                        retention.RetentionStore(fixture["publication"], repository_root=fixture["checkout"], require_durable=True).load()
+
 
 if __name__ == "__main__":
     unittest.main()
