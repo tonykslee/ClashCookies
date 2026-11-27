@@ -106,6 +106,24 @@ def _external_dir(path: Path, repository_root: Path, label: str, *, create: bool
     _fail(f"{label} must be outside the mutable checkout")
 
 
+def _paths_overlap(left: Path, right: Path) -> bool:
+    left_resolved = left.resolve()
+    right_resolved = right.resolve()
+    try:
+        left_resolved.relative_to(right_resolved)
+        return True
+    except ValueError:
+        try:
+            right_resolved.relative_to(left_resolved)
+            return True
+        except ValueError:
+            return False
+
+
+def _require_disjoint(left: Path, right: Path, label: str) -> None:
+    _require(not _paths_overlap(left, right), f"custody roots overlap: {label}")
+
+
 def _safe_ancestors(path: Path, label: str) -> None:
     current = path if path.exists() else path.parent
     depth = 0
@@ -514,6 +532,23 @@ def _mapped_bounds(components: dict[str, Path]) -> dict[str, int]:
     return {"bytes": total_bytes, "allocated_bytes": allocated_bytes, "entries": total_entries, "inodes": total_entries}
 
 
+def _validate_legacy_runtime_revision_markers(runtime: Path, expected_revision: str) -> None:
+    """Require independent build markers in both runtime overlays."""
+    _require(GIT_SHA_RE.fullmatch(expected_revision) is not None, "legacy checkout revision is malformed")
+    values: list[str] = []
+    for marker in (runtime / "dist/.clashcookies-artifact", runtime / "node_modules/.clashcookies-artifact"):
+        try:
+            metadata = os.lstat(marker)
+        except OSError as error:
+            _fail(f"legacy runtime identity marker is unavailable: {marker}: {error}")
+        _require(stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), f"legacy runtime identity marker is not a private regular file: {marker}")
+        raw, _ = _stable_file(marker, 64 * 1024, "legacy runtime identity marker")
+        match = re.fullmatch(rb"revision=([0-9a-f]{40})\n", raw)
+        _require(match is not None, f"legacy runtime identity marker is malformed: {marker}")
+        values.append(match.group(1).decode("ascii"))
+    _require(values == [expected_revision, expected_revision], "legacy runtime markers do not match the observed checkout revision")
+
+
 def _copy_legacy_runtime(source: dict[str, Any], destination: Path, repository_root: Path, *, durable: bool, verify_docker: bool = True) -> dict[str, Any]:
     components = _legacy_components(source, repository_root)
     if verify_docker:
@@ -543,17 +578,7 @@ def _copy_legacy_runtime(source: dict[str, Any], destination: Path, repository_r
         _validate_legacy_runtime_contents(stage, source["startup"])
         actual = _integrity(stage, maximum_bytes=MAX_LEGACY_BYTES, maximum_entries=MAX_LEGACY_ENTRIES)
         _require(actual == before, "legacy preserved runtime does not match the read-only source snapshot")
-        marker_values: list[str] = []
-        for marker in (stage / "dist/.clashcookies-artifact", stage / "node_modules/.clashcookies-artifact"):
-            if marker.is_file() and not marker.is_symlink():
-                raw, _ = _stable_file(marker, 64 * 1024, "legacy runtime identity marker")
-                match = re.search(rb"(?:^|\n)revision=([0-9a-f]{40})(?:\n|$)", raw)
-                if match:
-                    marker_values.append(match.group(1).decode("ascii"))
-        if marker_values:
-            _require(len(set(marker_values)) == 1 and marker_values[0] == source["checkout_revision"], "legacy runtime marker identity conflicts with the observed checkout revision")
-        else:
-            _require(source.get("runtime_revision") == source["checkout_revision"], "legacy runtime has no independently observed revision marker")
+        _validate_legacy_runtime_revision_markers(stage, source["checkout_revision"])
         _fsync_tree(stage, required=durable)
         _publish_directory_no_replace(stage, destination, durable=durable)
         return {"tree_sha256": actual["tree_sha256"], "bytes": actual["bytes"], "entries": actual["entries"]}
@@ -679,14 +704,41 @@ def _verify_legacy_container(source: dict[str, Any], components: dict[str, Path]
         _require(mount is not None and mount.get("Destination") == claim["destination"], f"legacy Docker effective mount is missing for {destination}")
         _require(mount.get("Type") == claim["type"], f"legacy Docker mount type is not bound to {destination}")
         relative = container_path[len(str(mount["Destination"]).rstrip("/")):].lstrip("/")
-        effective_source = Path(str(mount.get("Source", ""))) / relative
+        if claim["type"] == "bind":
+            effective_source = Path(str(mount.get("Source", ""))) / relative
+        else:
+            _require(isinstance(claim.get("name"), str) and mount.get("Name") == claim["name"], f"legacy named volume identity is not bound to {destination}")
+            try:
+                volume_result = subprocess.run(["docker", "volume", "inspect", "--format", "{{json .}}", claim["name"]], capture_output=True, text=True, timeout=20, check=False)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                _fail(f"legacy named volume inspection failed: {error}")
+            _require(volume_result.returncode == 0, f"legacy named volume is unavailable: {claim['name']}")
+            try:
+                volume = json.loads(volume_result.stdout)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                _fail(f"legacy named volume inspection is malformed: {error}")
+            options = volume.get("Options") if isinstance(volume, dict) else None
+            _require(isinstance(volume, dict) and volume.get("Name") == claim["name"] and volume.get("Driver") == "local" and isinstance(options, dict) and options.get("type") == "none" and "bind" in str(options.get("o", "")).split(","), f"legacy named volume is not a host-backed bind volume: {claim['name']}")
+            effective_source = Path(str(options.get("device", ""))) / relative
         _require(Path(claim["source"]).resolve() == component.resolve() and effective_source.resolve() == component.resolve(), f"legacy Docker effective mount source is not bound to {destination}")
         if claim["type"] == "volume":
-            _require(isinstance(claim.get("name"), str) and mount.get("Name") == claim["name"], f"legacy named volume identity is not bound to {destination}")
+            _require(Path(str((volume.get("Options") or {}).get("device"))).resolve() == Path(claim["source"]).resolve(), f"legacy named volume device is not the claimed source: {destination}")
     startup = source["startup"]["entrypoint"]
     command_values = [*(config.get("Entrypoint") or []), *(config.get("Cmd") or [])]
     _require(any(isinstance(value, str) and (value == startup or value.endswith("/" + startup) or value.endswith(startup)) for value in command_values), "legacy container startup command is not the declared runtime wrapper")
-    return {"container_id": source["container_id"], "image": source["image"], "image_digest": digest, "image_id": container_image_id, "image_bytes": image["Size"], "checkout_revision": source["checkout_revision"], "mounts": sorted(observed)}
+    protected_ref = f"clashcookies/legacy-custody:{digest.removeprefix('sha256-').replace(':', '-')[:128]}"
+    try:
+        tag_result = subprocess.run(["docker", "image", "tag", container_image_id, protected_ref], capture_output=True, text=True, timeout=20, check=False)
+        protected_result = subprocess.run(["docker", "image", "inspect", "--format", "{{json .}}", protected_ref], capture_output=True, text=True, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        _fail(f"legacy protected image custody failed: {error}")
+    _require(tag_result.returncode == 0 and protected_result.returncode == 0, "legacy exact image could not be durably protected")
+    try:
+        protected_image = json.loads(protected_result.stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        _fail(f"legacy protected image inspection is malformed: {error}")
+    _require(isinstance(protected_image, dict) and protected_image.get("Id") == container_image_id and protected_image.get("Architecture") == "amd64" and protected_image.get("Os") == "linux" and type(protected_image.get("Size")) is int and protected_image["Size"] == image["Size"], "legacy protected image identity is not exact")
+    return {"container_id": source["container_id"], "image": source["image"], "image_digest": digest, "image_id": container_image_id, "image_bytes": image["Size"], "checkout_revision": source["checkout_revision"], "mounts": sorted(observed), "protected_image_ref": protected_ref}
 
 
 def _verify_pinned_image(image: str, platform: str) -> dict[str, Any]:
@@ -734,38 +786,23 @@ def _docker_storage_root() -> Path:
 
 
 def _verify_legacy_image_available(identity: dict[str, Any]) -> dict[str, Any]:
-    image = identity.get("image")
+    image = (identity.get("image_observation") or {}).get("protected_image_ref")
     platform = identity.get("platform")
     digest = identity.get("image_digest")
-    _require(isinstance(image, str) and isinstance(platform, str) and isinstance(digest, str), "preserved legacy image identity is incomplete")
+    _require(isinstance(image, str) and isinstance(platform, str) and isinstance(digest, str), "preserved legacy image custody identity is incomplete")
     try:
         completed = subprocess.run(["docker", "image", "inspect", "--platform", platform, "--format", "{{json .}}", image], capture_output=True, text=True, timeout=20, check=False)
     except (OSError, subprocess.TimeoutExpired) as error:
         _fail(f"preserved legacy image inspection failed: {error}")
-    _require(completed.returncode == 0, "preserved legacy image is no longer available in the Docker image store")
+    _require(completed.returncode == 0, "preserved legacy protected image is no longer available in the Docker image store")
     try:
         inspected = json.loads(completed.stdout)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        _fail(f"preserved legacy image inspection is malformed: {error}")
+        _fail(f"preserved legacy protected image inspection is malformed: {error}")
     _require(isinstance(inspected, dict), "preserved legacy image inspection is malformed")
     expected_image_id = (identity.get("image_observation") or {}).get("image_id")
-    if isinstance(expected_image_id, str) and expected_image_id and inspected.get("Id") != expected_image_id:
-        # Docker may select a platform-specific image record for the digest
-        # reference while the running container records the content-addressed
-        # image ID it actually used.  Reinspect that exact recorded ID during
-        # retry; accepting the reference's different ID would break preserved
-        # legacy identity continuity.
-        try:
-            exact = subprocess.run(["docker", "image", "inspect", "--format", "{{json .}}", expected_image_id], capture_output=True, text=True, timeout=20, check=False)
-        except (OSError, subprocess.TimeoutExpired) as error:
-            _fail(f"preserved legacy image ID inspection failed: {error}")
-        _require(exact.returncode == 0, "preserved legacy image ID is no longer available in the Docker image store")
-        try:
-            inspected = json.loads(exact.stdout)
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            _fail(f"preserved legacy image ID inspection is malformed: {error}")
-        _require(isinstance(inspected, dict) and inspected.get("Id") == expected_image_id, "preserved legacy image ID is not self-consistent")
-    _require(isinstance(inspected.get("RepoDigests"), list) and any(isinstance(item, str) and item.endswith("@" + digest) for item in inspected["RepoDigests"]), "preserved legacy image digest is not available")
+    _require(isinstance(expected_image_id, str) and expected_image_id and inspected.get("Id") == expected_image_id, "preserved legacy protected image tag no longer names the exact recorded image")
+    _require(isinstance(inspected.get("RepoDigests"), list) and any(isinstance(item, str) and item.endswith("@" + digest) for item in inspected["RepoDigests"]), "preserved legacy protected image digest is not available")
     _require(inspected.get("Architecture") == "amd64" and inspected.get("Os") == "linux" and type(inspected.get("Size")) is int and inspected["Size"] > 0, "preserved legacy image platform or size is unavailable")
     return {"image": image, "platform": platform, "digest": digest, "bytes": inspected["Size"], "image_id": inspected.get("Id"), "architecture": inspected["Architecture"], "os": inspected["Os"]}
 
@@ -883,13 +920,27 @@ def _operation_lock(deployment_lock_file: Path | None, *, timeout_seconds: float
     _require(deployment_lock_file is not None, "FB-027 deployment lock is required for every immutable preparation")
     _require(deployment_lock_file.is_absolute(), "deployment lock file must be absolute")
     configured = os.environ.get("DEPLOY_LOCK_FILE")
-    if configured:
-        _require(Path(configured).resolve() == deployment_lock_file.resolve(), "preparation lock is not the wrapper's DEPLOY_LOCK_FILE")
+    if configured is None:
+        app_dir = os.environ.get("APP_DIR", "/home/tilo/apps/clashcookies-prod")
+        lock_path = os.environ.get("DEPLOY_LOCK_PATH", f"{app_dir}-deploy.lock")
+        canonical = Path(f"{lock_path}.flock")
+        _require(canonical.is_absolute() and canonical.resolve() == deployment_lock_file.resolve(), "preparation lock must be the canonical FB-027 wrapper lock when DEPLOY_LOCK_FILE is absent")
+    else:
+        _require(Path(configured).is_absolute() and Path(configured).resolve() == deployment_lock_file.resolve(), "preparation lock is not the wrapper's DEPLOY_LOCK_FILE")
     _require(deployment_lock_file.parent.is_dir() and not deployment_lock_file.parent.is_symlink(), "FB-027 deployment lock parent is unavailable or unsafe")
-    if deployment_lock_file.exists():
+    existed = deployment_lock_file.exists()
+    if existed:
         _require(deployment_lock_file.is_file() and not deployment_lock_file.is_symlink(), "FB-027 deployment lock is not a regular file")
-    descriptor = os.open(deployment_lock_file, os.O_RDWR | os.O_CREAT, 0o600)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(deployment_lock_file, flags, 0o600)
     try:
+        opened = os.fstat(descriptor)
+        path_stat = os.lstat(deployment_lock_file)
+        _require(stat.S_ISREG(opened.st_mode) and opened.st_nlink == 1 and (opened.st_dev, opened.st_ino) == (path_stat.st_dev, path_stat.st_ino), "FB-027 deployment lock descriptor identity changed")
+        if os.name == "posix":
+            _require(opened.st_uid == os.geteuid() and stat.S_IMODE(opened.st_mode) & 0o077 == 0, "FB-027 deployment lock is not private or owner-controlled")
+        if not existed and os.name == "posix":
+            os.fsync(descriptor)
         if os.name == "posix":
             import fcntl
             deadline = time.monotonic() + timeout_seconds
@@ -921,15 +972,13 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
         _require(raw is not None and raw.isdigit(), "host storage headroom is required")
         host_headroom_bytes = int(raw)
     _require(deployment_lock_file is not None, "canonical FB-027 deployment lock is required")
-    for label, root in (("checkout", repository_root), ("publication", publication_root), ("prepared runtime", prepared_root)):
-        try:
-            deployment_lock_file.resolve().relative_to(root.resolve())
-        except ValueError:
-            continue
-        _fail(f"FB-027 deployment lock overlaps the {label}")
+    for label, root in (("checkout", repository_root), ("publication", publication_root), ("prepared runtime", prepared_root), ("trusted root", trusted_root)):
+        _require(not _paths_overlap(deployment_lock_file, root), f"FB-027 deployment lock overlaps the {label}")
     _external_dir(publication_root, repository_root, "publication root")
     _external_dir(prepared_root, repository_root, "prepared runtime root", create=True)
-    _require(publication_root.resolve() != prepared_root.resolve(), "publication and prepared runtime roots must be distinct")
+    _require_disjoint(publication_root, prepared_root, "publication and prepared runtime roots")
+    _require_disjoint(trusted_root, publication_root, "trusted root and publication root")
+    _require_disjoint(trusted_root, prepared_root, "trusted root and prepared runtime root")
     _private_dir(publication_root, "publication root")
     _private_dir(prepared_root, "prepared runtime root")
     _private_file(trusted_root, "offline trusted root")
@@ -951,6 +1000,7 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
     if existing_baseline.get("status") == "preserved-verified":
         _require(Path(existing_baseline["runtime_path"]).resolve() == legacy_dir.resolve(), "existing legacy baseline points to a different runtime")
         _validate_legacy_runtime_contents(legacy_dir, existing_baseline["identity"].get("startup", {}))
+        _validate_legacy_runtime_revision_markers(legacy_dir, existing_baseline["identity"]["checkout_revision"])
         _require(_integrity(legacy_dir, maximum_bytes=MAX_LEGACY_BYTES, maximum_entries=MAX_LEGACY_ENTRIES) == existing_baseline["integrity"], "existing legacy baseline runtime integrity changed")
         legacy_integrity = existing_baseline["integrity"]
         legacy_identity = existing_baseline["identity"]
@@ -962,7 +1012,7 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
         source_value = _read_json(legacy_source, MAX_SOURCE_METADATA_BYTES, "legacy source evidence", newline=True)
         components = _legacy_components(source_value, repository_root)
         legacy_observation = _verify_legacy_container(source_value, components, repository_root)
-        legacy_image_observation = {"image": source_value["image"], "platform": source_value["platform"], "digest": source_value["image_digest"], "bytes": legacy_observation["image_bytes"], "image_id": legacy_observation.get("image_id"), "architecture": "amd64", "os": "linux"}
+        legacy_image_observation = {"image": source_value["image"], "platform": source_value["platform"], "digest": source_value["image_digest"], "bytes": legacy_observation["image_bytes"], "image_id": legacy_observation.get("image_id"), "protected_image_ref": legacy_observation.get("protected_image_ref"), "architecture": "amd64", "os": "linux"}
         legacy_integrity = None
         legacy_identity = None
     source_estimate = _mapped_bounds(components) if components else {"bytes": 0, "allocated_bytes": 0, "entries": 0, "inodes": 0}
@@ -1002,7 +1052,7 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
         source_estimate = _mapped_bounds(components) if components else {"bytes": 0, "allocated_bytes": 0, "entries": 0, "inodes": 0}
         if source_value is not None:
             legacy_observation = _verify_legacy_container(source_value, components, repository_root)
-            legacy_image_observation = {"image": source_value["image"], "platform": source_value["platform"], "digest": source_value["image_digest"], "bytes": legacy_observation["image_bytes"], "image_id": legacy_observation.get("image_id"), "architecture": "amd64", "os": "linux"}
+            legacy_image_observation = {"image": source_value["image"], "platform": source_value["platform"], "digest": source_value["image_digest"], "bytes": legacy_observation["image_bytes"], "image_id": legacy_observation.get("image_id"), "protected_image_ref": legacy_observation.get("protected_image_ref"), "architecture": "amd64", "os": "linux"}
         source_allocated = source_estimate["allocated_bytes"]
         legacy_image_bytes = legacy_image_observation.get("bytes", 0)
         assessment = retention.assess_storage(
@@ -1020,6 +1070,7 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
         operation_id = f"prepare-{identity_sha256}"
         previous_operation = state["operations"].get(operation_id)
         expected_metadata_sha256 = previous_operation.get("metadata_sha256") if isinstance(previous_operation, dict) else None
+        _require(not (isinstance(previous_operation, dict) and isinstance(previous_operation.get("metadata_sha256"), str) and not candidate_dir.exists()), "committed preparation metadata is present but candidate material is missing; explicit recovery reconciliation is required")
         store.mark_operation(operation_id, identity_sha256, kind="immutable-runtime-preparation", phase="admission-approved", recovery_required=False, assume_locked=True)
         _require(not (isinstance(previous_operation, dict) and previous_operation.get("phase") == "completed" and not candidate_dir.exists()), "completed preparation operation is missing its published candidate material")
         if candidate_dir.exists() or candidate_dir.is_symlink():
@@ -1046,6 +1097,7 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
                         _verify_legacy_container(source_value, components, repository_root)
                         source_integrity = _mapped_integrity(components)
                         _validate_legacy_runtime_contents(legacy_dir, source_value["startup"])
+                        _validate_legacy_runtime_revision_markers(legacy_dir, source_value["checkout_revision"])
                         legacy_integrity = _integrity(legacy_dir, maximum_bytes=MAX_LEGACY_BYTES, maximum_entries=MAX_LEGACY_ENTRIES)
                         _require(legacy_integrity == source_integrity, "interrupted legacy publication does not match the observed source")
                     except BaseException:
@@ -1058,6 +1110,7 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
                         _verify_legacy_container(source_value, components, repository_root)
                         source_integrity = _mapped_integrity(components)
                         _validate_legacy_runtime_contents(legacy_stage, source_value["startup"])
+                        _validate_legacy_runtime_revision_markers(legacy_stage, source_value["checkout_revision"])
                         legacy_integrity = _integrity(legacy_stage, maximum_bytes=MAX_LEGACY_BYTES, maximum_entries=MAX_LEGACY_ENTRIES)
                         _require(legacy_integrity == source_integrity, "interrupted legacy workspace does not match the observed source")
                         _fsync_tree(legacy_stage, required=durable)

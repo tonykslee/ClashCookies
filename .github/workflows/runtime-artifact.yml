@@ -493,8 +493,27 @@ jobs:
             echo "CC_RETENTION_PUBLICATION_CAPTURE=$RUNNER_TEMP/receiver-publication-capture"
           } >> "$GITHUB_ENV"
 
+      - name: Start disposable PostgreSQL for runtime engine integration
+        if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'development-runtime-evidence'
+        run: |
+          set -euo pipefail
+          docker network create runtime-artifact-validation
+          docker run -d --name runtime-artifact-postgres \
+            --network runtime-artifact-validation \
+            -e POSTGRES_PASSWORD=artifact-test-password \
+            -e POSTGRES_DB=artifact_probe \
+            postgres:17-alpine
+          for attempt in $(seq 1 30); do
+            if docker exec runtime-artifact-postgres pg_isready -U postgres -d artifact_probe >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+
       - name: Run mandatory genuine Linux/OpenSSH receiver integration
         if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'development-runtime-evidence'
+        env:
+          CC_PREPARED_CANDIDATE_DATABASE_URL: postgresql://postgres:artifact-test-password@runtime-artifact-postgres:5432/artifact_probe?schema=public
+          CC_PREPARED_CANDIDATE_DOCKER_NETWORK: runtime-artifact-validation
         run: |
           set -euo pipefail
           test "$CC_REAL_RECEIVER" = 1
@@ -697,21 +716,6 @@ jobs:
             echo "Mismatched-source verification failed operationally or for an unexpected reason: $mismatched_output" >&2
             exit 1
           fi
-
-      - name: Start disposable PostgreSQL for runtime engine probe
-        run: |
-          set -euo pipefail
-          docker network create runtime-artifact-validation
-          docker run -d --name runtime-artifact-postgres \
-            --network runtime-artifact-validation \
-            -e POSTGRES_PASSWORD=artifact-test-password \
-            -e POSTGRES_DB=artifact_probe \
-            postgres:17-alpine
-          for attempt in $(seq 1 30); do
-            if docker exec runtime-artifact-postgres pg_isready -U postgres -d artifact_probe >/dev/null 2>&1; then exit 0; fi
-            sleep 1
-          done
-          exit 1
 
       - name: Exercise extracted runtime without install, compile, or Prisma regeneration
         env:

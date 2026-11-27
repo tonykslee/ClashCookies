@@ -5,6 +5,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -132,6 +134,42 @@ class ImmutableRuntimePreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(prep.PreparationError, "checkout path"):
             prep._copy_legacy_runtime(source, target, self.repo, durable=False)
 
+    def test_legacy_revision_claim_without_both_observed_markers_is_rejected(self) -> None:
+        source, _ = self.source_evidence()
+        if not self.symlink_fixture_available:
+            self.skipTest("runtime symlink fixture requires Linux or Windows symlink privilege")
+        (self.sources / "runtime" / "node_modules" / ".clashcookies-artifact").unlink()
+        source["runtime_revision"] = source["checkout_revision"]
+        with self.assertRaisesRegex(prep.PreparationError, "identity marker"):
+            prep._copy_legacy_runtime(source, self.destination / "legacy-runtime-baseline", self.repo, durable=False, verify_docker=False)
+
+    @unittest.skipUnless(os.name == "posix", "FB-027 descriptor locking requires POSIX")
+    def test_operation_lock_requires_canonical_identity_and_real_contention(self) -> None:
+        lock = self.root / "app-deploy.lock.flock"
+        arbitrary = self.root / "arbitrary.lock"
+        with patch.dict(os.environ, {"APP_DIR": str(self.root / "app")}, clear=True):
+            with self.assertRaisesRegex(prep.PreparationError, "canonical FB-027"):
+                with prep._operation_lock(arbitrary, timeout_seconds=0.1):
+                    pass
+            with prep._operation_lock(lock, timeout_seconds=0.1):
+                self.assertTrue(lock.is_file())
+
+        holder = subprocess.Popen([
+            sys.executable,
+            "-c",
+            "import fcntl,sys,time; f=open(sys.argv[1],'a+'); fcntl.flock(f, fcntl.LOCK_EX); print('ready',flush=True); time.sleep(2)",
+            str(lock),
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "ready")
+            with patch.dict(os.environ, {"DEPLOY_LOCK_FILE": str(lock)}, clear=True):
+                with self.assertRaisesRegex(prep.PreparationError, "deadline exceeded"):
+                    with prep._operation_lock(lock, timeout_seconds=0.1):
+                        pass
+        finally:
+            holder.terminate()
+            holder.wait(timeout=5)
+
     def test_existing_legacy_baseline_is_not_overwritten(self) -> None:
         source, _ = self.source_evidence()
         if not self.symlink_fixture_available:
@@ -166,6 +204,11 @@ class ImmutableRuntimePreparationTests(unittest.TestCase):
         self.assertEqual(len(assessment.filesystems), 1)
         self.assertEqual(assessment.required_bytes, 700)
         self.assertEqual(assessment.required_inodes, 9)
+
+    def test_custody_roots_must_be_symmetric_disjoint_paths(self) -> None:
+        nested = self.destination / "nested"
+        with self.assertRaisesRegex(prep.PreparationError, "custody roots overlap"):
+            prep._require_disjoint(self.destination, nested, "prepared and nested custody roots")
 
     def test_development_identity_is_rejected_at_operational_boundary(self) -> None:
         publication = self.root / "publication"
