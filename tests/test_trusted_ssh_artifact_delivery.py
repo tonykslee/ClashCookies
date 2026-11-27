@@ -1726,8 +1726,9 @@ module.prepare_immutable_runtime(**args)
                 self.assertEqual(legacy_probe.returncode, 0, legacy_probe.stderr)
                 self.assertIn("action=skip-build", legacy_probe.stdout)
                 shutil.rmtree(candidate_runtime.parent)
-                with self.assertRaisesRegex(preparation.PreparationError, "committed preparation metadata"):
-                    preparation.prepare_immutable_runtime(**prepare_kwargs)
+                with patch.dict(os.environ, {"CC_RECEIVER_AUTHORIZATION_POLICY": str(policy_path)}, clear=False):
+                    with self.assertRaisesRegex(preparation.PreparationError, "committed preparation metadata"):
+                        preparation.prepare_immutable_runtime(**prepare_kwargs)
                 subprocess.run(["docker", "rm", "--force", retry["legacy"]["identity"]["image_observation"]["protected_container_id"]], check=True, capture_output=True)
 
                 lost_root = root / "lost-ack-custody"
