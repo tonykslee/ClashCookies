@@ -159,6 +159,9 @@ jobs:
       - name: Run durable retention and readiness regressions
         run: python -m unittest discover -s tests -p 'test_durable_artifact_retention.py' -v
 
+      - name: Run durable activation transaction regressions
+        run: python -m unittest discover -s tests -p 'test_durable_activation_transaction.py' -v
+
       - name: Run immutable preparation and legacy custody regressions
         env:
           CC_REAL_PREPARATION_DOCKER: "1"

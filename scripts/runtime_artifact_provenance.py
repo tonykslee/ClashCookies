@@ -78,6 +78,7 @@ CANDIDATE_EVIDENCE_VERSION = 1
 CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT = "production-candidate-selection-only"
 PRODUCTION_CANDIDATE_AUTHORIZATION_CONTEXT = CANDIDATE_EVIDENCE_AUTHORIZATION_CONTEXT
 OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT = "owner-approved-production-candidate-delivery-v1"
+OWNER_APPROVED_ACTIVATION_AUTHORIZATION_CONTEXT = "owner-approved-production-activation-v1"
 ARTIFACT_NAME_TEMPLATE = "runtime-artifact-{run_id}-{run_attempt}"
 ATTESTATION_ARTIFACT_NAME_TEMPLATE = "runtime-artifact-attestation-{run_id}-{run_attempt}"
 MAX_ARTIFACT_ENTRIES = 64
@@ -795,11 +796,11 @@ def prepare_owner_authorization_record(
     validate_trusted_release_identity(identity)
     require_string(authorization_id, "authorization_id")
     require_string(signing_key_id, "signing_key_id")
-    require(scope in {"forward-release", "recovery-release"}, "authorization scope is unsupported")
+    require(scope in {"forward-release", "recovery-release", "activation-forward", "activation-recovery"}, "authorization scope is unsupported")
     issued = _parse_timestamp(issued_at, "issued_at")
     expires = _parse_timestamp(expires_at, "expires_at")
     require(expires > issued, "authorization expiry must be after issuance")
-    if scope == "forward-release":
+    if scope in {"forward-release", "activation-forward"}:
         require(recovery_context is None, "forward authorization must not carry recovery context")
         require((expires - issued).total_seconds() == AUTHORIZATION_FORWARD_VALIDITY_SECONDS, "forward authorization validity must be exactly 24 hours")
     else:
@@ -807,7 +808,11 @@ def prepare_owner_authorization_record(
     if verification_context_sha256 is not None:
         require_digest(verification_context_sha256, "verification_context_sha256")
     authorization_context = OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT if identity.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS else identity.authorization_context
-    if identity.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
+    if scope in {"activation-forward", "activation-recovery"}:
+        require(identity.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS, "activation authorization requires a production candidate")
+        authorization_context = OWNER_APPROVED_ACTIVATION_AUTHORIZATION_CONTEXT
+        require(verification_context_sha256 is not None, "activation authorization must bind the preparation verification context")
+    elif identity.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
         require(scope == "forward-release", "candidate owner authorization must be a forward authorization")
         require(verification_context_sha256 is not None, "candidate owner authorization must bind an independent verification context")
         require(isinstance(delivery_destination, str) and delivery_destination.startswith("/") and posixpath.normpath(delivery_destination) == delivery_destination, "candidate owner authorization must bind an approved absolute destination")
@@ -1398,9 +1403,9 @@ class AuthorizationReplayJournal:
         self._fsync_file(path, "authorization replay reservation retry")
         self._sync_directory()
 
-    def _verify_operation(self, envelope: Any, identity: TrustedReleaseIdentity, revision_allowlist: AuthorizationRevisionAllowlist, trust: AuthorizationTrustConfig, operation: str, now: datetime | None) -> IndependentReleaseAuthorization:
-        require(operation in {"forward-release", "recovery-release"}, "authorization operation context is required")
-        authorization = verify_signed_authorization_record(envelope, trust, identity, revision_allowlist, now=now)
+    def _verify_operation(self, envelope: Any, identity: TrustedReleaseIdentity, revision_allowlist: AuthorizationRevisionAllowlist, trust: AuthorizationTrustConfig, operation: str, now: datetime | None, *, historical: bool = False) -> IndependentReleaseAuthorization:
+        require(operation in {"forward-release", "recovery-release", "activation-forward", "activation-recovery"}, "authorization operation context is required")
+        authorization = verify_signed_authorization_record(envelope, trust, identity, revision_allowlist, now=now, historical=historical)
         require(authorization.scope == operation, "authorization scope does not match the explicit operation context")
         return authorization
 
@@ -1455,6 +1460,27 @@ class AuthorizationReplayJournal:
             require(self._entry_exists(path), "authorization replay reservation is missing")
             self._check_existing(self._read(path), self._state(authorization, identity, operation, "reserved"), current)
 
+    def inspect(self, envelope: Any, identity: TrustedReleaseIdentity, revision_allowlist: AuthorizationRevisionAllowlist, trust: AuthorizationTrustConfig, *, operation: str, allow_consumed: bool = False, now: datetime | None = None) -> dict[str, Any]:
+        """Inspect one exact replay entry without changing its durable state."""
+        with self._locked():
+            authorization = self._verify_operation(envelope, identity, revision_allowlist, trust, operation, now, historical=allow_consumed)
+            path = self._path(authorization)
+            require(self._entry_exists(path), "authorization replay entry is missing")
+            current = self._read(path)
+            expected = self._state(authorization, identity, operation, current.get("state"))
+            for field, value in expected.items():
+                require(current.get(field) == value, "authorization replay record does not exactly match the signed authorization")
+            allowed = {"reserved", "consumed"} if allow_consumed else {"reserved"}
+            require(current.get("state") in allowed, "authorization replay entry has an invalid state")
+            if current.get("state") == "reserved":
+                require(_parse_timestamp(current.get("expires_at"), "authorization replay expires_at") > (now or _now_utc()).astimezone(timezone.utc), "authorization replay entry is expired")
+            return dict(current)
+
+    def assert_consumed(self, envelope: Any, identity: TrustedReleaseIdentity, revision_allowlist: AuthorizationRevisionAllowlist, trust: AuthorizationTrustConfig, *, operation: str, now: datetime | None = None) -> None:
+        """Prove that the exact signed authorization was already consumed."""
+        observed = self.inspect(envelope, identity, revision_allowlist, trust, operation=operation, allow_consumed=True, now=now)
+        require(observed.get("state") == "consumed", "authorization replay entry is not consumed")
+
 
 def validate_independent_authorization(authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, *, revision_allowlist: AuthorizationRevisionAllowlist | None = None, now: datetime | None = None) -> None:
     """Check binding, explicit revisions, and lifecycle semantics for a verified record."""
@@ -1465,12 +1491,12 @@ def validate_independent_authorization(authorization: IndependentReleaseAuthoriz
     require_string(authorization.authorization_id, "authorization.authorization_id")
     allowed_contexts = {identity.authorization_context}
     if identity.artifact_class == PRODUCTION_CANDIDATE_ARTIFACT_CLASS:
-        allowed_contexts.add(OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT)
+        allowed_contexts.update({OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT, OWNER_APPROVED_ACTIVATION_AUTHORIZATION_CONTEXT})
     require(authorization.context in allowed_contexts, "authorization context does not match release identity")
     if authorization.context == OWNER_APPROVED_CANDIDATE_AUTHORIZATION_CONTEXT:
         require(isinstance(authorization.delivery_destination, str) and authorization.delivery_destination.startswith("/") and posixpath.normpath(authorization.delivery_destination) == authorization.delivery_destination, "owner-approved candidate authorization destination is invalid")
-    require(authorization.scope in {"forward-release", "recovery-release"}, "authorization scope is unsupported")
-    if authorization.scope == "forward-release":
+    require(authorization.scope in {"forward-release", "recovery-release", "activation-forward", "activation-recovery"}, "authorization scope is unsupported")
+    if authorization.scope in {"forward-release", "activation-forward"}:
         require(authorization.recovery_context is None, "forward authorization must not carry recovery context")
     else:
         require(isinstance(authorization.recovery_context, str) and authorization.recovery_context != "", "recovery authorization requires recovery context")
@@ -1489,7 +1515,7 @@ def validate_independent_authorization(authorization: IndependentReleaseAuthoriz
     issued = _parse_timestamp(authorization.issued_at, "authorization.issued_at")
     expires = _parse_timestamp(authorization.expires_at, "authorization.expires_at")
     require(expires > issued, "authorization expiry must be after issuance")
-    if authorization.scope == "forward-release":
+    if authorization.scope in {"forward-release", "activation-forward"}:
         require((expires - issued).total_seconds() == AUTHORIZATION_FORWARD_VALIDITY_SECONDS, "forward authorization validity must be exactly 24 hours")
     current = (now or _now_utc()).astimezone(timezone.utc)
     require(issued <= current < expires, "authorization is stale or not yet valid")
