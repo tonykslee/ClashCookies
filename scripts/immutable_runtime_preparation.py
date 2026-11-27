@@ -627,7 +627,21 @@ def _verify_legacy_container(source: dict[str, Any], components: dict[str, Path]
     _require(type(image.get("Size")) is int and image["Size"] > 0, "legacy Docker image size is unavailable")
     config = container.get("Config")
     _require(isinstance(config, dict) and config.get("Image") in {source["image"], source["image"].split("@", 1)[0], digest}, "legacy container config is not bound to the digest-pinned image")
-    _require(container.get("Image") == image.get("Id"), "legacy container image ID is not bound to the inspected image")
+    container_image_id = container.get("Image")
+    _require(isinstance(container_image_id, str) and container_image_id, "legacy container image ID is unavailable")
+    if container_image_id != image.get("Id"):
+        try:
+            container_image_result = subprocess.run(["docker", "image", "inspect", "--format", "{{json .}}", container_image_id], capture_output=True, text=True, timeout=20, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            _fail(f"legacy container image ID inspection failed: {error}")
+        _require(container_image_result.returncode == 0, "legacy container image ID is not available in Docker")
+        try:
+            container_image = json.loads(container_image_result.stdout)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            _fail(f"legacy container image ID inspection is malformed: {error}")
+        _require(isinstance(container_image, dict) and container_image.get("Id") == container_image_id, "legacy container image ID is not self-consistent")
+        _require(isinstance(container_image.get("RepoDigests"), list) and any(isinstance(item, str) and item.endswith("@" + digest) for item in container_image["RepoDigests"]), "legacy container image ID is not bound to the exact digest")
+        _require(container_image.get("Architecture") == "amd64" and container_image.get("Os") == "linux" and type(container_image.get("Size")) is int and container_image["Size"] > 0, "legacy container image ID platform or size is unavailable")
     _require(container.get("Id") == source["container_id"] or str(container.get("Id", "")).startswith(source["container_id"]), "legacy container identity is not observed")
     _require(container.get("Os") in {None, "linux"} and container.get("Architecture") in {None, "amd64"}, "legacy container platform is incompatible")
     mounts = container.get("Mounts")
@@ -652,7 +666,7 @@ def _verify_legacy_container(source: dict[str, Any], components: dict[str, Path]
     startup = source["startup"]["entrypoint"]
     command_values = [*(config.get("Entrypoint") or []), *(config.get("Cmd") or [])]
     _require(any(isinstance(value, str) and (value == startup or value.endswith("/" + startup) or value.endswith(startup)) for value in command_values), "legacy container startup command is not the declared runtime wrapper")
-    return {"container_id": source["container_id"], "image": source["image"], "image_digest": digest, "image_id": image.get("Id"), "image_bytes": image["Size"], "checkout_revision": source["checkout_revision"], "mounts": sorted(observed)}
+    return {"container_id": source["container_id"], "image": source["image"], "image_digest": digest, "image_id": container_image_id, "image_bytes": image["Size"], "checkout_revision": source["checkout_revision"], "mounts": sorted(observed)}
 
 
 def _verify_pinned_image(image: str, platform: str) -> dict[str, Any]:
