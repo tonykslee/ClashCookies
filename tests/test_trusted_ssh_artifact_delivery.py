@@ -1689,12 +1689,12 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                 assert_no_legacy_custody_mutation()
 
                 wrong_lock = root / "not-the-wrapper-lock.flock"
-                with patch.dict(os.environ, {"CC_RECEIVER_AUTHORIZATION_POLICY": str(policy_path), "DEPLOY_LOCK_FILE": str(wrong_lock)}, clear=False):
+                with patch.dict(os.environ, {"CC_RECEIVER_AUTHORIZATION_POLICY": str(policy_path), "DEPLOY_LOCK_FILE": str(wrong_lock), "GH_ATTESTATION_CLI": str(gh_wrapper), "CC_SYNTHETIC_VERIFIER_OUTPUT": str(verifier_output)}, clear=False):
                     with self.assertRaisesRegex(preparation.PreparationError, "canonical FB-027"):
                         preparation.prepare_immutable_runtime(**{**prepare_kwargs, "deployment_lock_file": wrong_lock})
                 assert_no_legacy_custody_mutation()
 
-                with patch.dict(os.environ, {"CC_RECEIVER_AUTHORIZATION_POLICY": str(policy_path), "DEPLOY_LOCK_FILE": str(deployment_lock)}, clear=False), patch.object(preparation.retention, "assess_storage", return_value=SimpleNamespace(status="FAIL")):
+                with patch.dict(os.environ, {"CC_RECEIVER_AUTHORIZATION_POLICY": str(policy_path), "DEPLOY_LOCK_FILE": str(deployment_lock), "GH_ATTESTATION_CLI": str(gh_wrapper), "CC_SYNTHETIC_VERIFIER_OUTPUT": str(verifier_output)}, clear=False), patch.object(preparation.retention, "assess_storage", return_value=SimpleNamespace(status="FAIL")):
                     with self.assertRaisesRegex(preparation.PreparationError, "storage/inode admission"):
                         preparation.prepare_immutable_runtime(**prepare_kwargs)
                 assert_no_legacy_custody_mutation()
