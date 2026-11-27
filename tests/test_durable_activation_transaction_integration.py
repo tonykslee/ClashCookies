@@ -268,8 +268,9 @@ class DurableActivationIntegrationTests(unittest.TestCase):
         envelope, _ = self._activation_authorization(fixture, operation_id, retry_key, state["pointer_generation"], target, None, "activation-forward")
         fixture["activation_journal"].reserve(envelope, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-forward")
         tx.begin(operation_id=operation_id, retry_key=retry_key, identity_sha256=fixture["identity_digest"], preparation_metadata_sha256=fixture["metadata_digest"], envelope=envelope, rollback_target=target)
-        if consume_forward:
-            tx.consume(operation_id, envelope)
+        if not consume_forward:
+            return {"envelope": envelope, "operation": tx.store.load()["activation_operations"][operation_id]}
+        tx.consume(operation_id, envelope)
         tx.advance(operation_id, "incumbent-stop-intent")
         tx.observe(operation_id, phase="incumbent-stop-observed", outcome=stop_outcome, details={"subject": "incumbent", "subject_release": target})
         if stop_outcome != "stopped":
