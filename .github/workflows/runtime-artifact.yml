@@ -499,6 +499,7 @@ jobs:
           set -euo pipefail
           test "$CC_REAL_RECEIVER" = 1
           test "$CC_RECEIVER_NETWORK_DISABLED" = 1
+          docker pull --platform "$RUNTIME_ARTIFACT_PLATFORM" "$RUNTIME_ARTIFACT_IMAGE"
           python -m unittest \
             tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_real_openssh_receiver_and_exclusive_host_pinning \
             tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_owner_local_candidate_archive_validation_uses_real_hardened_validator \
