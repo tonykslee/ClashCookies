@@ -19,6 +19,7 @@ import ctypes
 import hashlib
 import shlex
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -1633,21 +1634,17 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                 subprocess.run(["git", "-C", str(legacy_app), "add", "."], check=True)
                 subprocess.run(["git", "-C", str(legacy_app), "commit", "--quiet", "-m", "fixture"], check=True, capture_output=True)
                 legacy_revision = subprocess.run(["git", "-C", str(legacy_app), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-                dist_volume = f"clashcookies-preparation-dist-{os.getpid()}"
-                node_volume = f"clashcookies-preparation-node-{os.getpid()}"
+                dist_overlay = root / "legacy-dist-overlay"
+                node_overlay = root / "legacy-node-overlay"
+                shutil.copytree(extracted_runtime / "dist", dist_overlay)
+                shutil.copytree(extracted_runtime / "node_modules", node_overlay)
                 container_name = f"clashcookies-preparation-legacy-{os.getpid()}"
-                for volume in (dist_volume, node_volume):
-                    subprocess.run(["docker", "volume", "create", volume], check=True, capture_output=True)
-                subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64", "-v", f"{extracted_runtime / 'dist'}:/src:ro", "-v", f"{dist_volume}:/dst", image, "bash", "-euo", "pipefail", "-c", "cp -a /src/. /dst/"], check=True, capture_output=True)
-                subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64", "-v", f"{extracted_runtime / 'node_modules'}:/src:ro", "-v", f"{node_volume}:/dst", image, "bash", "-euo", "pipefail", "-c", "cp -a /src/. /dst/"], check=True, capture_output=True)
                 marker = f"revision={legacy_revision}\n"
-                for volume in (dist_volume, node_volume):
-                    subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64", "-v", f"{volume}:/dst", image, "bash", "-euo", "pipefail", "-c", f"printf '%s' {shlex.quote(marker)} > /dst/.clashcookies-artifact"], check=True, capture_output=True)
-                dist_mountpoint = Path(subprocess.run(["docker", "volume", "inspect", "--format", "{{.Mountpoint}}", dist_volume], check=True, capture_output=True, text=True).stdout.strip())
-                node_mountpoint = Path(subprocess.run(["docker", "volume", "inspect", "--format", "{{.Mountpoint}}", node_volume], check=True, capture_output=True, text=True).stdout.strip())
-                container_id = subprocess.run(["docker", "run", "--detach", "--name", container_name, "--platform", "linux/amd64", "--network", "none", "--env", f"BUILD_SHA={legacy_revision}", "--env", "CLASHCOOKIES_PREBUILT=1", "--workdir", "/app", "--volume", f"{legacy_app}:/app", "--volume", f"{dist_volume}:/app/dist", "--volume", f"{node_volume}:/app/node_modules", image, "bash", "./ops/deploy/container-start.sh"], check=True, capture_output=True, text=True).stdout.strip()
+                (dist_overlay / ".clashcookies-artifact").write_text(marker, encoding="ascii")
+                (node_overlay / ".clashcookies-artifact").write_text(marker, encoding="ascii")
+                container_id = subprocess.run(["docker", "run", "--detach", "--name", container_name, "--platform", "linux/amd64", "--network", "none", "--env", f"BUILD_SHA={legacy_revision}", "--env", "CLASHCOOKIES_PREBUILT=1", "--workdir", "/app", "--volume", f"{legacy_app}:/app", "--volume", f"{dist_overlay}:/app/dist", "--volume", f"{node_overlay}:/app/node_modules", image, "bash", "./ops/deploy/container-start.sh"], check=True, capture_output=True, text=True).stdout.strip()
                 source_path = root / "legacy-source.json"
-                legacy_source = {"contract": preparation.LEGACY_SOURCE_CONTRACT, "version": preparation.LEGACY_SOURCE_VERSION, "container_id": container_id, "checkout_path": str(legacy_app), "checkout_revision": legacy_revision, "runtime_revision": legacy_revision, "image": image, "image_digest": candidate_identity.image_digest, "platform": candidate_identity.platform, "startup": {"entrypoint": "ops/deploy/container-start.sh", "prebuilt": True, "migrations": "deferred"}, "components": {"dist": str(dist_mountpoint), "node_modules": str(node_mountpoint), "prisma": str(legacy_app / "prisma"), "package.json": str(legacy_app / "package.json"), "yarn.lock": str(legacy_app / "yarn.lock"), "ops/deploy/container-start.sh": str(startup_destination)}, "mount_destinations": {"dist": {"type": "volume", "name": dist_volume, "source": str(dist_mountpoint), "destination": "/app/dist"}, "node_modules": {"type": "volume", "name": node_volume, "source": str(node_mountpoint), "destination": "/app/node_modules"}, "prisma": {"type": "bind", "source": str(legacy_app / "prisma"), "destination": "/app"}, "package.json": {"type": "bind", "source": str(legacy_app / "package.json"), "destination": "/app"}, "yarn.lock": {"type": "bind", "source": str(legacy_app / "yarn.lock"), "destination": "/app"}, "ops/deploy/container-start.sh": {"type": "bind", "source": str(startup_destination), "destination": "/app"}}}
+                legacy_source = {"contract": preparation.LEGACY_SOURCE_CONTRACT, "version": preparation.LEGACY_SOURCE_VERSION, "container_id": container_id, "checkout_path": str(legacy_app), "checkout_revision": legacy_revision, "runtime_revision": legacy_revision, "image": image, "image_digest": candidate_identity.image_digest, "platform": candidate_identity.platform, "startup": {"entrypoint": "ops/deploy/container-start.sh", "prebuilt": True, "migrations": "deferred"}, "components": {"dist": str(dist_overlay), "node_modules": str(node_overlay), "prisma": str(legacy_app / "prisma"), "package.json": str(legacy_app / "package.json"), "yarn.lock": str(legacy_app / "yarn.lock"), "ops/deploy/container-start.sh": str(startup_destination)}, "mount_destinations": {"dist": {"type": "bind", "source": str(dist_overlay), "destination": "/app/dist"}, "node_modules": {"type": "bind", "source": str(node_overlay), "destination": "/app/node_modules"}, "prisma": {"type": "bind", "source": str(legacy_app / "prisma"), "destination": "/app"}, "package.json": {"type": "bind", "source": str(legacy_app / "package.json"), "destination": "/app"}, "yarn.lock": {"type": "bind", "source": str(legacy_app / "yarn.lock"), "destination": "/app"}, "ops/deploy/container-start.sh": {"type": "bind", "source": str(startup_destination), "destination": "/app"}}}
                 source_path.write_bytes(delivery.provenance._canonical_json(legacy_source) + b"\n")
                 source_path.chmod(0o600)
                 prepared_root = root / "prepared-runtime"
@@ -1709,7 +1706,8 @@ module.prepare_immutable_runtime(**args)
                     self.assertEqual(probe.returncode, 0, probe.stderr)
                 subprocess.run(["docker", "rm", "--force", container_name], check=False, capture_output=True)
                 shutil.rmtree(legacy_app)
-                subprocess.run(["docker", "volume", "rm", "-f", dist_volume, node_volume], check=False, capture_output=True)
+                shutil.rmtree(dist_overlay)
+                shutil.rmtree(node_overlay)
                 legacy_runtime = prepared_root / "legacy-runtime-baseline"
                 legacy_probe = subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64", "--network", "none", "--env", f"BUILD_SHA={legacy_revision}", "--env", "CLASHCOOKIES_PREBUILT=1", "--workdir", "/app", "--volume", f"{legacy_runtime}:/app:ro", image, "bash", "-euo", "pipefail", "-c", "bash ./ops/deploy/container-start.sh & pid=$!; sleep 2; kill $pid; wait $pid || test $? -eq 143"], check=False, capture_output=True, text=True, timeout=30)
                 self.assertEqual(legacy_probe.returncode, 0, legacy_probe.stderr)
