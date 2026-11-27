@@ -191,7 +191,7 @@ class DurableActivationIntegrationTests(unittest.TestCase):
         store = retention.RetentionStore(publication, repository_root=checkout, require_durable=True)
         prepared_candidate = prepared / f"candidate-{retention.identity_digest(identity.__dict__)}"
         prepared_candidate.mkdir(mode=0o700)
-        shutil.copytree(validation_workspace / "extracted-runtime", prepared_candidate / "runtime")
+        shutil.copytree(validation_workspace / "extracted-runtime", prepared_candidate / "runtime", symlinks=True)
         legacy_runtime = legacy_root / "runtime"
         legacy_runtime.mkdir(mode=0o700)
         (legacy_runtime / "legacy.txt").write_text("legacy\n", encoding="utf-8")
@@ -224,6 +224,7 @@ class DurableActivationIntegrationTests(unittest.TestCase):
     def _transaction(self, fixture: dict[str, object]) -> activation.ActivationTransaction:
         os.environ["GH_ATTESTATION_CLI"] = str(fixture["gh_wrapper"])
         os.environ["CC_SYNTHETIC_VERIFIER_OUTPUT"] = str(fixture["verifier_output"])
+        os.environ["DEPLOY_LOCK_FILE"] = str(fixture["deployment_lock"])
         return activation.ActivationTransaction(retention.RetentionStore(fixture["publication"], repository_root=fixture["checkout"], require_durable=True), prepared_root=fixture["prepared"], deployment_lock_file=fixture["deployment_lock"], journal=fixture["activation_journal"], delivery_journal=fixture["delivery_journal"], delivery_envelope=fixture["delivery_envelope"], trust=fixture["trust"], revision_allowlist=fixture["allowlist"], authorization_allowlist_path=fixture["allowlist_path"], trusted_root=fixture["trusted_root"], trusted_root_version=hashlib.sha256(fixture["trusted_root"].read_bytes()).hexdigest()[:16], run_metadata=fixture["run_metadata"])
 
     def _import_candidate_into_store(self, base: dict[str, object], candidate: dict[str, object]) -> dict[str, object]:
