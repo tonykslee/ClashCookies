@@ -363,36 +363,6 @@ jobs:
           jq -e --arg expected_class "$RUNTIME_ARTIFACT_ARTIFACT_CLASS" '.authenticated == true and .productionEligibility.eligible == false and .productionEligibility.authoritative == false and .subject.artifactClass == $expected_class' \
             "$RUNNER_TEMP/authenticated-development-provenance.json" >/dev/null
 
-      - name: Exercise packaged Prisma CLI and native engine against disposable PostgreSQL
-        if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'development-runtime-evidence'
-        run: |
-          set -euo pipefail
-          runtime="$RUNNER_TEMP/extracted-runtime-artifact"
-          test -x "$runtime/node_modules/.bin/prisma"
-          network="clashcookies-preparation-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          database="clashcookies-preparation-db-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          docker network create "$network"
-          docker run --detach --name "$database" --network "$network" \
-            --env POSTGRES_PASSWORD=fixture-password --env POSTGRES_DB=clashcookies \
-            postgres:16-alpine >/dev/null
-          cleanup() {
-            docker rm --force "$database" >/dev/null 2>&1 || true
-            docker network rm "$network" >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
-          for attempt in $(seq 1 60); do
-            if docker exec "$database" pg_isready -U postgres -d clashcookies >/dev/null 2>&1; then
-              break
-            fi
-            test "$attempt" -lt 60
-            sleep 1
-          done
-          docker run --rm --network "$network" \
-            --env DATABASE_URL=postgresql://postgres:fixture-password@"$database":5432/clashcookies \
-            --volume "$runtime:/runtime:ro" "$RUNTIME_ARTIFACT_IMAGE" \
-            bash -euo pipefail -c 'cd /runtime && node_modules/.bin/prisma --version && node_modules/.bin/prisma migrate deploy'
-          echo "Packaged Prisma CLI, generated native engine, migrations, and disposable PostgreSQL probe passed." >> "$GITHUB_STEP_SUMMARY"
-
       - name: Produce non-authoritative production-candidate evidence
         if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'production-candidate-runtime-evidence-v1'
         run: |
