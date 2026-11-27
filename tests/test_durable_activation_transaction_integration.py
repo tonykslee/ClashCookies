@@ -51,9 +51,10 @@ def _sign_record(root: Path, record: dict[str, object], key_id: str, *, reposito
     record_path = root / f"{key_id}-record.json"
     signature_path = root / f"{key_id}-record.sig"
     der_path = root / f"{key_id}-public.der"
-    subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(private_key)], check=True, capture_output=True)
-    subprocess.run(["openssl", "pkey", "-in", str(private_key), "-pubout", "-out", str(public_key)], check=True, capture_output=True)
-    public_key.chmod(0o600)
+    if not private_key.exists():
+        subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(private_key)], check=True, capture_output=True)
+        subprocess.run(["openssl", "pkey", "-in", str(private_key), "-pubout", "-out", str(public_key)], check=True, capture_output=True)
+        public_key.chmod(0o600)
     record_path.write_bytes(provenance._canonical_json(record))
     subprocess.run(["openssl", "pkeyutl", "-sign", "-rawin", "-inkey", str(private_key), "-in", str(record_path), "-out", str(signature_path)], check=True, capture_output=True)
     subprocess.run(["openssl", "pkey", "-pubin", "-in", str(public_key), "-outform", "DER", "-out", str(der_path)], check=True, capture_output=True)
@@ -230,13 +231,26 @@ class DurableActivationIntegrationTests(unittest.TestCase):
         assert isinstance(identity, provenance.TrustedReleaseIdentity)
         digest = candidate["identity_digest"]
         release_name = f"release-{digest}"
-        shutil.copytree(Path(candidate["publication"]) / release_name, Path(base["publication"]) / release_name)
+        release_path = Path(base["publication"]) / release_name
+        shutil.copytree(Path(candidate["publication"]) / release_name, release_path)
         shutil.copytree(Path(candidate["prepared"]) / f"candidate-{digest}", Path(base["prepared"]) / f"candidate-{digest}")
+        context_path = release_path / "independent-verification-context.json"
+        context_digest = hashlib.sha256(context_path.read_bytes()).hexdigest()
+        context = json.loads(context_path.read_text(encoding="utf-8"))
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        delivery_record = provenance.prepare_owner_authorization_record(identity, authorization_id=f"integration-delivery-{digest[:12]}", issued_at=_stamp(now - timedelta(minutes=4)), expires_at=_stamp(now + timedelta(hours=23, minutes=56)), signing_key_id="integration-key", verification_context_sha256=context_digest, delivery_destination=str(base["publication"]), verification_completed_at=context["verificationCompletedAt"])
+        delivery_envelope, trust = _sign_record(Path(candidate["custody"]), delivery_record, "integration-key", repository_root=Path(base["checkout"]))
+        (release_path / "authorization-envelope.json").write_bytes(provenance._canonical_json(delivery_envelope) + b"\n")
+        (release_path / "authorization-envelope.json").chmod(0o600)
+        delivery_journal = candidate["delivery_journal"]
+        assert isinstance(delivery_journal, provenance.AuthorizationReplayJournal)
+        delivery_journal.reserve(delivery_envelope, identity, candidate["allowlist"], trust, operation="forward-release")
         store = retention.RetentionStore(base["publication"], repository_root=base["checkout"], require_durable=True)
-        store.register_delivery(identity.__dict__, Path(base["publication"]) / release_name, authorization_envelope=candidate["delivery_envelope"], authorization_journal=candidate["delivery_journal"], authorization_revision_allowlist=candidate["allowlist"], authorization_trust=candidate["trust"], authorization_operation="forward-release")
+        store.register_delivery(identity.__dict__, release_path, authorization_envelope=delivery_envelope, authorization_journal=delivery_journal, authorization_revision_allowlist=candidate["allowlist"], authorization_trust=trust, authorization_operation="forward-release")
         store.mark_operation(f"prepare-{digest}", digest, kind="immutable-runtime-preparation", phase="admission-approved")
         store.update_operation(f"prepare-{digest}", phase="completed", metadata_sha256=candidate["metadata_digest"])
         merged = dict(candidate)
+        merged.update({"delivery_envelope": delivery_envelope, "delivery_journal": delivery_journal, "trust": trust})
         for key in ("publication", "prepared", "checkout", "deployment_lock", "activation_journal"):
             merged[key] = base[key]
         return merged
