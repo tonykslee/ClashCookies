@@ -877,7 +877,12 @@ class RetentionStore:
             expected["identity_sha256"] = journal_identity_sha256
         for field, value in expected.items():
             _require(entry.get(field) == value, f"activation replay evidence conflicts on {field}")
-        return _ActivationAuthority(operation_id, candidate_release, preparation_metadata_sha256, expected_record_sha256, expected_authorization_id, expected_retry_key, expected_scope, expected_state, pointer_generation, str(entry.get("observed_at") or _now()), _AUTHORITY_TOKEN)
+        # Replay entries predating an explicit observed-at field still carry
+        # stable signed timestamps.  Never synthesize a new wall-clock value
+        # on each retry: doing so would make exact delivery reconciliation
+        # conflict with its own durable evidence.
+        observed_at = entry.get("observed_at") or entry.get("issued_at")
+        return _ActivationAuthority(operation_id, candidate_release, preparation_metadata_sha256, expected_record_sha256, expected_authorization_id, expected_retry_key, expected_scope, expected_state, pointer_generation, str(observed_at or _now()), _AUTHORITY_TOKEN)
 
     @staticmethod
     def _validate_activation_authority(authority: _ActivationAuthority, *, operation_id: str, candidate_release: str, preparation_metadata_sha256: str, record_sha256: str, authorization_id: str, retry_key: str, scope: str, state: str, pointer_generation: int) -> None:

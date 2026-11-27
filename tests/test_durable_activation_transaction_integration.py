@@ -416,7 +416,12 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             child = os.fork()
             if child == 0:
                 os.close(read_fd)
-                tx.store.transition_activation = lambda *args, **kwargs: os.kill(os.getpid(), 9)  # type: ignore[method-assign]
+                original_transition = tx.store.transition_activation
+                def kill_after_journal(*args, **kwargs):
+                    if kwargs.get("phase") == "authorization-consumed":
+                        os.kill(os.getpid(), 9)
+                    return original_transition(*args, **kwargs)
+                tx.store.transition_activation = kill_after_journal  # type: ignore[method-assign]
                 try:
                     tx.consume(operation_id, envelope)
                 except BaseException:
