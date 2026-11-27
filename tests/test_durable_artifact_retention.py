@@ -109,6 +109,9 @@ class DurableRetentionTests(unittest.TestCase):
         operation = f"prepare-{digest}"
         self.store.mark_operation(operation, digest, kind="immutable-runtime-preparation", phase="admission-approved")
         self.store.update_operation(operation, phase="legacy-registered")
+        # A restart re-enters through the idempotent admission marker without
+        # moving the durable operation phase backward.
+        self.store.mark_operation(operation, digest, kind="immutable-runtime-preparation", phase="admission-approved")
         self.store.update_operation(operation, phase="candidate-published")
         self.store.update_operation(operation, phase="completed", metadata_sha256="a" * 64)
         state = self.store.load()

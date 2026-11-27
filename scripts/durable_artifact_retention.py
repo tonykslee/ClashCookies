@@ -666,8 +666,6 @@ class RetentionStore:
                     return
                 record = state["releases"][identity_sha256]
                 changed = False
-                if phase is not None:
-                    _require(existing.get("phase", "started") == phase or existing.get("phase") is None or existing.get("phase") == "recovery-required", "retention operation phase cannot move backward")
                 if "in-flight" not in record["roles"]:
                     record["roles"].append("in-flight")
                     changed = True
