@@ -1691,7 +1691,7 @@ def interrupted_fsync(path, *, required):
 module._fsync_tree = interrupted_fsync
 module.prepare_immutable_runtime(**args)
 """
-                    interrupted_process = subprocess.run([sys.executable, "-c", prep_child, str(ROOT / "scripts"), str(prep_args)], check=False)
+                    interrupted_process = subprocess.run([sys.executable, "-c", prep_child, str(PREP_SCRIPT.parent), str(prep_args)], check=False)
                     self.assertEqual(interrupted_process.returncode, -signal.SIGKILL)
                     self.assertTrue(any(path.name.startswith(".prepare-") for path in prepared_root.iterdir()))
                     prepared = preparation.prepare_immutable_runtime(**prepare_kwargs)
