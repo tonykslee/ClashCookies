@@ -525,6 +525,16 @@ def _copy_legacy_runtime(source: dict[str, Any], destination: Path, repository_r
         for name, component in sorted(components.items()):
             target = stage / name
             target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            # The source inventory deliberately records parents synthesized by
+            # the component mapping as private 0700 directories.  Make the
+            # destination agree explicitly; mkdir's mode is affected by the
+            # process umask and is not a sufficient integrity guarantee.
+            parent = target.parent
+            while parent != stage:
+                metadata = os.lstat(parent)
+                _require(stat.S_ISDIR(metadata.st_mode), f"legacy staging parent is not a directory: {parent}")
+                os.chmod(parent, 0o700)
+                parent = parent.parent
             _copy_entry(component, target, max_bytes=MAX_LEGACY_BYTES, counters=counters, source_root=component if component.is_dir() else component.parent)
         if verify_docker:
             _verify_legacy_container(source, components, repository_root)
