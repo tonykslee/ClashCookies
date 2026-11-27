@@ -1636,8 +1636,8 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                 legacy_revision = subprocess.run(["git", "-C", str(legacy_app), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
                 dist_overlay = root / "legacy-dist-overlay"
                 node_overlay = root / "legacy-node-overlay"
-                shutil.copytree(extracted_runtime / "dist", dist_overlay)
-                shutil.copytree(extracted_runtime / "node_modules", node_overlay)
+                shutil.copytree(extracted_runtime / "dist", dist_overlay, symlinks=True)
+                shutil.copytree(extracted_runtime / "node_modules", node_overlay, symlinks=True)
                 container_name = f"clashcookies-preparation-legacy-{os.getpid()}"
                 marker = f"revision={legacy_revision}\n"
                 (dist_overlay / ".clashcookies-artifact").write_text(marker, encoding="ascii")
