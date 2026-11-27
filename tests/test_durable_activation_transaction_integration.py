@@ -45,7 +45,7 @@ def _stamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _sign_record(root: Path, record: dict[str, object], key_id: str) -> tuple[dict[str, object], provenance.AuthorizationTrustConfig]:
+def _sign_record(root: Path, record: dict[str, object], key_id: str, *, repository_root: Path) -> tuple[dict[str, object], provenance.AuthorizationTrustConfig]:
     private_key = root / f"{key_id}-private.pem"
     public_key = root / f"{key_id}-public.pem"
     record_path = root / f"{key_id}-record.json"
@@ -57,7 +57,7 @@ def _sign_record(root: Path, record: dict[str, object], key_id: str) -> tuple[di
     record_path.write_bytes(provenance._canonical_json(record))
     subprocess.run(["openssl", "pkeyutl", "-sign", "-rawin", "-inkey", str(private_key), "-in", str(record_path), "-out", str(signature_path)], check=True, capture_output=True)
     subprocess.run(["openssl", "pkey", "-pubin", "-in", str(public_key), "-outform", "DER", "-out", str(der_path)], check=True, capture_output=True)
-    trust = provenance.AuthorizationTrustConfig(public_key, key_id, hashlib.sha256(der_path.read_bytes()).hexdigest(), root / "checkout")
+    trust = provenance.AuthorizationTrustConfig(public_key, key_id, hashlib.sha256(der_path.read_bytes()).hexdigest(), repository_root)
     return provenance.assemble_owner_authorization_envelope(record, signature_path.read_bytes(), key_id), trust
 
 
@@ -180,7 +180,7 @@ class DurableActivationIntegrationTests(unittest.TestCase):
         allowlist_path.chmod(0o600)
         allowlist = provenance.AuthorizationRevisionAllowlist(identity.producer_workflow, (identity.producer_revision,), identity.signer_workflow, (identity.signer_revision,))
         delivery_record = provenance.prepare_owner_authorization_record(identity, authorization_id="integration-delivery", issued_at=_stamp(now - timedelta(minutes=4)), expires_at=_stamp(now + timedelta(hours=23, minutes=56)), signing_key_id="integration-key", verification_context_sha256=context_digest, delivery_destination=str(publication), verification_completed_at=context["verificationCompletedAt"])
-        delivery_envelope, trust = _sign_record(custody, delivery_record, "integration-key")
+        delivery_envelope, trust = _sign_record(custody, delivery_record, "integration-key", repository_root=checkout)
         delivery_journal = provenance.AuthorizationReplayJournal(delivery_journal_root, repository_root=checkout)
         bundle = custody / "attestation-bundle.json"
         bundle.write_text("{\"integration\":true}\n", encoding="utf-8")
@@ -216,7 +216,7 @@ class DurableActivationIntegrationTests(unittest.TestCase):
         binding = activation.activation_binding(operation_id=operation_id, retry_key=fixture.get("forward_retry_key", retry_key) if recovery_kind else retry_key, candidate_release=fixture["identity_digest"], preparation_metadata_sha256=fixture["metadata_digest"], incumbent_release=fixture.get("incumbent_release"), previous_known_good_release=fixture.get("previous_known_good_release", retention.LEGACY_BASELINE_ID), rollback_target=rollback_target, expected_pointer_generation=generation, destination=str(fixture["prepared"]), recovery_kind=recovery_kind, authorization_retry_key=retry_key)
         now = datetime.now(timezone.utc).replace(microsecond=0)
         record = provenance.prepare_owner_authorization_record(identity, authorization_id=retry_key, issued_at=_stamp(now - timedelta(minutes=1)), expires_at=_stamp(now + timedelta(hours=23, minutes=59)), signing_key_id="integration-key", scope=scope, recovery_context=("integration-recovery" if recovery_kind else None), verification_context_sha256=activation.activation_binding_digest(binding))
-        envelope, _ = _sign_record(fixture["custody"], record, "integration-key")
+        envelope, _ = _sign_record(fixture["custody"], record, "integration-key", repository_root=fixture["checkout"])
         verified = provenance.verify_signed_authorization_record(envelope, fixture["trust"], identity, fixture["allowlist"], now=now)
         return envelope, verified
 
