@@ -703,7 +703,8 @@ class RetentionStore:
             current_phase = operation.get("phase", "started")
             order = {"started": 0, "admission-approved": 1, "legacy-published": 2, "legacy-registered": 3, "candidate-extracted": 4, "candidate-published": 5, "completed": 6, "recovery-required": 99}
             _require(current_phase == "recovery-required" or phase == "recovery-required" or order[phase] >= order[current_phase], "retention operation phase cannot move backward")
-            operation.update({"phase": phase, "metadata_sha256": metadata_sha256})
+            preserved_metadata_sha256 = operation.get("metadata_sha256") if metadata_sha256 is None else metadata_sha256
+            operation.update({"phase": phase, "metadata_sha256": preserved_metadata_sha256})
             record = state["releases"][operation["release_sha256"]]
             if phase == "completed":
                 record["roles"] = [role for role in record["roles"] if role not in {"in-flight", "recovery-protected"}]

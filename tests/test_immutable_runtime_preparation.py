@@ -5,8 +5,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import shutil
-import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -168,33 +166,6 @@ class ImmutableRuntimePreparationTests(unittest.TestCase):
         self.assertEqual(len(assessment.filesystems), 1)
         self.assertEqual(assessment.required_bytes, 700)
         self.assertEqual(assessment.required_inodes, 9)
-
-    @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_PREPARATION_DOCKER") == "1", "mandatory disposable Linux/Docker legacy fixture")
-    def test_preserved_legacy_fixture_is_read_only_consumable_after_source_unavailable(self) -> None:
-        source, _ = self.source_evidence()
-        if not self.symlink_fixture_available:
-            self.skipTest("runtime symlink fixture requires Linux or Windows symlink privilege")
-        target = self.destination / "legacy-runtime-baseline"
-        prep._copy_legacy_runtime(source, target, self.repo, durable=True, verify_docker=False)
-        shutil.rmtree(self.sources)
-        image = os.environ.get("RUNTIME_ARTIFACT_IMAGE", "node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5")
-        volume = f"clashcookies-prep-fixture-{os.getpid()}"
-        subprocess.run(["docker", "volume", "create", volume], capture_output=True, text=True, timeout=30, check=True)
-        try:
-            seed = subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64", "-v", f"{target / 'node_modules'}:/src:ro", "-v", f"{volume}:/dst", image, "bash", "-euo", "pipefail", "-c", "cp -a /src/. /dst/"], capture_output=True, text=True, timeout=60, check=False)
-            self.assertEqual(seed.returncode, 0, seed.stderr)
-            mounts = [
-                "-v", f"{target / 'dist'}:/runtime/dist:ro",
-                "-v", f"{target / 'prisma'}:/runtime/prisma:ro",
-                "-v", f"{target / 'package.json'}:/runtime/package.json:ro",
-                "-v", f"{target / 'yarn.lock'}:/runtime/yarn.lock:ro",
-                "-v", f"{target / 'startup' / 'container-start.sh'}:/runtime/startup/container-start.sh:ro",
-                "-v", f"{volume}:/runtime/node_modules:ro",
-            ]
-            result = subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64", *mounts, image, "bash", "-euo", "pipefail", "-c", "test -f /runtime/dist/ClashCookies.js && test -x /runtime/startup/container-start.sh && test -f /runtime/node_modules/.prisma/client/index.js && test -f /runtime/node_modules/.bin/prisma && test -f /runtime/prisma/migrations/0001/migration.sql && ! touch /runtime/dist/.write-probe && ! touch /runtime/node_modules/.write-probe && ! touch /runtime/prisma/.write-probe"], capture_output=True, text=True, timeout=30, check=False)
-            self.assertEqual(result.returncode, 0, result.stderr)
-        finally:
-            subprocess.run(["docker", "volume", "rm", "-f", volume], capture_output=True, text=True, timeout=30, check=False)
 
     def test_development_identity_is_rejected_at_operational_boundary(self) -> None:
         publication = self.root / "publication"

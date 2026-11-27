@@ -39,6 +39,13 @@ delivery = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = delivery
 SPEC.loader.exec_module(delivery)
 
+PREP_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "immutable_runtime_preparation.py"
+PREP_SPEC = importlib.util.spec_from_file_location("immutable_runtime_preparation_integration", PREP_SCRIPT)
+assert PREP_SPEC and PREP_SPEC.loader
+preparation = importlib.util.module_from_spec(PREP_SPEC)
+sys.modules[PREP_SPEC.name] = preparation
+PREP_SPEC.loader.exec_module(preparation)
+
 def development_identity() -> object:
     return delivery.DevelopmentDeliveryIdentity(
         repository="tonykslee/ClashCookies",
@@ -1598,6 +1605,115 @@ delivery.publish_synthetic_authorized_delivery_for_test(
                 self.assertEqual(set(retained_record["evidence"]), {"artifact-service.zip", "attestation-bundle.json", "authorization-envelope.json", "independent-verification-context.json", "verification-expectation.json", "verification-receipt.json", "trusted-root.jsonl"})
                 self.assertEqual(retained_record["roles"], ["pending", "reserved"])
                 delivery.provenance.AuthorizationReplayJournal(journal, repository_root=checkout).assert_reserved(envelope, candidate_identity, candidate_allowlist, candidate_trust, operation="forward-release")
+
+                # Full preparation integration: reuse this real retained
+                # candidate, signed reservation, hardened validator, and only
+                # the explicitly isolated verifier seam above.
+                self.assertIsNotNone(shutil.which("docker"), "preparation integration requires Docker")
+                image = candidate_identity.image
+                subprocess.run(["docker", "image", "inspect", image], check=True, capture_output=True)
+                legacy_app = root / "legacy-parent-checkout"
+                legacy_app.mkdir(mode=0o700)
+                legacy_extract = root / "legacy-candidate-extract"
+                legacy_extract.mkdir(mode=0o700)
+                delivery.provenance.validate_candidate_archive_contents(service_zip, candidate_identity, candidate_run_metadata(candidate_identity), workspace=legacy_extract)
+                extracted_runtime = legacy_extract / "extracted-runtime"
+                shutil.copytree(extracted_runtime / "prisma", legacy_app / "prisma")
+                shutil.copy2(extracted_runtime / "package.json", legacy_app / "package.json")
+                shutil.copy2(extracted_runtime / "yarn.lock", legacy_app / "yarn.lock")
+                startup_destination = legacy_app / "ops" / "deploy" / "container-start.sh"
+                startup_destination.parent.mkdir(parents=True)
+                shutil.copy2(checkout / "ops" / "deploy" / "container-start.sh", startup_destination)
+                package = json.loads((legacy_app / "package.json").read_text(encoding="utf-8"))
+                package.setdefault("scripts", {})["start:runtime"] = "sleep 300"
+                (legacy_app / "package.json").write_bytes(delivery.provenance._canonical_json(package) + b"\n")
+                subprocess.run(["git", "-C", str(legacy_app), "init", "--quiet"], check=True, capture_output=True)
+                subprocess.run(["git", "-C", str(legacy_app), "config", "user.email", "fixture@example.invalid"], check=True)
+                subprocess.run(["git", "-C", str(legacy_app), "config", "user.name", "fixture"], check=True)
+                subprocess.run(["git", "-C", str(legacy_app), "add", "."], check=True)
+                subprocess.run(["git", "-C", str(legacy_app), "commit", "--quiet", "-m", "fixture"], check=True, capture_output=True)
+                legacy_revision = subprocess.run(["git", "-C", str(legacy_app), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+                dist_volume = f"clashcookies-preparation-dist-{os.getpid()}"
+                node_volume = f"clashcookies-preparation-node-{os.getpid()}"
+                container_name = f"clashcookies-preparation-legacy-{os.getpid()}"
+                for volume in (dist_volume, node_volume):
+                    subprocess.run(["docker", "volume", "create", volume], check=True, capture_output=True)
+                subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64", "-v", f"{extracted_runtime / 'dist'}:/src:ro", "-v", f"{dist_volume}:/dst", image, "bash", "-euo", "pipefail", "-c", "cp -a /src/. /dst/"], check=True, capture_output=True)
+                subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64", "-v", f"{extracted_runtime / 'node_modules'}:/src:ro", "-v", f"{node_volume}:/dst", image, "bash", "-euo", "pipefail", "-c", "cp -a /src/. /dst/"], check=True, capture_output=True)
+                marker = f"revision={legacy_revision}\n"
+                for volume in (dist_volume, node_volume):
+                    subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64", "-v", f"{volume}:/dst", image, "bash", "-euo", "pipefail", "-c", f"printf '%s' {shlex.quote(marker)} > /dst/.clashcookies-artifact"], check=True, capture_output=True)
+                dist_mountpoint = Path(subprocess.run(["docker", "volume", "inspect", "--format", "{{.Mountpoint}}", dist_volume], check=True, capture_output=True, text=True).stdout.strip())
+                node_mountpoint = Path(subprocess.run(["docker", "volume", "inspect", "--format", "{{.Mountpoint}}", node_volume], check=True, capture_output=True, text=True).stdout.strip())
+                container_id = subprocess.run(["docker", "run", "--detach", "--name", container_name, "--platform", "linux/amd64", "--network", "none", "--env", f"BUILD_SHA={legacy_revision}", "--env", "CLASHCOOKIES_PREBUILT=1", "--workdir", "/app", "--volume", f"{legacy_app}:/app", "--volume", f"{dist_volume}:/app/dist", "--volume", f"{node_volume}:/app/node_modules", image, "bash", "./ops/deploy/container-start.sh"], check=True, capture_output=True, text=True).stdout.strip()
+                source_path = root / "legacy-source.json"
+                legacy_source = {"contract": preparation.LEGACY_SOURCE_CONTRACT, "version": preparation.LEGACY_SOURCE_VERSION, "container_id": container_id, "checkout_path": str(legacy_app), "checkout_revision": legacy_revision, "runtime_revision": legacy_revision, "image": image, "image_digest": candidate_identity.image_digest, "platform": candidate_identity.platform, "startup": {"entrypoint": "ops/deploy/container-start.sh", "prebuilt": True, "migrations": "deferred"}, "components": {"dist": str(dist_mountpoint), "node_modules": str(node_mountpoint), "prisma": str(legacy_app / "prisma"), "package.json": str(legacy_app / "package.json"), "yarn.lock": str(legacy_app / "yarn.lock"), "ops/deploy/container-start.sh": str(startup_destination)}, "mount_destinations": {"dist": {"type": "volume", "name": dist_volume, "source": str(dist_mountpoint), "destination": "/app/dist"}, "node_modules": {"type": "volume", "name": node_volume, "source": str(node_mountpoint), "destination": "/app/node_modules"}, "prisma": {"type": "bind", "source": str(legacy_app / "prisma"), "destination": "/app"}, "package.json": {"type": "bind", "source": str(legacy_app / "package.json"), "destination": "/app"}, "yarn.lock": {"type": "bind", "source": str(legacy_app / "yarn.lock"), "destination": "/app"}, "ops/deploy/container-start.sh": {"type": "bind", "source": str(startup_destination), "destination": "/app"}}}
+                source_path.write_bytes(delivery.provenance._canonical_json(legacy_source) + b"\n")
+                source_path.chmod(0o600)
+                prepared_root = root / "prepared-runtime"
+                prepared_root.mkdir(mode=0o700)
+                deployment_lock = root / "fb027-deploy.lock.flock"
+                prepare_kwargs = {
+                    "publication_root": publication,
+                    "prepared_root": prepared_root,
+                    "repository_root": checkout,
+                    "identity_sha256": normal.identity_sha256,
+                    "identity_file": identity_path,
+                    "authorization_policy": policy_path,
+                    "trusted_root": trusted_root,
+                    "trusted_root_version": hashlib.sha256(trusted_root.read_bytes()).hexdigest()[:16],
+                    "legacy_source": source_path,
+                    "deployment_lock_file": deployment_lock,
+                    "database_headroom_bytes": 1024 * 1024,
+                    "host_headroom_bytes": 1024 * 1024,
+                    "require_durable": True,
+                }
+                with patch.dict(os.environ, {"CC_RECEIVER_AUTHORIZATION_POLICY": str(policy_path), "CC_SYNTHETIC_VERIFIER_OUTPUT": str(verifier_output), "GH_ATTESTATION_CLI": str(gh_wrapper), "DEPLOY_LOCK_FILE": str(deployment_lock)}, clear=False):
+                    prep_args = root / "prepare-subprocess-args.json"
+                    prep_args.write_bytes(delivery.provenance._canonical_json({key: str(value) if isinstance(value, Path) else value for key, value in prepare_kwargs.items()}) + b"\n")
+                    prep_child = """
+import importlib.util, json, os, signal, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+spec = importlib.util.spec_from_file_location('immutable_runtime_preparation_subprocess', Path(sys.argv[1]) / 'immutable_runtime_preparation.py')
+assert spec and spec.loader
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+args = json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))
+for key in ('publication_root', 'prepared_root', 'repository_root', 'identity_file', 'authorization_policy', 'trusted_root', 'legacy_source', 'deployment_lock_file'):
+    args[key] = Path(args[key])
+original_fsync = module._fsync_tree
+def interrupted_fsync(path, *, required):
+    if path.name == 'extracted-runtime':
+        os.kill(os.getpid(), signal.SIGKILL)
+    return original_fsync(path, required=required)
+module._fsync_tree = interrupted_fsync
+module.prepare_immutable_runtime(**args)
+"""
+                    interrupted_process = subprocess.run([sys.executable, "-c", prep_child, str(ROOT / "scripts"), str(prep_args)], check=False)
+                    self.assertEqual(interrupted_process.returncode, -signal.SIGKILL)
+                    self.assertTrue(any(path.name.startswith(".prepare-") for path in prepared_root.iterdir()))
+                    prepared = preparation.prepare_immutable_runtime(**prepare_kwargs)
+                    self.assertEqual(prepared["status"], "prepared-not-activated")
+                    candidate_runtime = prepared_root / f"candidate-{normal.identity_sha256}" / "runtime"
+                    self.assertTrue(candidate_runtime.is_dir())
+                    state_after_prepare = store.load()
+                    self.assertEqual(state_after_prepare["active_release"], None)
+                    self.assertEqual(state_after_prepare["previous_known_good_release"], delivery.retention.LEGACY_BASELINE_ID)
+                    self.assertIn("prepared", state_after_prepare["releases"][normal.identity_sha256]["roles"])
+                    delivery.provenance.AuthorizationReplayJournal(journal, repository_root=checkout).assert_reserved(envelope, candidate_identity, candidate_allowlist, candidate_trust, operation="forward-release")
+                    retry = preparation.prepare_immutable_runtime(**prepare_kwargs)
+                    self.assertEqual(retry["status"], "prepared-not-activated")
+                    probe = subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64", "--volume", f"{candidate_runtime}:/runtime:ro", image, "bash", "-euo", "pipefail", "-c", "cd /runtime && test -x node_modules/.bin/prisma && node_modules/.bin/prisma --version"], check=False, capture_output=True, text=True, timeout=60)
+                    self.assertEqual(probe.returncode, 0, probe.stderr)
+                subprocess.run(["docker", "rm", "--force", container_name], check=False, capture_output=True)
+                shutil.rmtree(legacy_app)
+                subprocess.run(["docker", "volume", "rm", "-f", dist_volume, node_volume], check=False, capture_output=True)
+                legacy_runtime = prepared_root / "legacy-runtime-baseline"
+                legacy_probe = subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64", "--network", "none", "--env", f"BUILD_SHA={legacy_revision}", "--env", "CLASHCOOKIES_PREBUILT=1", "--workdir", "/app", "--volume", f"{legacy_runtime}:/app:ro", image, "bash", "-euo", "pipefail", "-c", "bash ./ops/deploy/container-start.sh & pid=$!; sleep 2; kill $pid; wait $pid || test $? -eq 143"], check=False, capture_output=True, text=True, timeout=30)
+                self.assertEqual(legacy_probe.returncode, 0, legacy_probe.stderr)
+                self.assertIn("action=skip-build", legacy_probe.stdout)
 
                 lost_root = root / "lost-ack-custody"
                 lost_receiving = lost_root / "receiving"
