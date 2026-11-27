@@ -609,7 +609,7 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             tx.consume("integration-delivery-gate", envelope)
             operation = tx.store.load()["activation_operations"]["integration-delivery-gate"]
             authority = tx._consumed_authority(operation, recovery=False)
-            with self.assertRaises(activation.ActivationError):
+            with self.assertRaises(retention.RetentionError):
                 tx.store.transition_activation("integration-delivery-gate", phase="incumbent-stop-intent", expected_phase="authorization-consumed", authority=authority)
             identity = fixture["identity"]
             self.assertEqual(fixture["delivery_journal"].inspect(fixture["delivery_envelope"], identity, fixture["allowlist"], fixture["trust"], operation="forward-release")["state"], "reserved")

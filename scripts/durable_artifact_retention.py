@@ -396,7 +396,8 @@ def _validate_state(state: Any) -> dict[str, Any]:
             unresolved_activation_count += 1
         if operation["phase"] in ACTIVATION_OBSERVED_PHASES:
             observation = operation["observations"].get(operation["phase"])
-            _require(isinstance(observation, dict) and observation.get("contract") == "clashcookies.activation-observation" and observation.get("version") == 1 and isinstance(observation.get("subject"), str) and isinstance(observation.get("subject_release"), (str, type(None))), "activation observed outcome evidence is missing")
+            observation_fields = {"contract", "version", "source", "phase", "outcome", "operation_id", "candidate_release", "runtime_identity_sha256", "subject", "subject_release", "details"}
+            _require(isinstance(observation, dict) and observation_fields.issubset(observation) and observation.get("contract") == "clashcookies.activation-observation" and observation.get("version") == 1 and observation.get("source") == "isolated-test-harness" and isinstance(observation.get("subject"), str) and isinstance(observation.get("subject_release"), (str, type(None))), "activation observed outcome evidence is missing")
             expected_subject = {"incumbent-stop-observed": "incumbent", "candidate-start-observed": "candidate", "candidate-health-verified": "candidate", "rollback-observed": "rollback-target"}[operation["phase"]]
             expected_release = operation["candidate_release"] if expected_subject == "candidate" else (operation["incumbent_release"] or LEGACY_BASELINE_ID if expected_subject == "incumbent" else operation["rollback_target"])
             _require(observation["phase"] == operation["phase"] and observation["operation_id"] == operation_id and observation["candidate_release"] == operation["candidate_release"] and observation["runtime_identity_sha256"] == operation["runtime_identity_sha256"], "activation observed outcome is not bound to the exact transaction")
@@ -1157,6 +1158,8 @@ class RetentionStore:
                             record = state["releases"][release_id]
                             if "recovery-protected" not in record["roles"]:
                                 record["roles"].append("recovery-protected")
+                elif current == "recovery-required":
+                    operation["intent"].pop("recovery_phase", None)
             self._save(state)
             return state["activation_operations"][operation_id]
         if assume_locked:
@@ -1256,6 +1259,7 @@ class RetentionStore:
             if operation["phase"] == "recovery-required" and operation["rollback_authorization_record_sha256"] is not None:
                 _require(operation["rollback_authorization_record_sha256"] == authorization_record_sha256 and operation["rollback_authorization_id"] == authorization_id and operation["rollback_retry_key"] == retry_key and operation["rollback_kind"] == rollback_kind and operation["rollback_expected_pointer_generation"] == state["pointer_generation"], "recovery resumption conflicts with the already-bound rollback authorization")
                 operation["phase"] = "compensation-authorization-consumption-pending"
+                operation["intent"].pop("recovery_phase", None)
                 operation["updated_at"] = _now()
                 self._save(state)
                 return operation
