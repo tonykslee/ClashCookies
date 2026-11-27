@@ -43,12 +43,17 @@ contract. A mutable tag is not an equivalent image identity.
 
 The source evidence contract is intentionally unauthenticated and separate
 from candidate provenance. It must describe the observed running container
-identity, exact checkout revision, digest-pinned image identity, platform,
-prebuilt startup/migration boundary, and a complete bounded component map:
+identity, exact checkout path and revision, digest-pinned image identity,
+platform, prebuilt startup/migration boundary, a Docker mount inventory, and a
+complete bounded component map:
 `dist`, `node_modules`, `prisma`, `package.json`, `yarn.lock`, and
 `startup/container-start.sh`. Components are read-only sources; credentials,
 environment files, database contents, and unrelated checkout paths are not
-accepted.
+accepted. Operational preparation correlates those claims with `git
+rev-parse`, `docker image inspect`, and `docker container inspect`; the
+container image ID, digest, platform, and every declared mount source and
+destination must agree. A caller cannot turn a synthetic component map into a
+legacy baseline.
 
 The source is measured before and after copying. Regular files are read through
 stable descriptors, entry types and relative symlinks are checked, and the
@@ -67,7 +72,9 @@ they do not infer a new source identity.
 
 ## Locking, admission, and recovery
 
-When a deployment lock file is supplied, the order is:
+The first capture requires the caller to supply FB-027's canonical deployment
+lock file; there is no guessed or optional lock for Docker/runtime discovery.
+The order is:
 
 `FB-027 deployment lock` → `activity_lock(publication-root)` → `authorization replay journal`.
 
@@ -81,12 +88,18 @@ material, publication metadata, inode reserves, overlapping filesystems, and
 the existing retention/host/database reserves. Failure leaves protected
 evidence and the running application untouched.
 
-The stable operation id is `prepare-<identity-sha256>`. Repeated identical
-preparation reuses verified material. A process interruption before extraction,
-after publication, during legacy capture, or during retention metadata
-publication leaves the operation/material protected and is reported as
-recovery-required; an ambiguous or partially published directory is never
-adopted or replaced automatically.
+The stable operation id is `prepare-<identity-sha256>`. Durable phases are
+`admission-approved`, `legacy-published`, `legacy-registered`,
+`candidate-extracted`, `candidate-published`, and `completed`; a failure moves
+the release to `recovery-required`. Completion adds a `prepared` retention
+role, so a prepared candidate remains protected from GC while its authorization
+reservation is still pending. Repeated identical preparation reuses verified
+material, revalidates the retained authenticated archive into a private retry
+workspace, and binds the result to the retained verification expectation. A
+process interruption before extraction, after publication, during legacy
+capture, or during retention metadata publication leaves the operation/material
+protected; an ambiguous or partially published directory is never adopted or
+replaced automatically.
 
 ## Handoff to FB-028B-3d
 
@@ -100,12 +113,14 @@ preparation record is not production eligibility or activation readiness.
 
 ## Evidence classification
 
-The Python regression suite exercises bounded copy, source mutation, image and
-development-artifact rejection, no-overwrite baseline custody, integrity
-substitution, and shared-filesystem admission. Existing provenance, hardened
-archive, SSH delivery, and retention suites remain required. Windows results
-are development checks only; Linux directory-fsync, `renameat2`, Docker mount,
-native Prisma, and disposable PostgreSQL evidence must come from the applicable
-Linux CI workflow. No live VM, wrapper, production image store, credential,
-database, or WSL distribution was accessed or modified for this milestone.
+The Python regression suite exercises bounded streaming copy, source mutation,
+image and development-artifact rejection, no-overwrite baseline custody,
+integrity substitution, phase-bearing retention custody, shared-filesystem
+admission, and a disposable Linux/Docker restart fixture using bind mounts plus
+a named `node_modules` volume. Existing provenance, hardened archive, SSH
+delivery, and retention suites remain required. Windows results are development
+checks only; Linux directory-fsync, `renameat2`, Docker mount, native Prisma,
+and disposable PostgreSQL evidence must come from the applicable Linux CI
+workflow. No live VM, wrapper, production image store, credential, database,
+or WSL distribution was accessed or modified for this milestone.
 

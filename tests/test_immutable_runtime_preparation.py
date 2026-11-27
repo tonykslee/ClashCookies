@@ -58,11 +58,31 @@ class ImmutableRuntimePreparationTests(unittest.TestCase):
         (runtime / "dist" / "ClashCookies.js").write_text("compiled\n", encoding="utf-8")
         (runtime / "dist" / ".clashcookies-artifact").write_text(f"revision={source_sha}\n", encoding="ascii")
         (runtime / "node_modules" / ".clashcookies-artifact").write_text(f"revision={source_sha}\n", encoding="ascii")
-        (runtime / "node_modules" / "dependency.js").write_text("dependency\n", encoding="utf-8")
+        (runtime / "node_modules" / "@prisma" / "client").mkdir(parents=True)
+        (runtime / "node_modules" / ".prisma" / "client").mkdir(parents=True)
+        (runtime / "node_modules" / "prisma" / "build").mkdir(parents=True)
+        (runtime / "node_modules" / ".bin").mkdir()
+        (runtime / "node_modules" / "@prisma" / "client" / "default.js").write_text("module.exports = {};\n", encoding="utf-8")
+        (runtime / "node_modules" / ".prisma" / "client" / "index.js").write_text("module.exports = {};\n", encoding="utf-8")
+        native = runtime / "node_modules" / ".prisma" / "client" / "libquery_engine-debian-openssl-3.0.x.so.node"
+        native.write_bytes(b"native-engine")
+        (runtime / "node_modules" / "prisma" / "build" / "index.js").write_text("#!/usr/bin/env node\n", encoding="utf-8")
+        (runtime / "node_modules" / "prisma" / "build" / "index.js").chmod(0o755)
+        try:
+            (runtime / "node_modules" / ".bin" / "prisma").symlink_to("../prisma/build/index.js")
+            self.symlink_fixture_available = True
+        except OSError:
+            # Windows developer workstations commonly lack SeCreateSymbolicLinkPrivilege;
+            # the production Linux contract still requires and verifies this symlink.
+            (runtime / "node_modules" / ".bin" / "prisma").write_text("symlink unavailable\n", encoding="utf-8")
+            self.symlink_fixture_available = False
         (runtime / "prisma" / "schema.prisma").write_text("datasource db { provider = \"postgresql\" url = env(\"DATABASE_URL\") }\n", encoding="utf-8")
-        (runtime / "package.json").write_text("{}\n", encoding="utf-8")
+        (runtime / "prisma" / "migrations" / "0001").mkdir(parents=True)
+        (runtime / "prisma" / "migrations" / "0001" / "migration.sql").write_text("-- fixture\n", encoding="utf-8")
+        (runtime / "package.json").write_text(json.dumps({"scripts": {"start:runtime": "prisma migrate deploy && node dist/ClashCookies.js"}}) + "\n", encoding="utf-8")
         (runtime / "yarn.lock").write_text("# lock\n", encoding="utf-8")
         (runtime / "startup" / "container-start.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        (runtime / "startup" / "container-start.sh").chmod(0o755)
         components = {name: runtime / name for name in ("dist", "node_modules", "prisma", "package.json", "yarn.lock")}
         components["startup/container-start.sh"] = runtime / "startup" / "container-start.sh"
         source: dict[str, object] = {
@@ -81,21 +101,25 @@ class ImmutableRuntimePreparationTests(unittest.TestCase):
 
     def test_legacy_capture_preserves_complete_runtime_and_is_identity_bound(self) -> None:
         source, _ = self.source_evidence()
+        if not self.symlink_fixture_available:
+            self.skipTest("runtime symlink fixture requires Linux or Windows symlink privilege")
         target = self.destination / "legacy-runtime-baseline"
-        integrity = prep._copy_legacy_runtime(source, target, self.repo, durable=False)
+        integrity = prep._copy_legacy_runtime(source, target, self.repo, durable=False, verify_docker=False)
         self.assertEqual(prep._integrity(target, maximum_bytes=prep.MAX_LEGACY_BYTES, maximum_entries=prep.MAX_LEGACY_ENTRIES), integrity)
         self.assertEqual((target / "dist" / ".clashcookies-artifact").read_text(encoding="ascii").strip(), f"revision={'a' * 40}")
         self.assertTrue((target / "startup" / "container-start.sh").exists())
 
     def test_legacy_capture_rejects_source_mutation_during_copy(self) -> None:
         source, components = self.source_evidence()
+        if not self.symlink_fixture_available:
+            self.skipTest("runtime symlink fixture requires Linux or Windows symlink privilege")
         before = prep._mapped_integrity(components)
         changed = dict(before)
         changed["tree_sha256"] = "c" * 64
         target = self.destination / "legacy-runtime-baseline"
         with patch.object(prep, "_mapped_integrity", side_effect=[before, changed]):
             with self.assertRaisesRegex(prep.PreparationError, "changed"):
-                prep._copy_legacy_runtime(source, target, self.repo, durable=False)
+                prep._copy_legacy_runtime(source, target, self.repo, durable=False, verify_docker=False)
         self.assertFalse(target.exists())
 
     def test_legacy_capture_rejects_unpinned_or_incomplete_image_identity(self) -> None:
@@ -104,10 +128,18 @@ class ImmutableRuntimePreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(prep.PreparationError, "digest-pinned"):
             prep._legacy_components(source, self.repo)
 
-    def test_existing_legacy_baseline_is_not_overwritten(self) -> None:
+    def test_operational_legacy_capture_requires_correlated_docker_evidence(self) -> None:
         source, _ = self.source_evidence()
         target = self.destination / "legacy-runtime-baseline"
-        integrity = prep._copy_legacy_runtime(source, target, self.repo, durable=False)
+        with self.assertRaisesRegex(prep.PreparationError, "checkout path"):
+            prep._copy_legacy_runtime(source, target, self.repo, durable=False)
+
+    def test_existing_legacy_baseline_is_not_overwritten(self) -> None:
+        source, _ = self.source_evidence()
+        if not self.symlink_fixture_available:
+            self.skipTest("runtime symlink fixture requires Linux or Windows symlink privilege")
+        target = self.destination / "legacy-runtime-baseline"
+        integrity = prep._copy_legacy_runtime(source, target, self.repo, durable=False, verify_docker=False)
         record = {"contract": "clashcookies.legacy-runtime-baseline", "version": 1, "id": retention.LEGACY_BASELINE_ID, "authenticated": False, "protected": True, "status": "preserved-verified", "runtime_path": str(target), "integrity": integrity, "identity": {"container_id": source["container_id"], "checkout_revision": source["checkout_revision"], "image": source["image"], "image_digest": source["image_digest"], "platform": source["platform"], "startup": source["startup"]}}
         publication = self.root / "publication"
         publication.mkdir(mode=0o700)
@@ -121,6 +153,8 @@ class ImmutableRuntimePreparationTests(unittest.TestCase):
     def test_runtime_integrity_detects_mode_and_symlink_substitution(self) -> None:
         runtime = self.destination / "runtime"
         runtime.mkdir()
+        if os.name == "posix":
+            runtime.chmod(0o700)
         (runtime / "file").write_text("data", encoding="utf-8")
         initial = prep._integrity(runtime)
         if os.name == "posix":
@@ -138,12 +172,29 @@ class ImmutableRuntimePreparationTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_PREPARATION_DOCKER") == "1", "mandatory disposable Linux/Docker legacy fixture")
     def test_preserved_legacy_fixture_is_read_only_consumable_after_source_unavailable(self) -> None:
         source, _ = self.source_evidence()
+        if not self.symlink_fixture_available:
+            self.skipTest("runtime symlink fixture requires Linux or Windows symlink privilege")
         target = self.destination / "legacy-runtime-baseline"
-        prep._copy_legacy_runtime(source, target, self.repo, durable=True)
+        prep._copy_legacy_runtime(source, target, self.repo, durable=True, verify_docker=False)
         shutil.rmtree(self.sources)
         image = os.environ.get("RUNTIME_ARTIFACT_IMAGE", "node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5")
-        result = subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64", "-v", f"{target}:/runtime:ro", image, "bash", "-euo", "pipefail", "-c", "test -f /runtime/dist/ClashCookies.js && test -f /runtime/startup/container-start.sh && ! touch /runtime/.write-probe"], capture_output=True, text=True, timeout=30, check=False)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        volume = f"clashcookies-prep-fixture-{os.getpid()}"
+        subprocess.run(["docker", "volume", "create", volume], capture_output=True, text=True, timeout=30, check=True)
+        try:
+            seed = subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64", "-v", f"{target / 'node_modules'}:/src:ro", "-v", f"{volume}:/dst", image, "bash", "-euo", "pipefail", "-c", "cp -a /src/. /dst/"], capture_output=True, text=True, timeout=60, check=False)
+            self.assertEqual(seed.returncode, 0, seed.stderr)
+            mounts = [
+                "-v", f"{target / 'dist'}:/runtime/dist:ro",
+                "-v", f"{target / 'prisma'}:/runtime/prisma:ro",
+                "-v", f"{target / 'package.json'}:/runtime/package.json:ro",
+                "-v", f"{target / 'yarn.lock'}:/runtime/yarn.lock:ro",
+                "-v", f"{target / 'startup' / 'container-start.sh'}:/runtime/startup/container-start.sh:ro",
+                "-v", f"{volume}:/runtime/node_modules:ro",
+            ]
+            result = subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64", *mounts, image, "bash", "-euo", "pipefail", "-c", "test -f /runtime/dist/ClashCookies.js && test -x /runtime/startup/container-start.sh && test -f /runtime/node_modules/.prisma/client/index.js && test -f /runtime/node_modules/.bin/prisma && test -f /runtime/prisma/migrations/0001/migration.sql && ! touch /runtime/dist/.write-probe && ! touch /runtime/node_modules/.write-probe && ! touch /runtime/prisma/.write-probe"], capture_output=True, text=True, timeout=30, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        finally:
+            subprocess.run(["docker", "volume", "rm", "-f", volume], capture_output=True, text=True, timeout=30, check=False)
 
     def test_development_identity_is_rejected_at_operational_boundary(self) -> None:
         publication = self.root / "publication"

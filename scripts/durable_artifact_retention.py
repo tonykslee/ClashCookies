@@ -272,7 +272,7 @@ def _validate_state(state: Any) -> dict[str, Any]:
         name = record["publication_name"]
         _require(isinstance(name, str) and name == f"release-{key}", "retention publication ownership is malformed")
         roles = record["roles"]
-        _require(isinstance(roles, list) and all(role in {"pending", "reserved", "in-flight", "recovery-protected", "retired"} for role in roles) and len(set(roles)) == len(roles), "retention release roles are malformed")
+        _require(isinstance(roles, list) and all(role in {"pending", "reserved", "in-flight", "prepared", "recovery-protected", "retired"} for role in roles) and len(set(roles)) == len(roles), "retention release roles are malformed")
         _timestamp(record["created_at"], "retention release created_at")
         _timestamp(record["retired_at"], "retention release retired_at", allow_none=True)
         if "retired" in roles:
@@ -291,11 +291,21 @@ def _validate_state(state: Any) -> dict[str, Any]:
         _require(reconciliation["recovery"] in {None, "recovered", "abandoned", "not-applicable"}, "retention recovery reconciliation is malformed")
     for operation_id, operation in state["operations"].items():
         _require(isinstance(operation_id, str) and 0 < len(operation_id) <= 128 and isinstance(operation, dict), "retention in-flight operation is malformed")
-        _require(set(operation) == {"release_sha256", "kind", "started_at"}, "retention in-flight operation has unexpected fields")
+        _require(set(operation) in ({"release_sha256", "kind", "started_at"}, {"release_sha256", "kind", "started_at", "phase", "metadata_sha256"}), "retention operation has unexpected fields")
         _require(operation["release_sha256"] in state["releases"], "retention operation references an unknown release")
         _require(isinstance(operation["kind"], str) and operation["kind"] != "", "retention operation kind is malformed")
         _timestamp(operation["started_at"], "retention operation started_at")
-        _require("in-flight" in state["releases"][operation["release_sha256"]]["roles"], "retention operation is not represented by an in-flight release role")
+        phase = operation.get("phase", "started")
+        _require(phase in {"started", "admission-approved", "legacy-published", "legacy-registered", "candidate-extracted", "candidate-published", "completed", "recovery-required"}, "retention operation phase is malformed")
+        if "metadata_sha256" in operation:
+            _require(operation["metadata_sha256"] is None or provenance.SHA256_RE.fullmatch(str(operation["metadata_sha256"])) is not None, "retention operation metadata digest is malformed")
+        roles = state["releases"][operation["release_sha256"]]["roles"]
+        if phase == "completed":
+            _require("prepared" in roles and "in-flight" not in roles, "completed preparation is not represented by a prepared release role")
+        else:
+            _require("in-flight" in roles, "retention operation is not represented by an in-flight release role")
+        if phase == "recovery-required":
+            _require("recovery-protected" in roles, "recovery-required operation is not recovery protected")
     for transaction_id, transaction in state["gc_transactions"].items():
         _require(isinstance(transaction_id, str) and transaction_id in state["releases"], "retention GC transaction identity is malformed")
         _require(isinstance(transaction, dict) and set(transaction) == {"release_sha256", "publication_name", "owner", "phase", "started_at"}, "retention GC transaction is malformed")
@@ -636,14 +646,14 @@ class RetentionStore:
                 return
             _require(existing["identity"] == identity and existing["evidence"] == evidence, "retention retry has conflicting release or evidence metadata")
             _require("retired" not in existing["roles"], "retired release cannot be silently reactivated")
-            _require(existing["roles"] == roles, "retention retry has conflicting authorization custody state")
+            _require(set(existing["roles"]) <= set(roles) | {"prepared", "in-flight", "recovery-protected"}, "retention retry has conflicting authorization custody state")
         if assume_locked:
             apply()
         else:
             with activity_lock(self.root):
                 apply()
 
-    def mark_operation(self, operation_id: str, identity_sha256: str, *, kind: str, recovery_required: bool = False, assume_locked: bool = False) -> None:
+    def mark_operation(self, operation_id: str, identity_sha256: str, *, kind: str, phase: str | None = None, metadata_sha256: str | None = None, recovery_required: bool = False, assume_locked: bool = False) -> None:
         _require(0 < len(operation_id) <= 128 and isinstance(kind, str) and kind != "", "retention operation reference is invalid")
         def apply() -> None:
             state = self.load()
@@ -651,8 +661,13 @@ class RetentionStore:
             existing = state["operations"].get(operation_id)
             if existing is not None:
                 _require(existing["release_sha256"] == identity_sha256 and existing["kind"] == kind, "retention operation already exists with conflicting ownership")
+                if existing.get("phase") == "completed":
+                    _require(phase in {None, "admission-approved", "completed"}, "completed retention operation cannot be restarted")
+                    return
                 record = state["releases"][identity_sha256]
                 changed = False
+                if phase is not None:
+                    _require(existing.get("phase", "started") == phase or existing.get("phase") is None or existing.get("phase") == "recovery-required", "retention operation phase cannot move backward")
                 if "in-flight" not in record["roles"]:
                     record["roles"].append("in-flight")
                     changed = True
@@ -662,7 +677,11 @@ class RetentionStore:
                 if changed:
                     self._save(state)
                 return
-            state["operations"][operation_id] = {"release_sha256": identity_sha256, "kind": kind, "started_at": _now()}
+            operation = {"release_sha256": identity_sha256, "kind": kind, "started_at": _now()}
+            if phase is not None:
+                _require(phase != "completed", "a new retention operation cannot start completed")
+                operation.update({"phase": phase, "metadata_sha256": metadata_sha256})
+            state["operations"][operation_id] = operation
             record = state["releases"][identity_sha256]
             if "in-flight" not in record["roles"]:
                 record["roles"].append("in-flight")
@@ -675,14 +694,43 @@ class RetentionStore:
             with activity_lock(self.root):
                 apply()
 
+    def update_operation(self, operation_id: str, *, phase: str, metadata_sha256: str | None = None, assume_locked: bool = False) -> None:
+        """Advance a preparation phase while retaining durable custody protection."""
+        _require(phase in {"started", "admission-approved", "legacy-published", "legacy-registered", "candidate-extracted", "candidate-published", "completed", "recovery-required"}, "retention operation phase is invalid")
+        _require(metadata_sha256 is None or provenance.SHA256_RE.fullmatch(metadata_sha256) is not None, "retention operation metadata digest is invalid")
+        def apply() -> None:
+            state = self.load()
+            operation = state["operations"].get(operation_id)
+            _require(operation is not None, "retention operation is unknown")
+            current_phase = operation.get("phase", "started")
+            order = {"started": 0, "admission-approved": 1, "legacy-published": 2, "legacy-registered": 3, "candidate-extracted": 4, "candidate-published": 5, "completed": 6, "recovery-required": 99}
+            _require(current_phase == "recovery-required" or phase == "recovery-required" or order[phase] >= order[current_phase], "retention operation phase cannot move backward")
+            operation.update({"phase": phase, "metadata_sha256": metadata_sha256})
+            record = state["releases"][operation["release_sha256"]]
+            if phase == "completed":
+                record["roles"] = [role for role in record["roles"] if role not in {"in-flight", "recovery-protected"}]
+                if "prepared" not in record["roles"]:
+                    record["roles"].append("prepared")
+            else:
+                if "in-flight" not in record["roles"]:
+                    record["roles"].append("in-flight")
+                if phase == "recovery-required" and "recovery-protected" not in record["roles"]:
+                    record["roles"].append("recovery-protected")
+            self._save(state)
+        if assume_locked:
+            apply()
+        else:
+            with activity_lock(self.root):
+                apply()
+
     def retire(self, identity_sha256: str, *, assume_locked: bool = False) -> None:
         def apply() -> None:
             state = self.load()
             _require(identity_sha256 in state["releases"], "cannot retire unknown release")
             _require(state["active_release"] != identity_sha256 and state["previous_known_good_release"] != identity_sha256, "active or previous known-good release cannot be retired")
-            _require(all(operation["release_sha256"] != identity_sha256 for operation in state["operations"].values()), "in-flight release cannot be retired")
+            _require(all(operation["release_sha256"] != identity_sha256 or operation.get("phase", "started") == "completed" for operation in state["operations"].values()), "in-flight release cannot be retired")
             record = state["releases"][identity_sha256]
-            _require(not (set(record["roles"]) & {"pending", "reserved", "in-flight", "recovery-protected"}), "release protection requires actual authorization or recovery reconciliation before retirement")
+            _require(not (set(record["roles"]) & {"pending", "reserved", "in-flight", "prepared", "recovery-protected"}), "release protection requires actual authorization or recovery reconciliation before retirement")
             record["roles"] = ["retired"]
             record["retired_at"] = _now()
             self._save(state)
@@ -704,7 +752,7 @@ class RetentionStore:
             record = state["releases"].get(identity_sha256)
             _require(record is not None and "reserved" in record["roles"], "retained reservation changed during authorization consumption")
             record["roles"] = [role for role in record["roles"] if role not in {"pending", "reserved", "retired"}]
-            _require(set(record["roles"]) <= {"in-flight", "recovery-protected"}, "retained authorization has an unexpected lifecycle role")
+            _require(set(record["roles"]) <= {"in-flight", "prepared", "recovery-protected"}, "retained authorization has an unexpected lifecycle role")
             if "recovery-protected" not in record["roles"]:
                 record["roles"].append("recovery-protected")
             record["retired_at"] = None
