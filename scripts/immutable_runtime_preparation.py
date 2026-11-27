@@ -61,6 +61,16 @@ def _canonical(value: Any) -> bytes:
         _fail(f"preparation metadata is not canonical JSON: {error}")
 
 
+def _inventory_digest(rows: Iterable[dict[str, Any]]) -> str:
+    """Hash canonical inventory rows incrementally without an authorization-size buffer."""
+    digest = hashlib.sha256()
+    for row in rows:
+        raw = json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+        digest.update(len(raw).to_bytes(8, "big"))
+        digest.update(raw)
+    return digest.hexdigest()
+
+
 def _read_json(path: Path, maximum: int, label: str, *, newline: bool = False) -> Any:
     try:
         raw = provenance._read_bounded_bytes(path, maximum, label)
@@ -254,7 +264,7 @@ def _runtime_rows(root: Path, *, maximum_bytes: int, maximum_entries: int) -> tu
 
 def _integrity(root: Path, *, maximum_bytes: int = MAX_RUNTIME_BYTES, maximum_entries: int = MAX_RUNTIME_ENTRIES) -> dict[str, Any]:
     rows, total_bytes = _runtime_rows(root, maximum_bytes=maximum_bytes, maximum_entries=maximum_entries)
-    return {"tree_sha256": hashlib.sha256(_canonical(rows)).hexdigest(), "bytes": total_bytes, "entries": len(rows)}
+    return {"tree_sha256": _inventory_digest(rows), "bytes": total_bytes, "entries": len(rows)}
 
 
 def _validate_legacy_runtime_contents(root: Path, startup: dict[str, Any]) -> None:
@@ -458,7 +468,7 @@ def _mapped_integrity(components: dict[str, Path]) -> dict[str, Any]:
     rows = sorted(rows_by_path.values(), key=lambda item: item["path"])
     total_entries = len(rows)
     _require(total_entries <= MAX_LEGACY_ENTRIES, "legacy source exceeds bounded inventory limits")
-    return {"tree_sha256": hashlib.sha256(_canonical(rows)).hexdigest(), "bytes": total_bytes, "entries": total_entries}
+    return {"tree_sha256": _inventory_digest(rows), "bytes": total_bytes, "entries": total_entries}
 
 
 def _mapped_bounds(components: dict[str, Path]) -> dict[str, int]:
