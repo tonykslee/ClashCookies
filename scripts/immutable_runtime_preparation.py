@@ -1092,7 +1092,9 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
                     _cleanup_candidate_validation_inputs(stage, identity)
                 store.update_operation(operation_id, phase="candidate-extracted", assume_locked=True)
                 if recovered_metadata is None:
-                    _fsync_tree(stage / "extracted-runtime", required=durable)
+                    recovered_runtime = stage / "runtime"
+                    extracted_runtime = stage / "extracted-runtime"
+                    _fsync_tree(recovered_runtime if interrupted else extracted_runtime, required=durable)
                     metadata = {
                     "contract": PREPARATION_CONTRACT,
                     "version": PREPARATION_VERSION,
@@ -1103,8 +1105,9 @@ def prepare_immutable_runtime(*, publication_root: Path, prepared_root: Path, re
                     "recovery": {"state": "none", "protected": True},
                     "resource_measurements": {"candidate_archive_bytes": identity["archive_bytes"], "retained_evidence_bytes": retention.retained_bytes(publication_root), "image": image_observation, "legacy_image": legacy_image_observation, "docker_storage_root": str(docker_store_root), "database_headroom_bytes": database_headroom_bytes, "host_headroom_bytes": host_headroom_bytes, "source_bounds": source_estimate, "storage": {"status": assessment.status, "required_bytes": assessment.required_bytes, "required_inodes": assessment.required_inodes, "filesystems": list(assessment.filesystems)}},
                     }
-                    final_runtime = stage / "runtime"
-                    os.rename(stage / "extracted-runtime", final_runtime)
+                    final_runtime = recovered_runtime
+                    if not interrupted:
+                        os.rename(extracted_runtime, final_runtime)
                 else:
                     metadata = recovered_metadata
                     _require(metadata.get("legacy", {}).get("integrity") == legacy_integrity, "interrupted preparation legacy binding changed")
