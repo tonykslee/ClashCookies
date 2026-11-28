@@ -139,6 +139,7 @@ The repository also contains a non-production FB-028A/FB-028B off-host runtime a
 - [Command Access and Permissions](docs/permissions.md)
 - [Deployment and Install Links](docs/deployment.md)
 - [Observability](docs/observability.md)
+- [FB-028B-3d-2 immutable runtime lifecycle](docs/diagnostics/fb-028b-3d-2-immutable-runtime-lifecycle.md)
 
 ## Autorole Nickname Templates
 Autorole nickname sync can render Discord nicknames from linked Clash accounts during `/autorole refresh`. The recommended ClashPerk-style template is:

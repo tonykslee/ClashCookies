@@ -276,3 +276,16 @@ https://discord.com/oauth2/authorize?client_id=1474193888146358393&permissions=8
 
 Staging user install:
 https://discord.com/oauth2/authorize?client_id=1474193888146358393&permissions=8&integration_type=1&scope=bot+applications.commands
+
+### FB-028B-3d-2 immutable runtime lifecycle (not operationally enabled)
+
+The repository now has a separate `scripts/immutable_runtime_lifecycle.py`
+boundary for a future owner-authorized consumer. It uses exact retained and
+prepared identity, the pinned local `linux/amd64` image, read-only prepared
+runtime contents, direct compiled startup, bounded Docker operations, exact
+container/process/mount identity, and fresh identity-bound health. It does not
+alter the existing production/staging startup defaults or invoke the wrapper.
+Automatic restart is disabled; explicit committed-runtime restart is allowed
+only after revalidating the same immutable inputs. Production status remains
+`NO-GO` pending wrapper integration, live VM evidence, trust/authorization
+custody, migration policy, and controlled owner-approved release.

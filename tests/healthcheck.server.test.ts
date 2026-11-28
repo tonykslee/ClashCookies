@@ -108,4 +108,32 @@ describe("createHealthcheckHandler", () => {
       "{\"checks\":{\"database\":\"error\",\"discord\":\"ok\"},\"service\":\"clashcookies\",\"status\":\"error\",\"timestamp\":\"2026-04-01T00:00:00.000Z\"}\n"
     );
   });
+
+  it("adds exact lifecycle identity only when the binding environment is present", async () => {
+    vi.stubEnv("CLASHCOOKIES_RUNTIME_IDENTITY_SHA256", "a".repeat(64));
+    vi.stubEnv("CLASHCOOKIES_PREPARATION_METADATA_SHA256", "b".repeat(64));
+    vi.stubEnv("CLASHCOOKIES_ACTIVATION_OPERATION_ID", "operation-1");
+    vi.stubEnv("CLASHCOOKIES_HEALTH_PROVENANCE", "fixture");
+    try {
+      const response = {
+        end: vi.fn(),
+        headersSent: false,
+        setHeader: vi.fn(),
+        statusCode: 0,
+      };
+      const handler = createHealthcheckHandler({
+        checkDatabase: async () => undefined,
+        isDiscordReady: () => true,
+        now: () => new Date("2026-04-01T00:00:00.000Z"),
+      });
+
+      await handler({ method: "GET", url: "/healthz" } as never, response as never);
+
+      expect(response.end).toHaveBeenCalledWith(
+        `{"checks":{"database":"ok","discord":"ok"},"service":"clashcookies","status":"ok","timestamp":"2026-04-01T00:00:00.000Z","runtime":{"runtime_identity_sha256":"${"a".repeat(64)}","preparation_metadata_sha256":"${"b".repeat(64)}","operation_id":"operation-1","provenance":"fixture"}}\n`
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });

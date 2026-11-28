@@ -344,3 +344,21 @@ Do not implement changes that violate architecture rules without explicit approv
 - Owner-selected next task: FB-015 (#2126), premature all-spun announcement. Investigate persisted root participant denominator, claim identity, and delivery revalidation before changing code. Do not presume that the November 20 incident was caused by any one observed code weakness. Then review the next production release, before resuming FB-002 operational composition recovery (advice #2162, place #2163, fill #2164). FB-017 is not in the current quick-win batch.
 - Production distinction: main `5bdba1e4` was observed with FB-020's additive Prisma migration and FB-016 tests in the release diff; actual VM completion was not independently verified here. The documented deployment chooses intentional downtime if the actual OLD_SHA..NEW_SHA diff contains Prisma schema/migration changes; non-migration changes are build-first, near-zero downtime when the live wrapper matches the reviewed procedure. No infrastructure change is authorized.
 
+## November 27, 2026 — FB-028B-3d-2 lifecycle checkpoint
+
+The feature branch adds a non-operational immutable Docker lifecycle consumer.
+It reuses the merged preparation, retention, delivery, and activation
+transaction owners; it does not add a pointer registry, replay journal,
+production wrapper path, migration path, or eligibility switch. The prepared
+runtime is rechecked immediately before execution and launched directly from
+the compiled entry point with a digest-pinned local image, read-only artifact
+mount, disabled automatic restart, bounded stop/start, exact singleton
+correlation, and fresh identity-bound HTTP health. Operational observations
+are strict trusted-inspection evidence; historical synthetic observations stay
+synthetic.
+
+Production remains `NO-GO`. Live VM readiness, production custody/authorization,
+wrapper integration, migration safety, activation-history retirement, and
+owner-approved controlled release remain outstanding. Fixture lifecycle health
+is not Discord readiness or genuine main-push attestation.
+

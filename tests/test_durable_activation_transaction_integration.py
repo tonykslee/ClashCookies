@@ -8,6 +8,7 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -34,6 +35,7 @@ import durable_artifact_retention as retention
 import runtime_artifact_provenance as provenance
 import immutable_runtime_preparation as preparation
 import durable_activation_transaction as activation
+import immutable_runtime_lifecycle as lifecycle
 
 
 _DELIVERY_SPEC = importlib.util.spec_from_file_location("activation_integration_delivery_tests", ROOT / "tests" / "test_trusted_ssh_artifact_delivery.py")
@@ -297,10 +299,10 @@ class DurableActivationIntegrationTests(unittest.TestCase):
         os.environ["DEPLOY_LOCK_FILE"] = str(deployment_lock)
         return {"root": root, "checkout": checkout, "publication": publication, "prepared": prepared, "custody": custody, "trusted_root": trusted_root, "allowlist_path": allowlist_path, "allowlist": allowlist, "trust": trust, "delivery_envelope": delivery_envelope, "delivery_journal": delivery_journal, "activation_journal": activation_journal, "identity": identity, "identity_digest": identity_digest, "metadata_digest": metadata_digest, "run_metadata": candidate["context"], "deployment_lock": deployment_lock, "gh_wrapper": gh_wrapper, "verifier_output": verifier_output_path}
 
-    def _activation_authorization(self, fixture: dict[str, object], operation_id: str, retry_key: str, generation: int, rollback_target: str | None, recovery_kind: str | None, scope: str) -> tuple[dict[str, object], provenance.IndependentReleaseAuthorization]:
+    def _activation_authorization(self, fixture: dict[str, object], operation_id: str, retry_key: str, generation: int, rollback_target: str | None, recovery_kind: str | None, scope: str, execution_mode: str = "isolated-test") -> tuple[dict[str, object], provenance.IndependentReleaseAuthorization]:
         identity = fixture["identity"]
         assert isinstance(identity, provenance.TrustedReleaseIdentity)
-        binding = activation.activation_binding(operation_id=operation_id, retry_key=fixture.get("forward_retry_key", retry_key) if recovery_kind else retry_key, candidate_release=fixture["identity_digest"], preparation_metadata_sha256=fixture["metadata_digest"], incumbent_release=fixture.get("incumbent_release"), previous_known_good_release=fixture.get("previous_known_good_release", retention.LEGACY_BASELINE_ID), rollback_target=rollback_target, expected_pointer_generation=generation, destination=str(fixture["prepared"]), recovery_kind=recovery_kind, authorization_retry_key=retry_key)
+        binding = activation.activation_binding(operation_id=operation_id, retry_key=fixture.get("forward_retry_key", retry_key) if recovery_kind else retry_key, candidate_release=fixture["identity_digest"], preparation_metadata_sha256=fixture["metadata_digest"], incumbent_release=fixture.get("incumbent_release"), previous_known_good_release=fixture.get("previous_known_good_release", retention.LEGACY_BASELINE_ID), rollback_target=rollback_target, expected_pointer_generation=generation, destination=str(fixture["prepared"]), recovery_kind=recovery_kind, authorization_retry_key=retry_key, execution_mode=execution_mode)
         now = datetime.now(timezone.utc).replace(microsecond=0)
         record = provenance.prepare_owner_authorization_record(identity, authorization_id=retry_key, issued_at=_stamp(now - timedelta(minutes=1)), expires_at=_stamp(now + timedelta(hours=23, minutes=59)), signing_key_id="integration-key", scope=scope, recovery_context=("integration-recovery" if recovery_kind else None), verification_context_sha256=activation.activation_binding_digest(binding))
         envelope, _ = _sign_record(fixture["custody"], record, "integration-key", repository_root=fixture["checkout"])
@@ -395,6 +397,60 @@ class DurableActivationIntegrationTests(unittest.TestCase):
             self.assertIsNone(final["active_release"])
             self.assertEqual(final["previous_known_good_release"], retention.LEGACY_BASELINE_ID)
             self.assertEqual(final["releases"][fixture["identity_digest"]]["roles"], ["retired"])
+
+    @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_RECEIVER") == "1" and os.environ.get("CC_REAL_RUNTIME_LIFECYCLE") == "1", "mandatory Linux Docker lifecycle integration")
+    def test_real_public_lifecycle_activate_and_restart_with_signed_fixture(self) -> None:
+        """Exercise public lifecycle methods against the existing signed fixture."""
+        with TemporaryDirectory() as directory_name:
+            fixture = self._fixture(Path(directory_name))
+            second = self._import_candidate_into_store(fixture, self._fixture(Path(directory_name) / "second", candidate_nonce="public-second"))
+            tx = self._transaction(fixture)
+            state = tx.store.load()
+            operation_id = "integration-public-lifecycle"
+            retry_key = "integration-public-lifecycle-forward"
+            fixture.update({"forward_retry_key": retry_key, "incumbent_release": state["active_release"], "previous_known_good_release": state["previous_known_good_release"]})
+            forward, _ = self._activation_authorization(fixture, operation_id, retry_key, state["pointer_generation"], retention.LEGACY_BASELINE_ID, None, "activation-forward", execution_mode="operational")
+            fixture["activation_journal"].reserve(forward, fixture["identity"], fixture["allowlist"], fixture["trust"], operation="activation-forward")
+            tx.begin(operation_id=operation_id, retry_key=retry_key, identity_sha256=fixture["identity_digest"], preparation_metadata_sha256=fixture["metadata_digest"], envelope=forward, rollback_target=retention.LEGACY_BASELINE_ID, execution_mode="operational")
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = int(probe.getsockname()[1])
+            coordinator = lifecycle.ImmutableRuntimeLifecycle(tx, lifecycle.LifecycleConfig(container_name="cc-public-lifecycle", network="bridge", host_port=port, health_path="/livez", health_provenance="fixture", allow_fixture_commit=True))
+            try:
+                activated = coordinator.activate(operation_id, activation_envelope=forward)
+                self.assertEqual(activated["phase"], "successful-activation")
+                committed = tx.store.load()
+                self.assertEqual(committed["active_release"], fixture["identity_digest"])
+                self.assertEqual(committed["activation_operations"][operation_id]["forward_consumption"]["state"], "consumed")
+                restarted = coordinator.restart_committed(operation_id)
+                self.assertEqual(restarted["phase"], "successful-activation")
+                self.assertEqual(tx.store.load()["activation_operations"][operation_id]["restart"]["phase"], "complete")
+
+                # A subsequent signed candidate exercises incumbent
+                # containment, authenticated target custody, and the public
+                # rollback method against the same real Docker runtime.
+                tx2 = self._transaction(second)
+                state = tx2.store.load()
+                second_operation_id = "integration-public-lifecycle-second"
+                second_retry_key = "integration-public-lifecycle-second-forward"
+                second.update({"forward_retry_key": second_retry_key, "incumbent_release": state["active_release"], "previous_known_good_release": state["previous_known_good_release"]})
+                second_forward, _ = self._activation_authorization(second, second_operation_id, second_retry_key, state["pointer_generation"], state["active_release"], None, "activation-forward", execution_mode="operational")
+                second["activation_journal"].reserve(second_forward, second["identity"], second["allowlist"], second["trust"], operation="activation-forward")
+                tx2.begin(operation_id=second_operation_id, retry_key=second_retry_key, identity_sha256=second["identity_digest"], preparation_metadata_sha256=second["metadata_digest"], envelope=second_forward, rollback_target=state["active_release"], execution_mode="operational")
+                coordinator2 = lifecycle.ImmutableRuntimeLifecycle(tx2, lifecycle.LifecycleConfig(container_name="cc-public-lifecycle", network="bridge", host_port=port, health_path="/livez", health_provenance="fixture", allow_fixture_commit=True))
+                activated_second = coordinator2.activate(second_operation_id, activation_envelope=second_forward)
+                self.assertEqual(activated_second["phase"], "successful-activation")
+                state = tx2.store.load()
+                second.update({"incumbent_release": state["activation_operations"][second_operation_id]["incumbent_release"], "previous_known_good_release": state["activation_operations"][second_operation_id]["previous_known_good_release"]})
+                recovery, _ = self._activation_authorization(second, second_operation_id, "integration-public-lifecycle-second-recovery", state["pointer_generation"], state["activation_operations"][second_operation_id]["rollback_target"], "post-activation", "activation-recovery", execution_mode="operational")
+                second["activation_journal"].reserve(recovery, second["identity"], second["allowlist"], second["trust"], operation="activation-recovery")
+                rolled_back = coordinator2.rollback(second_operation_id, recovery)
+                self.assertEqual(rolled_back["phase"], "successful-rollback")
+                final = tx2.store.load()
+                self.assertEqual(final["active_release"], fixture["identity_digest"])
+                self.assertEqual(final["pointer_generation"], 2)
+            finally:
+                subprocess.run(["docker", "rm", "-f", "cc-public-lifecycle"], check=False, capture_output=True)
 
     @unittest.skipUnless(os.name == "posix" and os.environ.get("CC_REAL_RECEIVER") == "1", "mandatory Linux coordinator integration")
     def test_real_coordinator_three_successive_activations_and_subsequent_rollback(self) -> None:

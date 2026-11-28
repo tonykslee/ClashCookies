@@ -383,3 +383,23 @@ Composition calculation policy is identified by the immutable, deeply validated 
 - For FB-015 diagnosis, compare `[sync-all-spun] event=evaluation_incomplete` claimed/participating counts and delivery records against the canonical root's persisted participant snapshot and active root/status-child claims; do not log private actor details. A single-clan denominator may be legitimate only if that is the complete authoritative participant set. Missing/malformed participant evidence requires investigation, not a blanket minimum-clan rule.
 - For downtime diagnosis, use the live deployment log's actual OLD_SHA, NEW_SHA and mode selection. Repository main `5bdba1e4` included FB-020 Prisma changes, qualifying for the documented intentional downtime path. Non-migration builds should keep the old runtime active until build succeeds; live wrapper parity and actual health are separate operational evidence.
 
+## FB-028B-3d-2 runtime lifecycle evidence
+
+Lifecycle evidence is bounded and transaction-owned. It records phase subject,
+release/preparation binding, runtime tree digest, actual container and image
+IDs, process start incarnation, effective read-only mounts, external
+configuration digest, and fresh health response digest/provenance. The health
+server adds runtime identity fields only when the lifecycle binding variables
+are supplied, preserving ordinary readiness output and Discord/database
+semantics. `fixture` health is visibly distinct from `application` health
+and does not prove Discord readiness, production eligibility, attestation, or
+VM state. Logs and evidence never include secrets, authorization envelopes,
+trust roots, replay contents, raw Docker output, or health payload contents.
+
+Unknown, conflicting, stale, wrong-container, wrong-process, substituted-image,
+ambiguous-stop, or incomplete-mount observations are recovery-required rather
+than positive lifecycle signals. Automatic restart is disabled; explicit
+committed-runtime restart emits refreshed identity-bound evidence only after
+same-image and same-runtime verification. The production wrapper remains
+unchanged and production remains `NO-GO`.
+
