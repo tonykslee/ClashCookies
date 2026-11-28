@@ -310,6 +310,49 @@ class DurableRetentionTests(unittest.TestCase):
         with self.assertRaises(retention.RetentionError):
             self.store.load()
 
+    def test_terminal_transaction_rejects_substituted_historical_observation(self) -> None:
+        _, digest = self.release("historical-observation")
+        state = self.store.load()
+        state["releases"][digest]["roles"] = ["recovery-protected"]
+        operation_id = "historical-observation-test"
+        preparation_digest = "a" * 64
+        authorization_digest = "b" * 64
+        now = state["updated_at"]
+        state["activation_operations"][operation_id] = {
+            "contract": "clashcookies.durable-activation-transaction", "version": 1,
+            "operation_id": operation_id, "retry_key": "retry",
+            "candidate_release": digest, "preparation_metadata_sha256": preparation_digest,
+            "authorization_record_sha256": authorization_digest, "authorization_id": "authorization",
+            "authorization_scope": "activation-forward", "incumbent_release": None,
+            "previous_known_good_release": retention.LEGACY_BASELINE_ID, "rollback_target": retention.LEGACY_BASELINE_ID,
+            "rollback_kind": None, "rollback_authorization_record_sha256": None,
+            "rollback_authorization_id": None, "rollback_retry_key": None,
+            "expected_pointer_generation": state["pointer_generation"], "rollback_expected_pointer_generation": None,
+            "forward_consumption": None, "rollback_consumption": None, "delivery_consumption": None,
+            "runtime_identity_sha256": digest, "phase": "validated-intent",
+            "intent": {
+                "contract": "clashcookies.durable-activation-intent", "version": 1,
+                "operation_id": operation_id, "retry_key": "retry", "candidate_release": digest,
+                "preparation_metadata_sha256": preparation_digest, "authorization_record_sha256": authorization_digest,
+                "incumbent_release": None, "previous_known_good_release": retention.LEGACY_BASELINE_ID,
+                "rollback_target": retention.LEGACY_BASELINE_ID, "expected_pointer_generation": state["pointer_generation"],
+            },
+            "observations": {
+                "incumbent-stop-observed": {
+                    "contract": "clashcookies.activation-observation", "version": 1,
+                    "source": "isolated-test-harness", "phase": "incumbent-stop-observed", "outcome": "stopped",
+                    "operation_id": operation_id, "candidate_release": digest, "runtime_identity_sha256": digest,
+                    "subject": "candidate", "subject_release": digest,
+                    "details": {"subject": "candidate", "subject_release": digest},
+                },
+            },
+            "started_at": now, "updated_at": now,
+        }
+        self.store.state_path.write_bytes(retention._canonical(state) + b"\n")
+
+        with self.assertRaisesRegex(retention.RetentionError, "observation"):
+            self.store.load()
+
     def test_interrupted_atomic_replace_preserves_previous_state_and_temp_is_not_owned(self) -> None:
         _, digest = self.release("a")
         _, next_digest = self.release("a-next")
