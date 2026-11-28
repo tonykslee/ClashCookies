@@ -92,7 +92,7 @@ class ImmutableRuntimeLifecycleTests(unittest.TestCase):
             tx = SimpleNamespace(prepared_root=root / "prepared", store=SimpleNamespace(root=root / "retention", repository_root=root / "checkout"), trusted_root=root / "trusted")
             runner = lifecycle_module.DockerClient()
             lifecycle = lifecycle_module.ImmutableRuntimeLifecycle(tx, config, docker=runner)
-            image_info = runner.inspect_image(image, platform="linux/amd64", timeout=30)
+            image_info = runner.inspect_image(image, platform=None, timeout=30)
             contract = lifecycle_module.RuntimeExecutionContract(
                 operation_id="real-lifecycle-operation",
                 release_id="a" * 64,

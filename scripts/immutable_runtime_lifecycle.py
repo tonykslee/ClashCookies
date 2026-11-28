@@ -216,7 +216,12 @@ def _image_identity(client: DockerClient, identity: dict[str, Any], *, expected_
     _require(identity.get("image") == provenance.RELEASE_IMAGE and identity.get("platform") == provenance.RELEASE_PLATFORM, "candidate image or platform is not the approved pinned contract")
     expected_digest = provenance.RELEASE_IMAGE.split("@", 1)[1]
     _require(identity.get("image_digest") == expected_digest, "candidate image digest is not bound to the approved image")
-    inspected = client.inspect_image(provenance.RELEASE_IMAGE, platform=provenance.RELEASE_PLATFORM, timeout=timeout)
+    # Resolve the exact pinned local reference without asking Docker to select
+    # a manifest-list child again.  Docker can return a platform-qualified
+    # inspection ID that differs from the image ID recorded on a container
+    # started from the already-pulled digest reference.  The explicit
+    # architecture/OS checks below retain the platform boundary.
+    inspected = client.inspect_image(provenance.RELEASE_IMAGE, platform=None, timeout=timeout)
     image_id = inspected.get("Id")
     _require(isinstance(image_id, str) and image_id.startswith("sha256:"), "local pinned image ID is unavailable")
     if expected_id is not None:
