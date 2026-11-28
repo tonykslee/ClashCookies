@@ -137,6 +137,12 @@ class ActivationTransaction:
         with preparation._operation_lock(self.deployment_lock_file), retention.activity_lock(self.store.root):
             yield
 
+    @contextmanager
+    def lifecycle_lock(self):
+        """Hold the canonical deployment -> retention lock order for Docker work."""
+        with self._locked():
+            yield
+
     def _admit_resources(self, identity: dict[str, Any], evidence: PreparedCandidateEvidence) -> None:
         """Admit the resources actually referenced by the retained candidate.
 
@@ -373,12 +379,35 @@ class ActivationTransaction:
             authority = self._consumed_authority(operation, recovery=recovery, assume_locked=True)
             return self.store.transition_activation(operation_id, phase=phase, observation=evidence, authority=authority, assume_locked=True)
 
-    def advance(self, operation_id: str, phase: str) -> dict[str, Any]:
-        state = self.store.load()
-        operation = state["activation_operations"].get(operation_id)
-        _require(operation is not None, "activation operation is unknown")
-        with self._locked():
+    def observe_runtime(self, operation_id: str, *, phase: str, outcome: str, evidence: dict[str, Any], assume_locked: bool = False) -> dict[str, Any]:
+        """Persist evidence created by the trusted Docker/HTTP inspection path.
+
+        Callers cannot select the source flag or submit arbitrary JSON to the
+        retention owner; the lifecycle module supplies the bounded evidence
+        and this method adds the exact transaction binding.
+        """
+        _require(phase in retention.ACTIVATION_OBSERVED_PHASES, "activation observation phase is invalid")
+
+        def apply() -> dict[str, Any]:
             operation = self.store.load()["activation_operations"].get(operation_id)
+            _require(operation is not None, "activation operation is unknown")
+            expected_subject = {"incumbent-stop-observed": "incumbent", "candidate-start-observed": "candidate", "candidate-health-verified": "candidate", "rollback-observed": "rollback-target"}[phase]
+            expected_release = operation["candidate_release"] if expected_subject == "candidate" else (operation["rollback_target"] if expected_subject == "rollback-target" else (operation["incumbent_release"] or retention.LEGACY_BASELINE_ID))
+            _require(isinstance(evidence, dict) and evidence.get("operation_id") == operation_id and evidence.get("phase") == phase and evidence.get("candidate_release") == operation["candidate_release"] and evidence.get("subject") == expected_subject and evidence.get("subject_release") == expected_release and evidence.get("preparation_metadata_sha256") == operation["preparation_metadata_sha256"], "operational runtime evidence is not bound to the exact transaction")
+            observation = {"contract": "clashcookies.activation-observation", "version": 2, "source": retention.OPERATIONAL_OBSERVATION_SOURCE, "phase": phase, "outcome": outcome, "operation_id": operation_id, "candidate_release": operation["candidate_release"], "runtime_identity_sha256": operation["runtime_identity_sha256"], "subject": expected_subject, "subject_release": expected_release, "details": {"subject": expected_subject, "subject_release": expected_release, "health_provenance": (evidence.get("health") or {}).get("provenance", "runtime")}, "evidence": evidence}
+            recovery = operation["rollback_consumption"] is not None or operation["phase"] in {"rollback-intent", "rollback-observed", "successful-rollback"}
+            authority = self._consumed_authority(operation, recovery=recovery, assume_locked=True)
+            return self.store.transition_activation(operation_id, phase=phase, observation=observation, authority=authority, assume_locked=True, operational_observation_token=retention._OPERATIONAL_OBSERVATION_TOKEN)
+
+        if assume_locked:
+            return apply()
+        with self._locked():
+            return apply()
+
+    def advance(self, operation_id: str, phase: str, *, assume_locked: bool = False) -> dict[str, Any]:
+        def apply() -> dict[str, Any]:
+            state = self.store.load()
+            operation = state["activation_operations"].get(operation_id)
             _require(operation is not None, "activation operation is unknown")
             legal = {
                 "validated-intent": {"authorization-consumption-pending", "recovery-required"},
@@ -420,6 +449,11 @@ class ActivationTransaction:
                 operation = self.store.load()["activation_operations"].get(operation_id)
                 _require(operation is not None, "activation operation is unknown")
             return self.store.transition_activation(operation_id, phase=phase, authority=authority, assume_locked=True)
+
+        if assume_locked:
+            return apply()
+        with self._locked():
+            return apply()
 
     def begin_rollback(self, operation_id: str, envelope: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
         """Bind and persist a separately authorized compensating recovery."""

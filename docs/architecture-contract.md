@@ -491,3 +491,23 @@ Synthetic profile fixtures exercise the same projection, recommendation, candida
 - FB-023 local time extraction for sync conversion and modal defaults uses explicit `hourCycle: "h23"` without overriding `hour12`. ICU h24 midnight can turn hour 24 into a next-day UTC date and shift the resolved instant backward. Preserve exact sync identity, validation and existing two-pass DST behavior; nonexistent times retain the existing mapping rather than a newly invented policy.
 - FB-021 actual Town Hall emoji presentation uses the shared `src/helper/townHallEmoji.ts` application-inventory resolver through TH19; public roster shortcode expansion remains presentation-only. Expected TH19 token is `<:th19:1572442203844902932>` subject to actual application inventory. Preserve missing-emoji fallbacks, TH1–TH18, role rules and composition weight buckets independently. Do not hardcode credentials or require new live API reads for every render.
 
+## FB-028B-3d-2 immutable lifecycle boundary
+
+The activation transaction remains the sole lifecycle intent and pointer owner;
+retention remains the sole retention/GC owner. The lifecycle consumer holds the
+canonical deployment → retention locks without nested reacquisition, persists
+intent before Docker disruption, and reconciles actual Docker state after
+interruption. Exact IDs, image digests, process incarnation, mounts, runtime
+tree integrity, external configuration, and fresh health are evidence; names,
+labels, ports, and generic HTTP status are not identity proof. The operational
+observation schema is a strict extension of the historical isolated-harness
+schema, not a relabeling of synthetic evidence. Direct startup uses the
+prepared compiled entry point and never runs migrations or build steps.
+
+The boundary is deliberately not connected to the production wrapper or
+eligibility path. Automatic restart is disabled, and explicit committed-runtime
+restart is permitted only with same-image/same-runtime revalidation. Rollback
+uses separately authorized exact incumbent/known-good/legacy targets; legacy
+custody stays unauthenticated. These checks assume trusted host ancestors and
+Docker custody and do not claim protection against a privileged host actor.
+

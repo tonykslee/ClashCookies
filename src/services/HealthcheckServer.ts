@@ -9,6 +9,12 @@ export type HealthSnapshot = {
   service: "clashcookies";
   status: "error" | "ok";
   timestamp: string;
+  runtime?: {
+    runtime_identity_sha256: string;
+    preparation_metadata_sha256: string;
+    operation_id: string;
+    provenance: "application" | "fixture";
+  };
 };
 
 type HealthcheckDependencies = {
@@ -123,6 +129,31 @@ function writeJson(
   response.end(`${JSON.stringify(snapshot)}\n`);
 }
 
+function runtimeObservationFromEnv(): HealthSnapshot["runtime"] {
+  const runtimeIdentity = String(process.env.CLASHCOOKIES_RUNTIME_IDENTITY_SHA256 ?? "").trim();
+  const preparationDigest = String(
+    process.env.CLASHCOOKIES_PREPARATION_METADATA_SHA256 ?? "",
+  ).trim();
+  const operationId = String(
+    process.env.CLASHCOOKIES_ACTIVATION_OPERATION_ID ?? "",
+  ).trim();
+  if (!runtimeIdentity || !preparationDigest || !operationId) return undefined;
+  const provenance = process.env.CLASHCOOKIES_HEALTH_PROVENANCE === "fixture"
+    ? "fixture"
+    : "application";
+  return {
+    runtime_identity_sha256: runtimeIdentity,
+    preparation_metadata_sha256: preparationDigest,
+    operation_id: operationId,
+    provenance,
+  };
+}
+
+function withRuntimeObservation(snapshot: HealthSnapshot): HealthSnapshot {
+  const runtime = runtimeObservationFromEnv();
+  return runtime ? { ...snapshot, runtime } : snapshot;
+}
+
 export function createHealthcheckHandler(dependencies: HealthcheckDependencies) {
   const now = dependencies.now ?? (() => new Date());
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
@@ -140,7 +171,7 @@ export function createHealthcheckHandler(dependencies: HealthcheckDependencies) 
       writeJson(
         response,
         200,
-        createSnapshot(
+        withRuntimeObservation(createSnapshot(
           {
             checks: {
               database: "skipped",
@@ -149,7 +180,7 @@ export function createHealthcheckHandler(dependencies: HealthcheckDependencies) 
             status: "ok",
           },
           now
-        )
+        ))
       );
       return;
     }
@@ -160,7 +191,11 @@ export function createHealthcheckHandler(dependencies: HealthcheckDependencies) 
         isDiscordReady: dependencies.isDiscordReady,
         now,
       });
-      writeJson(response, snapshot.status === "ok" ? 200 : 503, snapshot);
+      writeJson(
+        response,
+        snapshot.status === "ok" ? 200 : 503,
+        withRuntimeObservation(snapshot),
+      );
       return;
     }
 
