@@ -275,7 +275,7 @@ class ImmutableRuntimeLifecycle:
         arguments = ["run", "--detach", "--pull=never", "--platform", contract.platform, "--name", self.config.container_name, "--restart", "no", "--init", "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--network", self.config.network, "--label", "com.clashcookies.runtime=immutable", "--label", f"com.clashcookies.activation-operation={contract.operation_id}", "--label", f"com.clashcookies.release={contract.release_id}", "--label", f"com.clashcookies.preparation={contract.preparation_metadata_sha256 or 'legacy'}", "--publish", f"127.0.0.1:{self.config.host_port}:8080", "--env", f"BUILD_SHA={contract.release_id}", "--env", f"CLASHCOOKIES_RUNTIME_IDENTITY_SHA256={contract.release_id}", "--env", f"CLASHCOOKIES_PREPARATION_METADATA_SHA256={contract.preparation_metadata_sha256 or 'legacy'}", "--env", f"CLASHCOOKIES_ACTIVATION_OPERATION_ID={contract.operation_id}", "--env", f"CLASHCOOKIES_HEALTH_PROVENANCE={self.config.health_provenance}"]
         if contract.env_file is not None:
             arguments.extend(["--env-file", str(contract.env_file)])
-        arguments.extend(["--workdir", "/app", "--volume", f"{contract.runtime_root}:/app:ro", contract.image, *contract.command])
+        arguments.extend(["--workdir", "/app", "--volume", f"{contract.runtime_root}:/app:ro", "--entrypoint", "", contract.image, *contract.command])
         return arguments
 
     def _mounts(self, inspected: dict[str, Any]) -> list[dict[str, Any]]:
