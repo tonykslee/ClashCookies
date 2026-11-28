@@ -524,6 +524,7 @@ jobs:
       - name: Run mandatory genuine Linux/OpenSSH receiver integration
         if: env.RUNTIME_ARTIFACT_ARTIFACT_CLASS == 'development-runtime-evidence'
         env:
+          CC_REAL_RUNTIME_LIFECYCLE: "1"
           CC_PREPARED_CANDIDATE_DATABASE_URL: postgresql://postgres:artifact-test-password@runtime-artifact-postgres:5432/artifact_probe?schema=public
           CC_PREPARED_CANDIDATE_DOCKER_NETWORK: runtime-artifact-validation
         run: |
@@ -540,6 +541,7 @@ jobs:
             tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_receiver_lock_contention_is_bounded_and_retryable \
             tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_synthetic_authorized_delivery_composes_reservation_publication_and_durable_retry \
             tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_first_activation_and_first_rollback \
+            tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_public_lifecycle_activate_and_restart_with_signed_fixture \
             tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_three_successive_activations_and_subsequent_rollback \
             tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_failed_runtime_observations_compensate \
             tests.test_durable_activation_transaction_integration.DurableActivationIntegrationTests.test_real_coordinator_reconciliation_and_interrupted_rollback \
