@@ -14,6 +14,7 @@ export type HealthSnapshot = {
     preparation_metadata_sha256: string;
     operation_id: string;
     provenance: "application" | "fixture";
+    build_sha?: string;
   };
 };
 
@@ -138,6 +139,7 @@ function runtimeObservationFromEnv(): HealthSnapshot["runtime"] {
     process.env.CLASHCOOKIES_ACTIVATION_OPERATION_ID ?? "",
   ).trim();
   if (!runtimeIdentity || !preparationDigest || !operationId) return undefined;
+  const buildSha = String(process.env.BUILD_SHA ?? "").trim();
   const provenance = process.env.CLASHCOOKIES_HEALTH_PROVENANCE === "fixture"
     ? "fixture"
     : "application";
@@ -146,6 +148,7 @@ function runtimeObservationFromEnv(): HealthSnapshot["runtime"] {
     preparation_metadata_sha256: preparationDigest,
     operation_id: operationId,
     provenance,
+    ...(buildSha ? { build_sha: buildSha } : {}),
   };
 }
 

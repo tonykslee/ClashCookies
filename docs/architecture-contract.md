@@ -495,19 +495,25 @@ Synthetic profile fixtures exercise the same projection, recommendation, candida
 
 The activation transaction remains the sole lifecycle intent and pointer owner;
 retention remains the sole retention/GC owner. The lifecycle consumer holds the
-canonical deployment → retention locks without nested reacquisition, persists
-intent before Docker disruption, and reconciles actual Docker state after
-interruption. Exact IDs, image digests, process incarnation, mounts, runtime
-tree integrity, external configuration, and fresh health are evidence; names,
-labels, ports, and generic HTTP status are not identity proof. The operational
+canonical deployment → retention locks with an owner check, re-fsyncs and
+replays the exact durable proof immediately before Docker disruption, persists
+intent before each restart/rollback boundary, and reconciles actual Docker
+state after interruption. Exact IDs, image digests, process incarnation,
+mounts, runtime tree integrity, actual environment/network/port/rootfs
+configuration, and fresh identity-bound health are evidence; names, labels,
+ports, and generic HTTP status are not identity proof. The operational
 observation schema is a strict extension of the historical isolated-harness
-schema, not a relabeling of synthetic evidence. Direct startup uses the
-prepared compiled entry point and never runs migrations or build steps.
+schema, is gated by a private inspection ticket, and retains superseded
+observations instead of rewriting terminal history. Direct startup uses the
+prepared compiled entry point, carries the source commit as `BUILD_SHA`, and
+never runs migrations or build steps.
 
 The boundary is deliberately not connected to the production wrapper or
 eligibility path. Automatic restart is disabled, and explicit committed-runtime
-restart is permitted only with same-image/same-runtime revalidation. Rollback
-uses separately authorized exact incumbent/known-good/legacy targets; legacy
-custody stays unauthenticated. These checks assume trusted host ancestors and
-Docker custody and do not claim protection against a privileged host actor.
+restart is permitted only with a durable restart intent, same-image/same-runtime
+revalidation, and fresh health. Rollback independently verifies the exact
+retained target before containing a failed or partial candidate; authenticated
+targets are reverified against their own archive/provenance and legacy custody
+stays unauthenticated. These checks assume trusted host ancestors and Docker
+custody and do not claim protection against a privileged host actor.
 

@@ -10,9 +10,11 @@ production release path.
 `RetentionStore`; it does not create a pointer registry, issue authorization,
 select a release, or own retention. The lifecycle contract is derived from the
 exact retained candidate, one completed preparation record, and its metadata
-digest. Immediately before each Docker side effect it rechecks archive-bound
-runtime integrity, effective-UID ownership, the exact pinned
-`linux/amd64` image, the local image ID, and the external configuration digest.
+digest. Before the first disruptive Docker command it completes current
+admission, replay/durability, prepared-material, ownership, image, and
+configuration checks. Missing or ambiguous candidate/target material therefore
+produces no Docker side effect. The source commit SHA is carried as
+`BUILD_SHA`; the release identity digest remains a separate runtime identity.
 
 Docker is invoked through bounded argument vectors with `--pull=never`,
 `--read-only`, `--restart=no`, one read-only `/app` bind of the prepared
@@ -35,13 +37,14 @@ across bounded Docker inspection and lifecycle side effects where needed. It
 persists intent through the existing activation phases before stop/start,
 revalidates the operation and replay proof, and reconciles Docker state by
 exact container ID, image ID, labels, process start time, command, mounts,
-configuration digest, and restart policy. Names, labels, ports, and process
-patterns are discovery hints only. Multiple or unknown active containers,
+actual environment/network/port/rootfs configuration, and restart policy.
+Names, labels, ports, and process patterns are discovery hints only. Multiple
+or unknown active containers,
 restart-enabled incumbents, stop ambiguity, Docker timeout, name collision,
 partial creation, and identity changes fail closed without candidate startup.
 
 Operational observations use a strict version-2 observation contract generated
-only by the lifecycle inspection path. They bind operation, phase subject,
+only by the lifecycle inspection path and its private observation ticket. They bind operation, phase subject,
 release, candidate/preparation digests, runtime tree digest, container/image
 IDs, process incarnation, effective mounts, configuration digest, and fresh
 bounded HTTP health evidence. The existing version-1 isolated-harness evidence
@@ -52,9 +55,11 @@ unchanged. A generic HTTP 200, stale response, wrong container, or wrong
 incarnation cannot authorize pointer publication.
 
 Automatic Docker restart is disabled. Explicit restart of a committed runtime
-must rediscover the exact committed operation, reverify the same preparation
-digest/runtime tree and prior local image ID, stop only the exact container,
-start with the same immutable contract, and obtain fresh identity-bound health.
+first durably records a restart intent, then reconciles stopped, missing,
+partial, and interrupted states. It must rediscover the exact committed
+operation, reverify the same preparation digest/runtime tree and prior local
+image ID, stop only the exact container, start with the same immutable
+contract, and obtain fresh identity-bound health.
 No new forward authorization is consumed for that exact committed-runtime
 restart. If those checks cannot be established, the behavior remains disabled
 and the operation is recovery-required rather than rebuilding or adopting an
@@ -65,12 +70,12 @@ unknown container.
 Rollback reuses the existing recovery authorization and replay journal. Failed
 candidate compensation targets the exact incumbent. Post-activation recovery
 targets the explicitly bound previous-known-good release. Authenticated targets
-independently reverify their own retained identity, preparation record, runtime
-integrity, and local image. The first legacy target uses only preserved
+independently reverify their own retained identity/archive/provenance,
+preparation record, runtime integrity, and local image. The first legacy target uses only preserved
 unauthenticated custody and its protected exact image/runtime evidence; it is
 never relabeled as an authenticated release. Rollback never runs migrations,
-uses a checkout, regenerates material, or mints authority. Displaced candidates
-are stopped and contained before target startup, and failed/ambiguous rollback
+uses a checkout, regenerates material, or mints authority. Target material is
+verified before displaced-candidate containment; failed/ambiguous rollback
 remains recovery-required with known-good pointers unchanged.
 
 Resource and timeout bounds are in `LifecycleConfig`; Docker output, health

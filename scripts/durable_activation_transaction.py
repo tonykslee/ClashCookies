@@ -16,6 +16,7 @@ from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
+import threading
 from typing import Any
 
 import durable_artifact_retention as retention
@@ -59,7 +60,7 @@ def _canonical(value: Any) -> bytes:
         _fail(f"activation binding is not canonical JSON: {error}")
 
 
-def activation_binding(*, operation_id: str, retry_key: str, candidate_release: str, preparation_metadata_sha256: str, incumbent_release: str | None, previous_known_good_release: str | None, rollback_target: str | None, expected_pointer_generation: int, destination: str, recovery_kind: str | None = None, authorization_retry_key: str | None = None) -> dict[str, Any]:
+def activation_binding(*, operation_id: str, retry_key: str, candidate_release: str, preparation_metadata_sha256: str, incumbent_release: str | None, previous_known_good_release: str | None, rollback_target: str | None, expected_pointer_generation: int, destination: str, recovery_kind: str | None = None, authorization_retry_key: str | None = None, execution_mode: str = "isolated-test") -> dict[str, Any]:
     """Build the exact signed context that makes activation authority operation-specific."""
     value = {
         "contract": ACTIVATION_CONTRACT,
@@ -76,6 +77,8 @@ def activation_binding(*, operation_id: str, retry_key: str, candidate_release: 
         "recovery_kind": recovery_kind,
         "authorization_retry_key": retry_key if authorization_retry_key is None else authorization_retry_key,
     }
+    if execution_mode == "operational":
+        value["execution_mode"] = "operational"
     _require(len(_canonical(value)) <= 64 * 1024, "activation binding exceeds its size limit")
     return value
 
@@ -98,6 +101,14 @@ class PreparedCandidateEvidence:
     legacy_integrity: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class _RuntimeObservationTicket:
+    operation_id: str
+    phase: str
+    evidence_sha256: str
+    _token: object
+
+
 class ActivationTransaction:
     """Coordinate authority and the retention-owned activation state machine."""
 
@@ -115,6 +126,8 @@ class ActivationTransaction:
         self.trusted_root_version = trusted_root_version
         self.run_metadata = run_metadata
         self.headroom_inodes = headroom_inodes
+        self._runtime_observation_token = object()
+        self._lock_state = threading.local()
         _require(prepared_root.is_absolute() and prepared_root.is_dir() and not prepared_root.is_symlink(), "prepared runtime root is unavailable")
         _require(prepared_root.resolve() != store.root.resolve(), "prepared runtime root must be separate from retention publication")
         _require(deployment_lock_file.is_absolute(), "canonical FB-027 deployment lock is required")
@@ -135,7 +148,15 @@ class ActivationTransaction:
     @contextmanager
     def _locked(self):
         with preparation._operation_lock(self.deployment_lock_file), retention.activity_lock(self.store.root):
-            yield
+            depth = int(getattr(self._lock_state, "depth", 0))
+            self._lock_state.depth = depth + 1
+            try:
+                yield
+            finally:
+                self._lock_state.depth = depth
+
+    def _require_lock_owner(self) -> None:
+        _require(int(getattr(self._lock_state, "depth", 0)) > 0, "canonical deployment and retention locks are not owned by this transaction")
 
     @contextmanager
     def lifecycle_lock(self):
@@ -178,6 +199,22 @@ class ActivationTransaction:
         release_path = self.store.root / record["publication_name"]
         self.store._verify_owned_release(release_path, record)
         return record["identity"], release_path, record
+
+    def _candidate_identity_for_authorization(self, identity_sha256: str) -> dict[str, Any]:
+        """Read the retained identity without requiring runtime material.
+
+        Recovery authorization remains bound to the signed candidate identity
+        even when the failed candidate's publication or prepared runtime has
+        become unavailable.  The recovery lifecycle independently verifies
+        the target before it changes Docker state.
+        """
+        state = self.store.load()
+        record = state["releases"].get(identity_sha256)
+        _require(isinstance(record, dict), "candidate identity is unknown")
+        identity = record.get("identity")
+        _require(isinstance(identity, dict), "candidate identity evidence is malformed")
+        provenance.validate_trusted_release_identity(provenance.TrustedReleaseIdentity(**identity))
+        return identity
 
     def verify_prepared_candidate(self, identity_sha256: str, preparation_metadata_sha256: str) -> PreparedCandidateEvidence:
         """Historical inspection of one exact committed preparation."""
@@ -235,7 +272,12 @@ class ActivationTransaction:
         return value
 
     def _operation_binding(self, operation: dict[str, Any], *, generation: int | None = None, recovery_kind: str | None = None, authorization_retry_key: str | None = None) -> dict[str, Any]:
-        return activation_binding(operation_id=operation["operation_id"], retry_key=operation["retry_key"], candidate_release=operation["candidate_release"], preparation_metadata_sha256=operation["preparation_metadata_sha256"], incumbent_release=operation["incumbent_release"], previous_known_good_release=operation["previous_known_good_release"], rollback_target=operation["rollback_target"], expected_pointer_generation=operation["expected_pointer_generation"] if generation is None else generation, destination=str(self.prepared_root), recovery_kind=recovery_kind, authorization_retry_key=authorization_retry_key)
+        return activation_binding(operation_id=operation["operation_id"], retry_key=operation["retry_key"], candidate_release=operation["candidate_release"], preparation_metadata_sha256=operation["preparation_metadata_sha256"], incumbent_release=operation["incumbent_release"], previous_known_good_release=operation["previous_known_good_release"], rollback_target=operation["rollback_target"], expected_pointer_generation=operation["expected_pointer_generation"] if generation is None else generation, destination=str(self.prepared_root), recovery_kind=recovery_kind, authorization_retry_key=authorization_retry_key, execution_mode=operation.get("execution_mode", "isolated-test"))
+
+    def _issue_runtime_observation_ticket(self, operation_id: str, phase: str, evidence: dict[str, Any]) -> _RuntimeObservationTicket:
+        self._require_lock_owner()
+        _require(isinstance(evidence, dict), "runtime evidence is malformed")
+        return _RuntimeObservationTicket(operation_id, phase, hashlib.sha256(_canonical(evidence)).hexdigest(), self._runtime_observation_token)
 
     @staticmethod
     def _authorization_retry_key(envelope: dict[str, Any]) -> str:
@@ -267,6 +309,25 @@ class ActivationTransaction:
         for field in _DURABLE_INTENT_BINDING_FIELDS:
             _require(current.get(field) == expected_operation.get(field), "activation authorization binding changed during durability revalidation")
         return current
+
+    def revalidate_lifecycle_boundary(self, operation_id: str, *, expected_phase: str, assume_locked: bool = False) -> dict[str, Any]:
+        """Re-fsync and replay-check the exact phase immediately before Docker work."""
+        def apply() -> dict[str, Any]:
+            self._require_lock_owner()
+            self.store._reestablish_state_durability()
+            operation = self.store.load()["activation_operations"].get(operation_id)
+            _require(operation is not None and operation["phase"] == expected_phase, "lifecycle side-effect phase is stale")
+            if expected_phase in {"incumbent-stop-intent", "candidate-start-intent", "candidate-start-observed", "candidate-health-verified", "successful-activation"}:
+                _require(operation["expected_pointer_generation"] == self.store.load()["pointer_generation"], "lifecycle side-effect pointer generation changed")
+                self._consumed_authority(operation, recovery=False, assume_locked=True)
+            elif expected_phase in {"rollback-intent", "rollback-observed"}:
+                _require(operation["rollback_expected_pointer_generation"] == self.store.load()["pointer_generation"], "rollback side-effect pointer generation changed")
+                self._consumed_authority(operation, recovery=True, assume_locked=True)
+            return operation
+        if assume_locked:
+            return apply()
+        with self._locked():
+            return apply()
 
     def _verify_activation_authorization(self, envelope: dict[str, Any], identity: dict[str, Any], *, operation: str, binding: dict[str, Any], now: datetime | None = None, historical: bool = False) -> provenance.IndependentReleaseAuthorization:
         _require(operation in {ACTIVATION_AUTHORIZATION_FORWARD, ACTIVATION_AUTHORIZATION_RECOVERY}, "activation authorization operation is invalid")
@@ -305,24 +366,24 @@ class ActivationTransaction:
         with self._locked():
             return apply()
 
-    def begin(self, *, operation_id: str, retry_key: str, identity_sha256: str, preparation_metadata_sha256: str, envelope: dict[str, Any], rollback_target: str | None, now: datetime | None = None) -> dict[str, Any]:
+    def begin(self, *, operation_id: str, retry_key: str, identity_sha256: str, preparation_metadata_sha256: str, envelope: dict[str, Any], rollback_target: str | None, execution_mode: str = "isolated-test", now: datetime | None = None) -> dict[str, Any]:
         with self._locked():
             evidence = self._activation_admission(identity_sha256, preparation_metadata_sha256, now=now, assume_locked=True)
             identity, _, _ = self._candidate(identity_sha256)
             retained_path = self.store.root / f"release-{identity_sha256}"
             self._verify_delivery_reservation(identity, retained_path, self.delivery_envelope, self.delivery_journal, now=now)
             state = self.store.load()
-            binding = activation_binding(operation_id=operation_id, retry_key=retry_key, candidate_release=identity_sha256, preparation_metadata_sha256=preparation_metadata_sha256, incumbent_release=state["active_release"], previous_known_good_release=state["previous_known_good_release"], rollback_target=rollback_target, expected_pointer_generation=state["pointer_generation"], destination=str(self.prepared_root))
+            binding = activation_binding(operation_id=operation_id, retry_key=retry_key, candidate_release=identity_sha256, preparation_metadata_sha256=preparation_metadata_sha256, incumbent_release=state["active_release"], previous_known_good_release=state["previous_known_good_release"], rollback_target=rollback_target, expected_pointer_generation=state["pointer_generation"], destination=str(self.prepared_root), execution_mode=execution_mode)
             authorization = self._verify_activation_authorization(envelope, identity, operation=ACTIVATION_AUTHORIZATION_FORWARD, binding=binding, now=now)
             authority = self.store._authority_from_journal(operation_id=operation_id, candidate_release=identity_sha256, preparation_metadata_sha256=preparation_metadata_sha256, pointer_generation=state["pointer_generation"], journal=self.journal, operation=ACTIVATION_AUTHORIZATION_FORWARD, envelope=envelope, identity=provenance.TrustedReleaseIdentity(**identity), revision_allowlist=self.revision_allowlist, trust=self.trust, record_sha256=authorization.verification.record_sha256, authorization_id=authorization.authorization_id, retry_key=authorization.retry_key, scope=authorization.scope, state="reserved", now=now, assume_locked=True)
-            return self.store.begin_activation(operation_id=operation_id, retry_key=retry_key, candidate_release=evidence.identity_sha256, preparation_metadata_sha256=evidence.preparation_metadata_sha256, authorization_record_sha256=authorization.verification.record_sha256, authorization_id=authorization.authorization_id, authorization_scope=authorization.scope, rollback_target=rollback_target, expected_pointer_generation=state["pointer_generation"], authority=authority, assume_locked=True)
+            return self.store.begin_activation(operation_id=operation_id, retry_key=retry_key, candidate_release=evidence.identity_sha256, preparation_metadata_sha256=evidence.preparation_metadata_sha256, authorization_record_sha256=authorization.verification.record_sha256, authorization_id=authorization.authorization_id, authorization_scope=authorization.scope, rollback_target=rollback_target, expected_pointer_generation=state["pointer_generation"], authority=authority, execution_mode=execution_mode, assume_locked=True)
 
     def consume(self, operation_id: str, envelope: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
         state = self.store.load()
         operation = state["activation_operations"].get(operation_id)
         _require(operation is not None, "activation operation is unknown")
         _require(operation["phase"] in {"validated-intent", "authorization-consumption-pending"}, "activation authorization cannot be consumed from the current phase")
-        identity, _, _ = self._candidate(operation["candidate_release"])
+        identity = self._candidate_identity_for_authorization(operation["candidate_release"])
         binding = self._operation_binding(operation)
         authorization = self._verify_activation_authorization(envelope, identity, operation=ACTIVATION_AUTHORIZATION_FORWARD, binding=binding, now=now)
         _require(authorization.verification.record_sha256 == operation["authorization_record_sha256"] and authorization.retry_key == operation["retry_key"], "activation authorization does not match durable intent")
@@ -330,7 +391,7 @@ class ActivationTransaction:
             operation = self.store.load()["activation_operations"].get(operation_id)
             _require(operation is not None, "activation operation is unknown")
             self._activation_admission(operation["candidate_release"], operation["preparation_metadata_sha256"], now=now, assume_locked=True)
-            identity, _, _ = self._candidate(operation["candidate_release"])
+            identity = self._candidate_identity_for_authorization(operation["candidate_release"])
             binding = self._operation_binding(operation)
             authorization = self._verify_activation_authorization(envelope, identity, operation=ACTIVATION_AUTHORIZATION_FORWARD, binding=binding, now=now)
             _require(authorization.verification.record_sha256 == operation["authorization_record_sha256"] and authorization.retry_key == operation["retry_key"], "activation authorization does not match durable intent")
@@ -350,7 +411,7 @@ class ActivationTransaction:
             with self._locked():
                 self.store._reestablish_state_durability()
             return operation
-        identity, _, _ = self._candidate(operation["candidate_release"])
+        identity = self._candidate_identity_for_authorization(operation["candidate_release"])
         binding = self._operation_binding(operation)
         authorization = self._verify_activation_authorization(envelope, identity, operation=ACTIVATION_AUTHORIZATION_FORWARD, binding=binding, now=now, historical=True)
         _require(authorization.verification.record_sha256 == operation["authorization_record_sha256"], "reconciliation authorization digest conflicts with durable intent")
@@ -366,6 +427,8 @@ class ActivationTransaction:
 
     def observe(self, operation_id: str, *, phase: str, outcome: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
         _require(phase in retention.ACTIVATION_OBSERVED_PHASES, "activation observation phase is invalid")
+        if assume_locked:
+            self._require_lock_owner()
         state = self.store.load()
         operation = state["activation_operations"].get(operation_id)
         _require(operation is not None, "activation operation is unknown")
@@ -379,7 +442,7 @@ class ActivationTransaction:
             authority = self._consumed_authority(operation, recovery=recovery, assume_locked=True)
             return self.store.transition_activation(operation_id, phase=phase, observation=evidence, authority=authority, assume_locked=True)
 
-    def observe_runtime(self, operation_id: str, *, phase: str, outcome: str, evidence: dict[str, Any], assume_locked: bool = False) -> dict[str, Any]:
+    def observe_runtime(self, operation_id: str, *, phase: str, outcome: str, evidence: dict[str, Any], ticket: _RuntimeObservationTicket | None = None, assume_locked: bool = False) -> dict[str, Any]:
         """Persist evidence created by the trusted Docker/HTTP inspection path.
 
         Callers cannot select the source flag or submit arbitrary JSON to the
@@ -387,6 +450,7 @@ class ActivationTransaction:
         and this method adds the exact transaction binding.
         """
         _require(phase in retention.ACTIVATION_OBSERVED_PHASES, "activation observation phase is invalid")
+        _require(isinstance(ticket, _RuntimeObservationTicket) and ticket._token is self._runtime_observation_token and ticket.operation_id == operation_id and ticket.phase == phase and ticket.evidence_sha256 == hashlib.sha256(_canonical(evidence)).hexdigest(), "runtime observations require the lifecycle inspection ticket")
 
         def apply() -> dict[str, Any]:
             operation = self.store.load()["activation_operations"].get(operation_id)
@@ -455,12 +519,26 @@ class ActivationTransaction:
         with self._locked():
             return apply()
 
+    def begin_restart(self, operation_id: str, *, container_id: str, image_id: str, assume_locked: bool = False) -> dict[str, Any]:
+        if assume_locked:
+            self.store._reestablish_state_durability()
+            return self.store.begin_restart(operation_id, container_id=container_id, image_id=image_id, assume_locked=True)
+        with self._locked():
+            self.store._reestablish_state_durability()
+            return self.store.begin_restart(operation_id, container_id=container_id, image_id=image_id, assume_locked=True)
+
+    def transition_restart(self, operation_id: str, phase: str, *, assume_locked: bool = False) -> dict[str, Any]:
+        if assume_locked:
+            return self.store.transition_restart(operation_id, phase, assume_locked=True)
+        with self._locked():
+            return self.store.transition_restart(operation_id, phase, assume_locked=True)
+
     def begin_rollback(self, operation_id: str, envelope: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
         """Bind and persist a separately authorized compensating recovery."""
         state = self.store.load()
         operation = state["activation_operations"].get(operation_id)
         _require(operation is not None and operation["phase"] in {"successful-activation", "incumbent-stop-observed", "candidate-start-observed", "candidate-health-verified", "compensation-authorization-consumption-pending", "recovery-required"}, "rollback requires a failed candidate or successful activation")
-        identity, _, _ = self._candidate(operation["candidate_release"])
+        identity = self._candidate_identity_for_authorization(operation["candidate_release"])
         already_bound = operation["rollback_authorization_record_sha256"] is not None
         recovery_kind = operation["rollback_kind"] if already_bound else ("post-activation" if state["active_release"] == operation["candidate_release"] else "compensation")
         state = self.store.load()
@@ -477,7 +555,7 @@ class ActivationTransaction:
             state = self.store.load()
             operation = state["activation_operations"].get(operation_id)
             _require(operation is not None, "activation operation is unknown")
-            identity, _, _ = self._candidate(operation["candidate_release"])
+            identity = self._candidate_identity_for_authorization(operation["candidate_release"])
             recovery_retry_key = operation["rollback_retry_key"] if already_bound else self._authorization_retry_key(envelope)
             recovery_generation = operation["rollback_expected_pointer_generation"] if already_bound else state["pointer_generation"]
             binding = self._operation_binding(operation, generation=recovery_generation, recovery_kind=recovery_kind, authorization_retry_key=recovery_retry_key)
@@ -489,7 +567,7 @@ class ActivationTransaction:
         state = self.store.load()
         operation = state["activation_operations"].get(operation_id)
         _require(operation is not None and operation["phase"] == "compensation-authorization-consumption-pending", "rollback authorization cannot be consumed from the current phase")
-        identity, _, _ = self._candidate(operation["candidate_release"])
+        identity = self._candidate_identity_for_authorization(operation["candidate_release"])
         recovery_kind = operation["rollback_kind"]
         _require(recovery_kind in {"compensation", "post-activation"}, "rollback recovery kind is missing")
         binding = self._operation_binding(operation, generation=operation["rollback_expected_pointer_generation"], recovery_kind=recovery_kind, authorization_retry_key=operation["rollback_retry_key"])
@@ -498,7 +576,7 @@ class ActivationTransaction:
         with self._locked():
             operation = self.store.load()["activation_operations"].get(operation_id)
             _require(operation is not None and operation["phase"] == "compensation-authorization-consumption-pending", "rollback authorization cannot be consumed from the current phase")
-            identity, _, _ = self._candidate(operation["candidate_release"])
+            identity = self._candidate_identity_for_authorization(operation["candidate_release"])
             binding = self._operation_binding(operation, generation=operation["rollback_expected_pointer_generation"], recovery_kind=operation["rollback_kind"], authorization_retry_key=operation["rollback_retry_key"])
             authorization = self._verify_activation_authorization(envelope, identity, operation=ACTIVATION_AUTHORIZATION_RECOVERY, binding=binding, now=now)
             _require(authorization.verification.record_sha256 == operation["rollback_authorization_record_sha256"] and authorization.retry_key == operation["rollback_retry_key"], "rollback authorization does not match durable intent")
@@ -516,7 +594,7 @@ class ActivationTransaction:
                 durable_state = self.store.load()
                 self.store._reestablish_state_durability()
                 return durable_state["activation_operations"][operation_id]
-        identity, _, _ = self._candidate(operation["candidate_release"])
+        identity = self._candidate_identity_for_authorization(operation["candidate_release"])
         binding = self._operation_binding(operation, generation=operation["rollback_expected_pointer_generation"], recovery_kind=operation["rollback_kind"], authorization_retry_key=operation["rollback_retry_key"])
         authorization = self._verify_activation_authorization(envelope, identity, operation=ACTIVATION_AUTHORIZATION_RECOVERY, binding=binding, now=now, historical=True)
         _require(authorization.verification.record_sha256 == operation["rollback_authorization_record_sha256"], "rollback reconciliation authorization digest conflicts with durable intent")

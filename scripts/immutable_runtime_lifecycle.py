@@ -10,7 +10,7 @@ this boundary.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -158,6 +158,7 @@ class RuntimeExecutionContract:
     platform: str
     configuration_sha256: str
     env_file: Path | None
+    source_sha: str | None = None
     command: tuple[str, ...] = ("node", "/app/dist/ClashCookies.js")
 
 
@@ -240,7 +241,19 @@ class ImmutableRuntimeLifecycle:
         self.transaction = transaction
         self.config = config
         self.docker = docker or DockerClient()
-        self._env_file, self._configuration_sha256 = _safe_env_file(config.env_file, transaction)
+        self._env_file, self._env_file_sha256 = _safe_env_file(config.env_file, transaction)
+
+    def _configuration_digest(self, contract: RuntimeExecutionContract, *, actual: dict[str, Any] | None = None) -> str:
+        build_sha = contract.source_sha or contract.release_id
+        expected_env = {"BUILD_SHA": build_sha, "CLASHCOOKIES_RUNTIME_IDENTITY_SHA256": contract.release_id, "CLASHCOOKIES_PREPARATION_METADATA_SHA256": contract.preparation_metadata_sha256 or "legacy", "CLASHCOOKIES_ACTIVATION_OPERATION_ID": contract.operation_id, "CLASHCOOKIES_HEALTH_PROVENANCE": self.config.health_provenance}
+        payload = actual or {"image_id": contract.image_id, "command": list(contract.command), "entrypoint": [], "working_dir": "/app", "network": self.config.network, "port": [("127.0.0.1", str(self.config.host_port))], "readonly_rootfs": True, "restart": "no", "env": expected_env, "env_file_sha256": self._env_file_sha256}
+        if actual is not None:
+            payload = dict(payload)
+            payload["env_file_sha256"] = self._env_file_sha256
+        return hashlib.sha256(_canonical(payload)).hexdigest()
+
+    def _finalize_contract(self, contract: RuntimeExecutionContract) -> RuntimeExecutionContract:
+        return replace(contract, configuration_sha256=self._configuration_digest(contract))
 
     def _operation(self, operation_id: str) -> dict[str, Any]:
         operation = self.transaction.store.load()["activation_operations"].get(operation_id)
@@ -258,7 +271,7 @@ class ImmutableRuntimeLifecycle:
         for required in (runtime_root / "dist" / "ClashCookies.js", runtime_root / "node_modules", runtime_root / "prisma" / "schema.prisma"):
             _require(required.exists() and not required.is_symlink(), f"prepared compiled runtime component is missing: {required.name}")
         image = _image_identity(self.docker, identity, expected_id=expected_image_id, timeout=self.config.docker_timeout_seconds)
-        return RuntimeExecutionContract(operation_id=operation_id, release_id=operation["candidate_release"], preparation_metadata_sha256=operation["preparation_metadata_sha256"], runtime_root=runtime_root, runtime_integrity=actual_integrity, image=image["image"], image_digest=image["image_digest"], image_id=image["image_id"], platform=image["platform"], configuration_sha256=self._configuration_sha256, env_file=self._env_file)
+        return self._finalize_contract(RuntimeExecutionContract(operation_id=operation_id, release_id=operation["candidate_release"], preparation_metadata_sha256=operation["preparation_metadata_sha256"], runtime_root=runtime_root, runtime_integrity=actual_integrity, image=image["image"], image_digest=image["image_digest"], image_id=image["image_id"], platform=image["platform"], configuration_sha256="0" * 64, env_file=self._env_file, source_sha=str(identity["source_sha"])))
 
     def _legacy_contract(self, operation_id: str) -> RuntimeExecutionContract:
         operation = self._operation(operation_id)
@@ -269,10 +282,12 @@ class ImmutableRuntimeLifecycle:
         integrity = preparation._integrity(runtime_root, maximum_bytes=preparation.MAX_LEGACY_BYTES, maximum_entries=preparation.MAX_LEGACY_ENTRIES)
         _require(integrity == baseline["integrity"], "preserved legacy runtime integrity changed")
         image_observation = preparation._verify_legacy_image_available(baseline["identity"])
-        return RuntimeExecutionContract(operation_id=operation_id, release_id=retention.LEGACY_BASELINE_ID, preparation_metadata_sha256=None, runtime_root=runtime_root, runtime_integrity=integrity, image=str(image_observation["image"]), image_digest=str(image_observation["digest"]), image_id=str(image_observation["image_id"]), platform=str(image_observation["platform"]), configuration_sha256=self._configuration_sha256, env_file=self._env_file)
+        source_sha = (baseline.get("identity") or {}).get("source_sha")
+        return self._finalize_contract(RuntimeExecutionContract(operation_id=operation_id, release_id=retention.LEGACY_BASELINE_ID, preparation_metadata_sha256=None, runtime_root=runtime_root, runtime_integrity=integrity, image=str(image_observation["image"]), image_digest=str(image_observation["digest"]), image_id=str(image_observation["image_id"]), platform=str(image_observation["platform"]), configuration_sha256="0" * 64, env_file=self._env_file, source_sha=source_sha if isinstance(source_sha, str) else None))
 
     def _run_arguments(self, contract: RuntimeExecutionContract) -> list[str]:
-        arguments = ["run", "--detach", "--pull=never", "--platform", contract.platform, "--name", self.config.container_name, "--restart", "no", "--init", "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--network", self.config.network, "--label", "com.clashcookies.runtime=immutable", "--label", f"com.clashcookies.activation-operation={contract.operation_id}", "--label", f"com.clashcookies.release={contract.release_id}", "--label", f"com.clashcookies.preparation={contract.preparation_metadata_sha256 or 'legacy'}", "--publish", f"127.0.0.1:{self.config.host_port}:8080", "--env", f"BUILD_SHA={contract.release_id}", "--env", f"CLASHCOOKIES_RUNTIME_IDENTITY_SHA256={contract.release_id}", "--env", f"CLASHCOOKIES_PREPARATION_METADATA_SHA256={contract.preparation_metadata_sha256 or 'legacy'}", "--env", f"CLASHCOOKIES_ACTIVATION_OPERATION_ID={contract.operation_id}", "--env", f"CLASHCOOKIES_HEALTH_PROVENANCE={self.config.health_provenance}"]
+        build_sha = contract.source_sha or contract.release_id
+        arguments = ["run", "--detach", "--pull=never", "--platform", contract.platform, "--name", self.config.container_name, "--restart", "no", "--init", "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--network", self.config.network, "--label", "com.clashcookies.runtime=immutable", "--label", f"com.clashcookies.activation-operation={contract.operation_id}", "--label", f"com.clashcookies.release={contract.release_id}", "--label", f"com.clashcookies.preparation={contract.preparation_metadata_sha256 or 'legacy'}", "--label", f"com.clashcookies.source-sha={build_sha}", "--publish", f"127.0.0.1:{self.config.host_port}:8080", "--env", f"BUILD_SHA={build_sha}", "--env", f"CLASHCOOKIES_RUNTIME_IDENTITY_SHA256={contract.release_id}", "--env", f"CLASHCOOKIES_PREPARATION_METADATA_SHA256={contract.preparation_metadata_sha256 or 'legacy'}", "--env", f"CLASHCOOKIES_ACTIVATION_OPERATION_ID={contract.operation_id}", "--env", f"CLASHCOOKIES_HEALTH_PROVENANCE={self.config.health_provenance}"]
         if contract.env_file is not None:
             arguments.extend(["--env-file", str(contract.env_file)])
         arguments.extend(["--workdir", "/app", "--volume", f"{contract.runtime_root}:/app:ro", "--entrypoint", "", contract.image, *contract.command])
@@ -305,16 +320,37 @@ class ImmutableRuntimeLifecycle:
         _require(isinstance(config, dict), "container configuration is unavailable")
         labels = config.get("Labels") or inspected.get("Config", {}).get("Labels") or {}
         _require(isinstance(labels, dict) and labels.get("com.clashcookies.runtime") == "immutable" and labels.get("com.clashcookies.activation-operation") == contract.operation_id and labels.get("com.clashcookies.release") == contract.release_id, "container labels are not the exact lifecycle binding")
+        build_sha = contract.source_sha or contract.release_id
+        _require(labels.get("com.clashcookies.source-sha") == build_sha, "container source identity label is not exact")
         _require(list(config.get("Cmd") or []) == list(contract.command) and not (config.get("Entrypoint") or []), "container command is not the migration-independent compiled entry point")
+        _require(config.get("WorkingDir") == "/app", "container working directory is not exact")
+        host_config = inspected.get("HostConfig") or {}
+        _require(host_config.get("ReadonlyRootfs") is True, "container root filesystem is not read-only")
+        restart_name = str((host_config.get("RestartPolicy") or {}).get("Name", ""))
+        _require(restart_name in {"", "no"}, "candidate automatic restart policy is not disabled")
+        network_mode = str(host_config.get("NetworkMode", ""))
+        networks = ((inspected.get("NetworkSettings") or {}).get("Networks") or {})
+        _require(self.config.network in networks or network_mode == self.config.network or (self.config.network == "bridge" and network_mode == "default"), "container network is not exact")
+        port_bindings = host_config.get("PortBindings") or {}
+        bound = port_bindings.get("8080/tcp") or []
+        _require(any(str(item.get("HostPort")) == str(self.config.host_port) and str(item.get("HostIp", "127.0.0.1")) in {"127.0.0.1", ""} for item in bound if isinstance(item, dict)), "container host port binding is not exact")
+        env = {}
+        for item in config.get("Env") or []:
+            if isinstance(item, str) and "=" in item:
+                key, value = item.split("=", 1)
+                env[key] = value
+        expected_env = {"BUILD_SHA": build_sha, "CLASHCOOKIES_RUNTIME_IDENTITY_SHA256": contract.release_id, "CLASHCOOKIES_PREPARATION_METADATA_SHA256": contract.preparation_metadata_sha256 or "legacy", "CLASHCOOKIES_ACTIVATION_OPERATION_ID": contract.operation_id, "CLASHCOOKIES_HEALTH_PROVENANCE": self.config.health_provenance}
+        _require(all(env.get(key) == value for key, value in expected_env.items()), "container runtime environment is substituted")
         mounts = self._mounts(inspected)
         app_mount = next(item for item in mounts if item.get("Destination") == "/app")
         _require(Path(str(app_mount.get("Source"))).resolve() == contract.runtime_root.resolve(), "container runtime mount source is substituted")
-        restart_name = str((inspected.get("HostConfig") or {}).get("RestartPolicy", {}).get("Name", ""))
-        _require(restart_name in {"", "no"}, "candidate automatic restart policy is not disabled")
+        actual_config = {"image_id": inspected.get("Image"), "command": list(config.get("Cmd") or []), "entrypoint": list(config.get("Entrypoint") or []), "working_dir": config.get("WorkingDir"), "network": self.config.network if network_mode == "default" and self.config.network == "bridge" else network_mode, "port": sorted((str(item.get("HostIp", "127.0.0.1")), str(item.get("HostPort"))) for item in bound if isinstance(item, dict)), "readonly_rootfs": host_config.get("ReadonlyRootfs"), "restart": restart_name, "env": {key: env.get(key) for key in expected_env}}
+        actual_configuration_sha256 = self._configuration_digest(contract, actual=actual_config)
+        _require(actual_configuration_sha256 == contract.configuration_sha256, "container configuration digest is not bound to actual inspected configuration")
         pid = int(state.get("Pid", 0))
         started_at = state.get("StartedAt")
         _require(isinstance(started_at, str) and started_at, "container process incarnation is unavailable")
-        return inspected, {"container_id": str(inspected.get("Id")), "image_id": contract.image_id, "process_incarnation": {"pid": pid, "started_at": started_at}, "mounts": mounts, "configuration_sha256": contract.configuration_sha256}
+        return inspected, {"container_id": str(inspected.get("Id")), "image_id": contract.image_id, "process_incarnation": {"pid": pid, "started_at": started_at}, "mounts": mounts, "configuration_sha256": actual_configuration_sha256}
 
     def _evidence(self, phase: str, subject: str, subject_release: str, contract: RuntimeExecutionContract, container: dict[str, Any], *, health: dict[str, Any]) -> dict[str, Any]:
         _require(subject in {"candidate", "rollback-target"} and isinstance(subject_release, str), "runtime evidence subject is invalid")
@@ -345,7 +381,20 @@ class ImmutableRuntimeLifecycle:
         runtime = payload.get("runtime")
         expected_preparation = contract.preparation_metadata_sha256 or "legacy"
         _require(isinstance(runtime, dict) and runtime.get("runtime_identity_sha256") == contract.release_id and runtime.get("preparation_metadata_sha256") == expected_preparation and runtime.get("operation_id") == contract.operation_id, "health response is not bound to the exact runtime operation")
-        return {"provenance": self.config.health_provenance, "status": "healthy", "http_status": status, "response_sha256": hashlib.sha256(raw).hexdigest(), "runtime": {"runtime_identity_sha256": runtime.get("runtime_identity_sha256"), "preparation_metadata_sha256": runtime.get("preparation_metadata_sha256"), "operation_id": runtime.get("operation_id")}, "checked_at": _now()}
+        _require(runtime.get("provenance") == self.config.health_provenance, "health provenance is not identity-bound")
+        timestamp = payload.get("timestamp")
+        _require(isinstance(timestamp, str) and timestamp, "health response freshness is missing")
+        try:
+            observed_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except ValueError:
+            _fail("health response timestamp is malformed")
+        _require(abs((datetime.now(timezone.utc) - observed_at).total_seconds()) <= self.config.health_timeout_seconds + 5, "health response is stale")
+        expected_id = expected_container.get("Id") or expected_container.get("container_id")
+        _require(isinstance(expected_id, str) and expected_id, "health check lacks an expected container identity")
+        build_sha = contract.source_sha
+        if build_sha is not None:
+            _require(runtime.get("build_sha") == build_sha or (self.config.health_provenance == "fixture" and runtime.get("build_sha") in {None, ""}), "health BUILD_SHA is not the source commit identity")
+        return {"provenance": runtime.get("provenance"), "status": "healthy", "http_status": status, "response_sha256": hashlib.sha256(raw).hexdigest(), "runtime": {"runtime_identity_sha256": runtime.get("runtime_identity_sha256"), "preparation_metadata_sha256": runtime.get("preparation_metadata_sha256"), "operation_id": runtime.get("operation_id"), "provenance": runtime.get("provenance"), "build_sha": runtime.get("build_sha"), "timestamp": timestamp}, "checked_at": _now()}
 
     def _active_containers(self) -> list[dict[str, Any]]:
         containers: list[dict[str, Any]] = []
@@ -359,11 +408,36 @@ class ImmutableRuntimeLifecycle:
             labels = config.get("Labels") or {}
             ports = ((inspected.get("NetworkSettings") or {}).get("Ports") or {})
             has_target_port = any(isinstance(values, list) and any(str(item.get("HostPort")) == str(self.config.host_port) for item in values if isinstance(item, dict)) for values in ports.values())
-            if state.get("Running") is True or state.get("Restarting") is True or labels.get("com.clashcookies.runtime") in {"active", "immutable"} or has_target_port:
+            name = str(inspected.get("Name", "")).lstrip("/")
+            if name == self.config.container_name or labels.get("com.clashcookies.runtime") in {"active", "immutable"} or has_target_port:
                 containers.append(inspected)
         return containers
 
-    def _expected_incumbent_id(self, operation: dict[str, Any]) -> str:
+    def _assert_singleton(self, *, exact_id: str | None = None) -> None:
+        """Reject every active or identity-conflicting occupant before commit."""
+        matches: list[dict[str, Any]] = []
+        for container_id in self.docker.container_ids(timeout=self.config.docker_timeout_seconds):
+            try:
+                inspected = self.docker.inspect_container(container_id, timeout=self.config.docker_timeout_seconds)
+            except LifecycleError:
+                _fail("container inventory changed during singleton inspection")
+            state = inspected.get("State") or {}
+            config = inspected.get("Config") or {}
+            labels = config.get("Labels") or {}
+            name = str(inspected.get("Name", "")).lstrip("/")
+            ports = ((inspected.get("NetworkSettings") or {}).get("Ports") or {})
+            has_target_port = any(isinstance(values, list) and any(str(item.get("HostPort")) == str(self.config.host_port) for item in values if isinstance(item, dict)) for values in ports.values())
+            same_network = self.config.network in ((inspected.get("NetworkSettings") or {}).get("Networks") or {})
+            owned = labels.get("com.clashcookies.runtime") == "immutable"
+            relevant = name == self.config.container_name or has_target_port or (owned and same_network and (state.get("Running") is True or state.get("Restarting") is True))
+            if relevant:
+                matches.append(inspected)
+        if exact_id is not None:
+            _require(len(matches) == 1 and str(matches[0].get("Id", "")).startswith(exact_id), "runtime singleton or exact identity is ambiguous")
+        else:
+            _require(not matches, "runtime singleton is not empty before start")
+
+    def _expected_incumbent_id(self, operation: dict[str, Any]) -> str | None:
         release = operation["incumbent_release"] or retention.LEGACY_BASELINE_ID
         if release == retention.LEGACY_BASELINE_ID:
             baseline = self.transaction.store.legacy_baseline_status()
@@ -376,6 +450,11 @@ class ImmutableRuntimeLifecycle:
                 if item.get("candidate_release") == release and item.get("phase") == "successful-activation":
                     evidence = (item.get("observations") or {}).get("candidate-health-verified", {}).get("evidence", {})
                     value = evidence.get("container_id")
+        if value is None and release == retention.LEGACY_BASELINE_ID:
+            # A first activation may legitimately have no running legacy
+            # container.  The singleton preflight below still proves that no
+            # relevant runtime is active before the candidate is started.
+            return None
         _require(isinstance(value, str) and value, "exact incumbent container identity is not durably known")
         return value
 
@@ -407,7 +486,8 @@ class ImmutableRuntimeLifecycle:
         refreshed = self.docker.inspect_container(container_id, timeout=self.config.docker_timeout_seconds)
         refreshed_state = refreshed.get("State") or {}
         _require(refreshed_state.get("Running") is not True and refreshed_state.get("Restarting") is not True, "incumbent remains active after bounded stop")
-        return {"container_id": str(refreshed.get("Id")), "image_id": str(refreshed.get("Image")), "process_incarnation": {"pid": int(refreshed_state.get("Pid", 0)), "started_at": str(refreshed_state.get("StartedAt", ""))}, "mounts": [], "configuration_sha256": self._configuration_sha256}
+        actual_configuration = {"image_id": refreshed.get("Image"), "network": self.config.network, "host_port": self.config.host_port, "restart": str(((refreshed.get("HostConfig") or {}).get("RestartPolicy") or {}).get("Name", "")), "labels": ((refreshed.get("Config") or {}).get("Labels") or {})}
+        return {"container_id": str(refreshed.get("Id")), "image_id": str(refreshed.get("Image")), "process_incarnation": {"pid": int(refreshed_state.get("Pid", 0)), "started_at": str(refreshed_state.get("StartedAt", ""))}, "mounts": [], "configuration_sha256": hashlib.sha256(_canonical(actual_configuration)).hexdigest()}
 
     def _run_candidate(self, operation_id: str, contract: RuntimeExecutionContract) -> tuple[str, dict[str, Any]]:
         existing = self.docker.container_ids(name=self.config.container_name, timeout=self.config.docker_timeout_seconds)
@@ -421,7 +501,9 @@ class ImmutableRuntimeLifecycle:
                 started = self.docker.run(["container", "start", str(inspected["Id"])], timeout=self.config.docker_timeout_seconds)
                 _require(started.returncode == 0, "exact interrupted candidate could not be started")
                 inspected, evidence = self._inspect_exact(str(inspected["Id"]), contract, require_running=True)
+            self._assert_singleton(exact_id=str(inspected["Id"]))
             return str(inspected["Id"]), evidence
+        self._assert_singleton()
         try:
             result = self.docker.run(self._run_arguments(contract), timeout=self.config.docker_timeout_seconds)
         except LifecycleError as error:
@@ -435,6 +517,7 @@ class ImmutableRuntimeLifecycle:
                 started = self.docker.run(["container", "start", str(inspected["Id"])], timeout=self.config.docker_timeout_seconds)
                 _require(started.returncode == 0, "exact partial candidate could not be reconciled")
                 inspected, evidence = self._inspect_exact(str(inspected["Id"]), contract, require_running=True)
+            self._assert_singleton(exact_id=str(inspected["Id"]))
             return str(inspected["Id"]), evidence
         container_id = result.stdout.strip() if result.returncode == 0 else ""
         if not container_id:
@@ -442,6 +525,7 @@ class ImmutableRuntimeLifecycle:
             _require(len(possible) == 1, "candidate start outcome is ambiguous and no safe adoption is possible")
             container_id = possible[0]
         inspected, evidence = self._inspect_exact(container_id, contract, require_running=True)
+        self._assert_singleton(exact_id=str(inspected["Id"]))
         return str(inspected["Id"]), evidence
 
     def activate(self, operation_id: str, *, activation_envelope: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -456,20 +540,30 @@ class ImmutableRuntimeLifecycle:
             operation = self._operation(operation_id)
         with self.transaction.lifecycle_lock():
             operation = self._operation(operation_id)
+            _require(operation.get("execution_mode") == "operational", "isolated transaction evidence cannot drive operational lifecycle")
             _require(operation["phase"] in {"authorization-consumed", "incumbent-stop-intent", "incumbent-stop-observed", "candidate-start-intent", "candidate-start-observed", "candidate-health-verified"}, "activation is not at a resumable lifecycle phase")
+            # This is the hard admission boundary: prepared material, image
+            # identity, and owned runtime integrity are all proven before any
+            # Docker stop/update/run/remove command is allowed.
+            contract = self._candidate_contract(operation_id)
             if operation["phase"] == "authorization-consumed":
                 self.transaction.advance(operation_id, "incumbent-stop-intent", assume_locked=True)
                 operation = self._operation(operation_id)
             incumbent_release = operation["incumbent_release"] or retention.LEGACY_BASELINE_ID
             incumbent_id = self._expected_incumbent_id(operation)
             if operation["phase"] == "incumbent-stop-intent":
-                stopped = self._stop_exact(incumbent_id, expected_release=incumbent_release)
+                self.transaction.revalidate_lifecycle_boundary(operation_id, expected_phase="incumbent-stop-intent", assume_locked=True)
+                if incumbent_id is None:
+                    self._assert_singleton()
+                    stopped = {"container_id": "none", "image_id": "none", "process_incarnation": {"pid": 0, "started_at": _now()}, "configuration_sha256": "0" * 64}
+                else:
+                    stopped = self._stop_exact(incumbent_id, expected_release=incumbent_release)
                 incumbent_evidence = {}
                 if incumbent_release == retention.LEGACY_BASELINE_ID:
                     baseline = self.transaction.store.legacy_baseline_status()
                     incumbent_evidence = (baseline.get("identity") or {}).get("container_observation") or {}
                     incumbent_integrity = baseline.get("integrity")
-                    incumbent_digest = (baseline.get("identity") or {}).get("image_digest")
+                    incumbent_digest = (baseline.get("identity") or {}).get("image_digest") or "none"
                 else:
                     for prior in self.transaction.store.load()["activation_operations"].values():
                         if prior.get("candidate_release") == incumbent_release and prior.get("phase") == "successful-activation":
@@ -477,18 +571,18 @@ class ImmutableRuntimeLifecycle:
                     incumbent_integrity = incumbent_evidence.get("runtime_integrity")
                     incumbent_digest = incumbent_evidence.get("image_digest")
                 _require(isinstance(incumbent_integrity, dict) and set(incumbent_integrity) == {"tree_sha256", "bytes", "entries"}, "incumbent runtime integrity evidence is unavailable")
-                _require(isinstance(incumbent_digest, str) and incumbent_digest.startswith("sha256:"), "incumbent image digest evidence is unavailable")
+                _require(isinstance(incumbent_digest, str) and (incumbent_digest.startswith("sha256:") or incumbent_digest == "none"), "incumbent image digest evidence is unavailable")
                 evidence = {"contract": "clashcookies.immutable-runtime-observation", "version": 1, "operation_id": operation_id, "phase": "incumbent-stop-observed", "candidate_release": operation["candidate_release"], "subject": "incumbent", "subject_release": incumbent_release, "preparation_metadata_sha256": operation["preparation_metadata_sha256"], "target_preparation_metadata_sha256": None, "runtime_integrity": incumbent_integrity, "container_id": stopped["container_id"], "image_id": stopped["image_id"], "image_digest": incumbent_digest, "platform": "linux/amd64", "process_incarnation": stopped["process_incarnation"], "mounts": [], "configuration_sha256": stopped["configuration_sha256"], "health": {"provenance": "docker-inspection", "status": "stopped"}, "observed_at": _now()}
-                self.transaction.observe_runtime(operation_id, phase="incumbent-stop-observed", outcome="stopped", evidence=evidence, assume_locked=True)
+                self.transaction.observe_runtime(operation_id, phase="incumbent-stop-observed", outcome="stopped", evidence=evidence, ticket=self.transaction._issue_runtime_observation_ticket(operation_id, "incumbent-stop-observed", evidence), assume_locked=True)
                 operation = self._operation(operation_id)
             if operation["phase"] == "incumbent-stop-observed":
                 self.transaction.advance(operation_id, "candidate-start-intent", assume_locked=True)
                 operation = self._operation(operation_id)
-            contract = self._candidate_contract(operation_id)
             if operation["phase"] == "candidate-start-intent":
+                self.transaction.revalidate_lifecycle_boundary(operation_id, expected_phase="candidate-start-intent", assume_locked=True)
                 container_id, started = self._run_candidate(operation_id, contract)
                 evidence = self._evidence("candidate-start-observed", "candidate", operation["candidate_release"], contract, started, health={"provenance": "docker-inspection", "status": "started"})
-                self.transaction.observe_runtime(operation_id, phase="candidate-start-observed", outcome="started", evidence=evidence, assume_locked=True)
+                self.transaction.observe_runtime(operation_id, phase="candidate-start-observed", outcome="started", evidence=evidence, ticket=self.transaction._issue_runtime_observation_ticket(operation_id, "candidate-start-observed", evidence), assume_locked=True)
                 operation = self._operation(operation_id)
             if operation["phase"] in {"candidate-start-observed", "candidate-health-verified"}:
                 expected = contract
@@ -498,9 +592,11 @@ class ImmutableRuntimeLifecycle:
                 health = self._health(expected, inspected)
                 container_after = self.docker.inspect_container(ids[0], timeout=self.config.docker_timeout_seconds)
                 _require(container_after.get("Id") == container.get("Id") and container_after.get("Image") == expected.image_id and (container_after.get("State") or {}).get("StartedAt") == (container.get("State") or {}).get("StartedAt"), "candidate identity changed between health and commit")
+                self._assert_singleton(exact_id=str(container.get("Id")))
                 evidence = self._evidence("candidate-health-verified", "candidate", operation["candidate_release"], expected, inspected, health=health)
-                self.transaction.observe_runtime(operation_id, phase="candidate-health-verified", outcome="healthy", evidence=evidence, assume_locked=True)
+                self.transaction.observe_runtime(operation_id, phase="candidate-health-verified", outcome="healthy", evidence=evidence, ticket=self.transaction._issue_runtime_observation_ticket(operation_id, "candidate-health-verified", evidence), assume_locked=True)
                 _require(self.config.health_provenance == "application" or self.config.allow_fixture_commit, "fixture health cannot publish an activation pointer without explicit test policy")
+                self.transaction.revalidate_lifecycle_boundary(operation_id, expected_phase="candidate-health-verified", assume_locked=True)
                 self.transaction.advance(operation_id, "successful-activation", assume_locked=True)
             return self._operation(operation_id)
 
@@ -513,43 +609,92 @@ class ImmutableRuntimeLifecycle:
             expected_image_id = prior.get("image_id")
             contract = self._candidate_contract(operation_id, expected_image_id=expected_image_id)
             ids = self.docker.container_ids(name=self.config.container_name, timeout=self.config.docker_timeout_seconds)
-            _require(len(ids) == 1, "committed runtime container is missing or ambiguous")
-            current, _ = self._inspect_exact(ids[0], contract, require_running=True)
-            self._stop_exact(str(current["Id"]), expected_release=operation["candidate_release"])
-            result = self.docker.run(["container", "rm", str(current["Id"])], timeout=self.config.docker_timeout_seconds)
-            _require(result.returncode == 0, "exact committed runtime could not be removed after bounded stop")
-            _, started = self._run_candidate(operation_id, contract)
-            ids = self.docker.container_ids(name=self.config.container_name, timeout=self.config.docker_timeout_seconds)
-            _require(len(ids) == 1, "restarted committed runtime identity is ambiguous")
-            _, inspected = self._inspect_exact(ids[0], contract, require_running=True)
-            health = self._health(contract, inspected)
-            evidence = self._evidence("candidate-health-verified", "candidate", operation["candidate_release"], contract, inspected, health=health)
-            self.transaction.observe_runtime(operation_id, phase="candidate-health-verified", outcome="healthy", evidence=evidence, assume_locked=True)
+            _require(len(ids) <= 1, "committed runtime container is ambiguous")
+            expected_container_id = str(ids[0]) if ids else str(prior.get("container_id", ""))
+            _require(expected_container_id, "committed runtime identity is unavailable for restart intent")
+            expected_image = str(expected_image_id or contract.image_id)
+            operation = self.transaction.begin_restart(operation_id, container_id=expected_container_id, image_id=expected_image, assume_locked=True)
+            restart = operation["restart"]
+            if restart["phase"] == "intent":
+                self.transaction.revalidate_lifecycle_boundary(operation_id, expected_phase="successful-activation", assume_locked=True)
+                ids = self.docker.container_ids(name=self.config.container_name, timeout=self.config.docker_timeout_seconds)
+                _require(len(ids) <= 1, "restart incumbent identity is ambiguous")
+                if not ids:
+                    self.transaction.transition_restart(operation_id, "removed", assume_locked=True)
+                else:
+                    current, _ = self._inspect_exact(ids[0], contract, require_running=False)
+                    if (current.get("State") or {}).get("Running") is True or (current.get("State") or {}).get("Restarting") is True:
+                        self._stop_exact(str(current["Id"]), expected_release=operation["candidate_release"])
+                    self.transaction.transition_restart(operation_id, "stopped", assume_locked=True)
+                operation = self._operation(operation_id)
+            if operation["restart"]["phase"] == "stopped":
+                ids = self.docker.container_ids(name=self.config.container_name, timeout=self.config.docker_timeout_seconds)
+                _require(len(ids) <= 1, "restart removal identity is ambiguous")
+                if ids:
+                    result = self.docker.run(["container", "rm", str(ids[0])], timeout=self.config.docker_timeout_seconds)
+                    _require(result.returncode == 0, "exact committed runtime could not be removed after bounded stop")
+                self.transaction.transition_restart(operation_id, "removed", assume_locked=True)
+                operation = self._operation(operation_id)
+            if operation["restart"]["phase"] == "removed":
+                self.transaction.revalidate_lifecycle_boundary(operation_id, expected_phase="successful-activation", assume_locked=True)
+                self._assert_singleton()
+                self._run_candidate(operation_id, contract)
+                self.transaction.transition_restart(operation_id, "started", assume_locked=True)
+                operation = self._operation(operation_id)
+            if operation["restart"]["phase"] == "started":
+                ids = self.docker.container_ids(name=self.config.container_name, timeout=self.config.docker_timeout_seconds)
+                _require(len(ids) == 1, "restarted committed runtime identity is ambiguous")
+                _, inspected = self._inspect_exact(ids[0], contract, require_running=True)
+                health = self._health(contract, inspected)
+                after = self.docker.inspect_container(ids[0], timeout=self.config.docker_timeout_seconds)
+                _require(after.get("Id") == inspected.get("Id") and after.get("Image") == contract.image_id and (after.get("State") or {}).get("StartedAt") == (inspected.get("State") or {}).get("StartedAt"), "restarted runtime identity changed before commit")
+                evidence = self._evidence("candidate-health-verified", "candidate", operation["candidate_release"], contract, inspected, health=health)
+                self.transaction.observe_runtime(operation_id, phase="candidate-health-verified", outcome="healthy", evidence=evidence, ticket=self.transaction._issue_runtime_observation_ticket(operation_id, "candidate-health-verified", evidence), assume_locked=True)
+                self.transaction.transition_restart(operation_id, "health-verified", assume_locked=True)
+                self.transaction.transition_restart(operation_id, "complete", assume_locked=True)
             return self._operation(operation_id)
 
     def rollback(self, operation_id: str, recovery_envelope: dict[str, Any]) -> dict[str, Any]:
         """Execute separately authorized compensation or post-activation recovery."""
-        self.transaction.begin_rollback(operation_id, recovery_envelope)
-        self.transaction.consume_rollback(operation_id, recovery_envelope)
+        operation = self._operation(operation_id)
+        if operation["phase"] not in {"rollback-intent", "rollback-observed", "successful-rollback"}:
+            if operation["phase"] == "compensation-authorization-consumption-pending":
+                self.transaction.consume_rollback(operation_id, recovery_envelope)
+            elif operation["phase"] == "recovery-required" and operation.get("rollback_authorization_record_sha256") is not None:
+                self.transaction.reconcile_rollback(operation_id, recovery_envelope)
+            else:
+                self.transaction.begin_rollback(operation_id, recovery_envelope)
+                self.transaction.consume_rollback(operation_id, recovery_envelope)
         with self.transaction.lifecycle_lock():
             operation = self._operation(operation_id)
             _require(operation["phase"] == "rollback-intent", "rollback is not at its durable intent boundary")
-            candidate = self._candidate_contract(operation_id)
-            ids = self.docker.container_ids(name=self.config.container_name, timeout=self.config.docker_timeout_seconds)
-            _require(len(ids) == 1, "displaced candidate container is missing or ambiguous")
-            current, _ = self._inspect_exact(ids[0], candidate, require_running=True)
-            self._stop_exact(str(current["Id"]), expected_release=operation["candidate_release"])
-            removed = self.docker.run(["container", "rm", str(current["Id"])], timeout=self.config.docker_timeout_seconds)
-            _require(removed.returncode == 0, "displaced candidate containment is incomplete")
             target_release = operation["rollback_target"] or retention.LEGACY_BASELINE_ID
+            # Verify the exact independently retained target before touching
+            # the displaced candidate.  Candidate material is intentionally
+            # not required for containment of a failed/partial candidate.
             target = self._legacy_contract(operation_id) if target_release == retention.LEGACY_BASELINE_ID else self._authenticated_target_contract(operation_id, target_release)
+            self.transaction.revalidate_lifecycle_boundary(operation_id, expected_phase="rollback-intent", assume_locked=True)
+            ids = self.docker.container_ids(name=self.config.container_name, timeout=self.config.docker_timeout_seconds)
+            _require(len(ids) <= 1, "displaced candidate container is ambiguous")
+            if ids:
+                current = self.docker.inspect_container(ids[0], timeout=self.config.docker_timeout_seconds)
+                labels = ((current.get("Config") or {}).get("Labels") or {})
+                _require(labels.get("com.clashcookies.runtime") == "immutable" and labels.get("com.clashcookies.activation-operation") == operation_id and labels.get("com.clashcookies.release") == operation["candidate_release"], "displaced candidate identity is not exact")
+                state = current.get("State") or {}
+                if state.get("Running") is True or state.get("Restarting") is True:
+                    self._stop_exact(str(current["Id"]), expected_release=operation["candidate_release"])
+                removed = self.docker.run(["container", "rm", str(current["Id"])], timeout=self.config.docker_timeout_seconds)
+                _require(removed.returncode == 0, "displaced candidate containment is incomplete")
+            self._assert_singleton()
+            self.transaction.revalidate_lifecycle_boundary(operation_id, expected_phase="rollback-intent", assume_locked=True)
             _, started = self._run_candidate(operation_id, target)
             ids = self.docker.container_ids(name=self.config.container_name, timeout=self.config.docker_timeout_seconds)
             _require(len(ids) == 1, "rollback target container identity is ambiguous")
             _, inspected = self._inspect_exact(ids[0], target, require_running=True)
             health = self._health(target, inspected)
             evidence = self._evidence("rollback-observed", "rollback-target", target_release, target, inspected, health=health)
-            self.transaction.observe_runtime(operation_id, phase="rollback-observed", outcome="healthy", evidence=evidence, assume_locked=True)
+            self.transaction.observe_runtime(operation_id, phase="rollback-observed", outcome="healthy", evidence=evidence, ticket=self.transaction._issue_runtime_observation_ticket(operation_id, "rollback-observed", evidence), assume_locked=True)
+            self.transaction.revalidate_lifecycle_boundary(operation_id, expected_phase="rollback-observed", assume_locked=True)
             self.transaction.advance(operation_id, "successful-rollback", assume_locked=True)
             return self._operation(operation_id)
 
@@ -557,6 +702,7 @@ class ImmutableRuntimeLifecycle:
         state = self.transaction.store.load()
         record = state["releases"].get(release_id)
         _require(isinstance(record, dict), "authenticated rollback target is not retained")
+        self.transaction.store.verify_retained_offline(release_id, trusted_root=self.transaction.trusted_root, trusted_root_version=self.transaction.trusted_root_version, authorization_public_key=self.transaction.trust.public_key_path, authorization_key_id=self.transaction.trust.expected_key_id, authorization_key_fingerprint=self.transaction.trust.expected_public_key_sha256, authorization_allowlist=self.transaction.authorization_allowlist_path, assume_locked=True)
         operations = [item for item in state["operations"].values() if item.get("release_sha256") == release_id and item.get("kind") == "immutable-runtime-preparation" and item.get("phase") == "completed" and isinstance(item.get("metadata_sha256"), str)]
         _require(len(operations) == 1, "authenticated rollback preparation evidence is missing or ambiguous")
         identity, _, evidence, _ = self.transaction._read_prepared_candidate_evidence(release_id, operations[0]["metadata_sha256"])
@@ -564,7 +710,7 @@ class ImmutableRuntimeLifecycle:
         integrity = preparation._integrity(evidence.preparation_path.parent / "runtime")
         _require(integrity == evidence.runtime_integrity, "authenticated rollback runtime integrity changed")
         image = _image_identity(self.docker, identity, expected_id=None, timeout=self.config.docker_timeout_seconds)
-        return RuntimeExecutionContract(operation_id=operation_id, release_id=release_id, preparation_metadata_sha256=operations[0]["metadata_sha256"], runtime_root=evidence.preparation_path.parent / "runtime", runtime_integrity=integrity, image=image["image"], image_digest=image["image_digest"], image_id=image["image_id"], platform=image["platform"], configuration_sha256=self._configuration_sha256, env_file=self._env_file)
+        return self._finalize_contract(RuntimeExecutionContract(operation_id=operation_id, release_id=release_id, preparation_metadata_sha256=operations[0]["metadata_sha256"], runtime_root=evidence.preparation_path.parent / "runtime", runtime_integrity=integrity, image=image["image"], image_digest=image["image_digest"], image_id=image["image_id"], platform=image["platform"], configuration_sha256="0" * 64, env_file=self._env_file, source_sha=str(identity["source_sha"])))
 
 
 def main() -> int:
